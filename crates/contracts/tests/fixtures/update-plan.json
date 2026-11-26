@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "plan_id": "plan_update",
+  "host_id": "host_lab",
+  "host_epoch": "epoch_1",
+  "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "requester": "agent_1",
+  "verb": "site_update",
+  "site_id": "blog1",
+  "recipe_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "capture_operation_id": "op_capture",
+  "components": [
+    {
+      "kind": "plugin",
+      "slug": "hello-dolly",
+      "from_version": "1.7.1",
+      "to_version": "1.7.2"
+    },
+    {
+      "kind": "theme",
+      "slug": "twentytwentyfour",
+      "from_version": "1.2",
+      "to_version": "1.3"
+    }
+  ],
+  "expected_effects": {
+    "changes_site_code": true,
+    "restores_site_database_on_failure": true,
+    "deletes_backups": false,
+    "traffic_activation": false,
+    "network_access": false
+  },
+  "risk_class": "lab_only",
+  "valid_from": 1000,
+  "expires_at": 2000,
+  "limitations": [
+    "SYNTHETIC fixture"
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "plan_id": "plan_delete",
+  "host_id": "host_lab",
+  "host_epoch": "epoch_1",
+  "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "requester": "agent_1",
+  "verb": "site_delete",
+  "site_id": "blog1",
+  "hostname": "blog1.example.test",
+  "capture_operation_id": "op_capture",
+  "expected_effects": {
+    "removes_site_resources": true,
+    "removes_certificate_keys": true,
+    "deletes_backups": false,
+    "traffic_activation": false,
+    "network_access": false
+  },
+  "risk_class": "lab_only",
+  "valid_from": 1000,
+  "expires_at": 2000,
+  "limitations": [
+    "SYNTHETIC fixture"
+  ]
+}

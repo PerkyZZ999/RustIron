@@ -1,0 +1,21 @@
+# Loopback-only network namespace for Rustiron store jobs (W317).
+# The endpoint address and port come from the root-owned enrollment file;
+# the executor compares that file with the enrolled backup projection before
+# each job. Each relay listener instance orders itself after this service.
+[Unit]
+Description=Rustiron store network namespace
+After=local-fs.target
+ConditionPathExists=/etc/rustiron/store-network.env
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/rustiron/store-network.env
+ExecStart=/usr/libexec/rustiron/store-netns start
+ExecStop=/usr/libexec/rustiron/store-netns stop
+# No PrivateTmp=, ProtectSystem= or other mount namespacing: `ip netns add`
+# bind-mounts the handle under /run/netns, and a private mount namespace
+# hides that mount from PID 1 and the relay socket (W317 first install).
+
+[Install]
+WantedBy=multi-user.target

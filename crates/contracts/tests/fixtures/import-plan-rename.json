@@ -1,0 +1,46 @@
+{
+ "schema_version": 2,
+ "plan_id": "plan_import_rename",
+ "host_id": "host_lab",
+ "host_epoch": "epoch_1",
+ "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+ "requester": "agent_1",
+ "verb": "site_import",
+ "site_id": "blog1",
+ "hostname": "blog1.example.test",
+ "source_hostname": "blog1.example.org",
+ "recipe_id": "import_v1",
+ "archive_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+ "manifest_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+ "file_entries": 4200,
+ "file_bytes": 90000000,
+ "dump_bytes": 12000000,
+ "target_php": "8.2",
+ "quota_limits": {
+  "block_hard_kib": 5242880,
+  "inode_hard": 500000
+ },
+ "observations": [
+  {
+   "state": "absent",
+   "site_id": "blog1",
+   "hostname": "blog1.example.test",
+   "observed_at": 990,
+   "source": "reported_registry"
+  }
+ ],
+ "expected_effects": {
+  "creates_account": true,
+  "creates_database": true,
+  "imports_foreign_content": true,
+  "traffic_activation": false,
+  "network_access": false,
+  "sets_quota": true
+ },
+ "risk_class": "lab_only",
+ "valid_from": 1000,
+ "expires_at": 2000,
+ "limitations": [
+  "SYNTHETIC fixture"
+ ]
+}

@@ -1,0 +1,19 @@
+# AlmaLinux 10.2 tuple for new hosts, measured by W339 on 2026-11-12.
+# EPEL replaced restic 0.19.1-1.el10_2 with the rebuild 0.19.1-1.el10_3.
+# dnf installed it from EPEL with GPG checking (vendor "Fedora Project").
+# This is a measured pin, like the lab pin; production provenance stays open.
+# The lab VM keeps alma10-lab-job-tools.toml, which matches its installed build.
+[restic]
+package = "restic"
+evr_arch = "0:0.19.1-1.el10_3.x86_64"
+sha256 = "7ccc664c12ed197e133a01006f7208d832432c637a89f9addf5a93f5b0d5d93b"
+
+[mariadb]
+package = "mariadb"
+evr_arch = "3:10.11.18-1.el10_2.alma.2.x86_64"
+sha256 = "05d885aeb2a1c8838abee327203695a90fc923f45b3da70ff8da49de930509e9"
+
+[mariadb-dump]
+package = "mariadb"
+evr_arch = "3:10.11.18-1.el10_2.alma.2.x86_64"
+sha256 = "c88a8e9ef502f695e381df9ebb953dec7e37ae3c760b89348529b31447d11efa"

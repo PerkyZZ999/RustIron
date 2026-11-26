@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "grant_id": "grant_scrub",
+  "nonce": "nonce_scrub",
+  "plan_id": "plan_scrub",
+  "plan_digest": "ef47112571ba7150df7ea2a2aa123534c541ecfe8d3a5d7876e913c38fe56945",
+  "host_id": "host_lab",
+  "host_epoch": "epoch_1",
+  "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "issuer": "operator_1",
+  "requester": "agent_1",
+  "signer_policy_epoch": "policy_1",
+  "site_ids": [
+    "blog1"
+  ],
+  "verbs": [
+    "import_scrub"
+  ],
+  "risk_class": "lab_only",
+  "valid_from": 1100,
+  "expires_at": 1900,
+  "max_operations": 1
+}

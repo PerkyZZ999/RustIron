@@ -1,0 +1,28 @@
+# Listener for Rustiron store jobs inside the store namespace (W316/W317).
+# The instance name is the enrolled store port (W352); enable the instance
+# that matches RUSTIRON_STORE_PORT, for example rustiron-store-relay@443.socket.
+# The executor refuses store jobs unless exactly one listener is bound on the
+# enrolled port. It is bound in the namespace that exists when it starts.
+# BindsTo= stops it with the namespace so it never stays bound in a deleted
+# one; PartOf= carries a restart of the namespace to the listener. Default
+# socket dependencies order it before sockets.target and so before
+# basic.target, which the namespace service follows: that cycle made systemd
+# drop the socket at boot (W317), so it starts from multi-user.target instead.
+[Unit]
+Description=Rustiron store relay listener on port %i
+DefaultDependencies=no
+BindsTo=rustiron-store-netns.service
+PartOf=rustiron-store-netns.service
+After=sysinit.target rustiron-store-netns.service
+Before=shutdown.target
+Conflicts=shutdown.target
+
+[Socket]
+ListenStream=0.0.0.0:%i
+NetworkNamespacePath=/run/netns/rustiron-store
+FreeBind=no
+SELinuxContext=system_u:system_r:rustiron_store_relay_t:s0
+
+[Install]
+WantedBy=multi-user.target
+DefaultInstance=443

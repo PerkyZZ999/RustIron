@@ -1,0 +1,5 @@
+# Markdown uses two trailing spaces for an explicit line break.
+# scripts/check_docs.py allows that syntax and rejects other trailing whitespace.
+*.md whitespace=-blank-at-eol
+# Compiler/formatter evidence is captured verbatim, including diff context.
+docs/validation/**/*.log whitespace=-blank-at-eol,-blank-at-eof

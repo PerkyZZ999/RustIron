@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "plan_id": "plan_clone_scrub",
+  "host_id": "host_lab",
+  "host_epoch": "epoch_1",
+  "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "requester": "agent_1",
+  "verb": "clone_scrub",
+  "site_id": "blog2",
+  "clone_operation_id": "op_clone",
+  "expected_effects": {
+    "removes_clone_leftovers": true,
+    "deletes_site": false,
+    "traffic_activation": false,
+    "network_access": false
+  },
+  "risk_class": "lab_only",
+  "valid_from": 1000,
+  "expires_at": 2000,
+  "limitations": [
+    "SYNTHETIC fixture"
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "grant_id": "grant_eject",
+  "nonce": "nonce_eject",
+  "plan_id": "plan_eject",
+  "plan_digest": "ca015fc46a331406c894bff50a4de8314d65e67c7f8834574520e651ba830727",
+  "host_id": "host_lab",
+  "host_epoch": "epoch_1",
+  "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "issuer": "operator_1",
+  "requester": "agent_1",
+  "signer_policy_epoch": "policy_1",
+  "targets": [
+    "ols_lab_listener"
+  ],
+  "verbs": [
+    "site_eject"
+  ],
+  "site_ids": [
+    "blog5"
+  ],
+  "risk_class": "lab_only",
+  "valid_from": 1100,
+  "expires_at": 1900,
+  "compensation": {
+    "recipe": "ols_restore_lkg_v1",
+    "max_attempts": 1,
+    "valid_until": 2100
+  },
+  "max_operations": 1
+}

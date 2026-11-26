@@ -1,0 +1,30 @@
+[Unit]
+Description=Rustiron administration helper
+# W500-F1: the helper's private mount namespace keeps the store namespace
+# handle only when /run/netns/rustiron-store exists before the helper starts.
+# Ordering only: a host without an enrolled store keeps working.
+After=rustiron-store-netns.service
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/rustiron/rustiron-admin-helper
+RuntimeDirectory=rustiron-admin
+RuntimeDirectoryMode=0700
+UMask=0077
+Restart=no
+User=root
+Group=root
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_AUDIT_WRITE
+# The account and SELinux tools need to enter their own domains (W172c).
+ProtectSystem=yes
+ProtectHome=yes
+PrivateTmp=yes
+# OLS verification reads the host listener table. A host drop-in must allow
+# only the enrolled OLS listener address before the helper can probe it.
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET
+SystemCallArchitectures=native
+SystemCallFilter=@system-service @chown @setuid
+LimitNOFILE=256
+TasksMax=32
+MemoryMax=256M

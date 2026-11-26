@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "plan_id": "plan_fixture",
+  "host_id": "host_lab",
+  "host_epoch": "epoch_1",
+  "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "requester": "agent_1",
+  "resource_ids": [
+    "fixture_1"
+  ],
+  "observations": [
+    {
+      "state": "observed",
+      "resource_id": "fixture_1",
+      "generation": "gen_old",
+      "content_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "observed_at": 990,
+      "source": "reported_registry",
+      "complete": true
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "step_1",
+      "resource_id": "fixture_1",
+      "verb": "config_activate",
+      "precheck": "fixture_precheck_v1",
+      "effect": "fixture_activate_v1",
+      "observer": "fixture_observe_v1",
+      "verification": "fixture_verify_v1",
+      "compensation": "fixture_restore_v1",
+      "settings": {
+        "variant": "beta"
+      },
+      "expected_generation": "gen_old",
+      "target_generation": "gen_new",
+      "artifact_id": "artifact_beta"
+    }
+  ],
+  "artifact_digests": [
+    {
+      "artifact_id": "artifact_beta",
+      "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  ],
+  "generator_version": "fixture_generator_v1",
+  "expected_effects": {
+    "generation_switches": 1,
+    "global_recycles": 0,
+    "probe_resources": [
+      "fixture_1"
+    ],
+    "network_access": false
+  },
+  "dependencies": [],
+  "external_effects": [],
+  "blast_radius": {
+    "resource_ids": [
+      "fixture_1"
+    ],
+    "all_hosted_sites": false
+  },
+  "risk_class": "lab_only",
+  "reversibility": "bounded_last_known_good",
+  "downtime_estimate": {
+    "state": "unknown",
+    "reason": "not_checked"
+  },
+  "data_loss_exposure": {
+    "state": "estimated",
+    "value": 0,
+    "basis": "Fixture only; no database or serving effects."
+  },
+  "budgets": {
+    "steps": 1,
+    "global_recycles": 0,
+    "affected_resources": 1,
+    "runtime_seconds": 60,
+    "cpu_seconds": 30,
+    "memory_bytes": 67108864,
+    "pids": 4,
+    "output_bytes": 4096,
+    "temporary_bytes": 4096
+  },
+  "valid_from": 1000,
+  "expires_at": 2000,
+  "compensation": {
+    "recipe": "fixture_restore_v1",
+    "generation": "gen_old",
+    "max_attempts": 1,
+    "valid_until": 2300
+  },
+  "limitations": [
+    "Synthetic fixture contract; observations require independent recheck."
+  ]
+}

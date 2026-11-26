@@ -1,0 +1,13 @@
+# D-083 (P05): the alert check-in every two minutes, so at least two pushes
+# reach a monitor with a 300-second heartbeat interval. Not enabled by
+# default; enable it after saving the push link.
+[Unit]
+Description=Rustiron alert check-in every two minutes (D-083)
+
+[Timer]
+OnCalendar=*-*-* *:00/2:00
+Persistent=false
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

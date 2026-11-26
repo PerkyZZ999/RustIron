@@ -1,0 +1,68 @@
+# D-071 / W610 (P07, CP06): dedicated domain for the per-site outbound mail
+# Unix-socket relay. PID 1 creates /run/rustiron-mail/<account>/smtp (0660
+# root:<account> in 0750 root:<account>) and starts systemd-socket-proxyd in
+# rustiron_mail_relay_t to forward each connection to Postfix's per-site smtpd
+# service at /var/spool/postfix/public/rustiron-<account>.
+#
+# Boundaries preserved:
+# - D-019: site PHP keeps PrivateNetwork=yes and zero TCP/UDP/DNS egress.
+# - D-046: site PHP keeps zero exec/shell permissions (the WordPress mu-plugin
+#   connects directly to the Unix socket via stream_socket_client).
+# - D-071: rustiron_mail_relay_t has zero network access (AF_UNIX only), reads
+#   no SASL credentials or site files, and may only connect to Postfix's public
+#   smtpd socket.
+policy_module(rustiron_mail_relay, 0.1.0)
+
+gen_require(`
+	type init_t, systemd_socket_proxyd_exec_t, nsfs_t, cgroup_t;
+	type postfix_spool_t, postfix_public_t, postfix_master_t;
+	role system_r;
+')
+
+type rustiron_mail_relay_t;
+domain_type(rustiron_mail_relay_t)
+domain_entry_file(rustiron_mail_relay_t, systemd_socket_proxyd_exec_t)
+role system_r types rustiron_mail_relay_t;
+
+type rustiron_mail_run_t;
+files_pid_file(rustiron_mail_run_t)
+
+# PID 1 manages /run/rustiron-mail/<account>/smtp and transitions the proxy
+# unit under NoNewPrivileges=yes.
+allow init_t rustiron_mail_relay_t:process transition;
+allow init_t rustiron_mail_relay_t:process2 { nnp_transition nosuid_transition };
+allow init_t rustiron_mail_relay_t:unix_stream_socket { create_stream_socket_perms listen };
+allow init_t rustiron_mail_run_t:dir manage_dir_perms;
+allow init_t rustiron_mail_run_t:sock_file manage_sock_file_perms;
+
+# Proxy runtime: accept passed Unix socket and connect only to Postfix public
+# smtpd sockets (W482 permissive survey).
+allow rustiron_mail_relay_t self:unix_stream_socket { create_stream_socket_perms listen accept };
+allow rustiron_mail_relay_t postfix_spool_t:dir search_dir_perms;
+allow rustiron_mail_relay_t postfix_public_t:dir search_dir_perms;
+allow rustiron_mail_relay_t postfix_public_t:sock_file write_sock_file_perms;
+allow rustiron_mail_relay_t postfix_master_t:unix_stream_socket connectto;
+
+# Journal logging and systemd stdout/stderr stream.
+logging_send_syslog_msg(rustiron_mail_relay_t)
+allow rustiron_mail_relay_t self:unix_dgram_socket { create_socket_perms sendto };
+init_search_pid_dirs(rustiron_mail_relay_t)
+allow rustiron_mail_relay_t init_t:unix_stream_socket { getattr write };
+
+# Incidental libsystemd startup probes (same as rustiron_store_relay, W316/W365).
+kernel_dontaudit_read_system_state(rustiron_mail_relay_t)
+init_dontaudit_read_state(rustiron_mail_relay_t)
+dontaudit rustiron_mail_relay_t nsfs_t:file getattr;
+dontaudit rustiron_mail_relay_t cgroup_t:filesystem getattr;
+
+# Site PHP connects ONLY to its own per-site Unix socket under /run/rustiron-mail.
+# DAC (0750 root:<account> dir + 0660 root:<account> socket) and per-site MCS
+# categories on the socket drop-in prevent cross-site socket access.
+optional_policy(`
+	gen_require(`
+		type rustiron_php_t;
+	')
+	allow rustiron_php_t rustiron_mail_run_t:dir search_dir_perms;
+	allow rustiron_php_t rustiron_mail_run_t:sock_file write_sock_file_perms;
+	allow rustiron_php_t rustiron_mail_relay_t:unix_stream_socket connectto;
+')

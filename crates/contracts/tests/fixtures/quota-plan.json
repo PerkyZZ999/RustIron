@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "plan_id": "plan_quota",
+  "host_id": "host_lab",
+  "host_epoch": "epoch_1",
+  "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "requester": "agent_1",
+  "verb": "site_quota",
+  "site_id": "blog1",
+  "quota_limits": {
+    "block_hard_kib": 524288,
+    "inode_hard": 40000
+  },
+  "expected_effects": {
+    "sets_quota": true,
+    "changes_files": false,
+    "traffic_activation": false,
+    "network_access": false
+  },
+  "risk_class": "lab_only",
+  "valid_from": 1000,
+  "expires_at": 2000,
+  "limitations": [
+    "SYNTHETIC fixture"
+  ]
+}

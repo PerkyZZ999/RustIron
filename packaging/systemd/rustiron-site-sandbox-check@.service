@@ -1,0 +1,6 @@
+[Unit]
+Description=Rustiron sandbox re-check for site %i
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/rustiron/check-site-sandbox %i --running

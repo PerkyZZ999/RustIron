@@ -1,0 +1,3 @@
+/usr/libexec/rustiron/rustiron-control	--	gen_context(system_u:object_r:rustiron_coordinator_exec_t,s0)
+/var/lib/rustiron-coordinator(/.*)?	gen_context(system_u:object_r:rustiron_coordinator_var_lib_t,s0)
+/run/rustiron-coordinator(/.*)?	gen_context(system_u:object_r:rustiron_coordinator_run_t,s0)

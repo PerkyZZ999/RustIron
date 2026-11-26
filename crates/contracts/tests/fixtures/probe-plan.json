@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "plan_id": "plan_probe",
+  "host_id": "host_lab",
+  "host_epoch": "epoch_1",
+  "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "requester": "agent_1",
+  "verb": "restore_probe",
+  "site_id": "blog13",
+  "snapshot_id": "63ba950462d475de22f0f9f73449dfc311db71a2036352a86f8e38b155590409",
+  "profile_id": "local_no_egress_v1",
+  "risk_class": "lab_only",
+  "valid_from": 1000,
+  "expires_at": 2000,
+  "limitations": [
+    "SYNTHETIC fixture"
+  ]
+}

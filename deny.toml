@@ -1,0 +1,41 @@
+# Adapted from the owner's Rust-Toolchain template.
+[graph]
+targets = [{ triple = "x86_64-unknown-linux-gnu" }]
+all-features = true
+
+[advisories]
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+allow = ["MIT", "Apache-2.0"]
+unused-allowed-license = "allow"
+confidence-threshold = 0.8
+
+# Workspace crates are Apache-2.0 (D-014) and stay unpublished.
+# This does not exclude third-party crates or any advisory/source checks.
+[licenses.private]
+ignore = false
+
+# Reviewed Unicode table notice; exact transitive version only. See W002 evidence.
+[[licenses.exceptions]]
+name = "unicode-ident"
+version = "=1.0.27"
+allow = ["MIT", "Apache-2.0", "Unicode-3.0"]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1,0 +1,60 @@
+# Rustiron coordinator (product unit, B05/W234). Unprivileged: owns the
+# operator control socket and coordinator store, and forwards admitted
+# requests to the root executor socket. Its uid must be the executor policy's
+# enrolled `requester_uid`; membership in rustiron-requesters grants connect
+# on the executor socket. Not enabled by default.
+[Unit]
+Description=Rustiron coordinator
+Documentation=file:///usr/share/doc/rustiron/README.md
+After=rustiron-executor.service
+Wants=rustiron-executor.service
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=rustiron-coordinator
+Group=rustiron-coordinator
+SupplementaryGroups=rustiron-requesters
+RuntimeDirectory=rustiron-coordinator
+RuntimeDirectoryMode=0700
+StateDirectory=rustiron-coordinator
+StateDirectoryMode=0700
+ExecStart=/usr/libexec/rustiron/rustiron-control --socket /run/rustiron-coordinator/control.sock --executor-socket /run/rustiron/executor.sock --state-dir /var/lib/rustiron-coordinator
+UMask=0077
+Restart=on-failure
+RestartSec=2s
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+MemoryMax=256M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

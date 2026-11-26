@@ -1,0 +1,6 @@
+/usr/libexec/rustiron/jobs/restic	--	gen_context(system_u:object_r:rustiron_capture_exec_t,s0)
+/usr/libexec/rustiron/jobs/mariadb-dump	--	gen_context(system_u:object_r:rustiron_capture_exec_t,s0)
+/usr/libexec/rustiron/jobs/mariadb	--	gen_context(system_u:object_r:rustiron_capture_exec_t,s0)
+/usr/libexec/rustiron/jobs/restore-inventory	--	gen_context(system_u:object_r:rustiron_capture_exec_t,s0)
+/usr/libexec/rustiron/jobs/capture-manifest	--	gen_context(system_u:object_r:rustiron_capture_exec_t,s0)
+/usr/libexec/rustiron/jobs/migration-inventory	--	gen_context(system_u:object_r:rustiron_capture_exec_t,s0)

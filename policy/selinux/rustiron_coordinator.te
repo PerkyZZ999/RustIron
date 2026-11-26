@@ -1,0 +1,60 @@
+# Coordinator domain (W236, B05/D-016). Unprivileged local control service:
+# serves its own owner-only control socket, keeps its inventory SQLite store,
+# reads host facts for doctor, and talks to the root executor over the
+# executor socket only. No exec of other programs, no site trees. W466 (D-061):
+# it may read the rendered OLS generation and connect to the local OLS
+# listener, for the WordPress job requests; no other network.
+policy_module(rustiron_coordinator, 0.2.1)
+
+gen_require(`
+	type rustiron_executor_t, rustiron_executor_run_t;
+	type rustiron_ols_generation_t, rustiron_ols_port_t;
+')
+
+type rustiron_coordinator_t;
+type rustiron_coordinator_exec_t;
+init_daemon_domain(rustiron_coordinator_t, rustiron_coordinator_exec_t)
+# The unit sets NoNewPrivileges=yes; without this the exec stays init_t.
+init_nnp_daemon_domain(rustiron_coordinator_t)
+
+type rustiron_coordinator_var_lib_t;
+files_type(rustiron_coordinator_var_lib_t)
+type rustiron_coordinator_run_t;
+files_pid_file(rustiron_coordinator_run_t)
+
+allow rustiron_coordinator_t self:process { signal sigchld };
+allow rustiron_coordinator_t self:unix_stream_socket { create_stream_socket_perms connectto };
+
+files_list_root(rustiron_coordinator_t)
+files_list_var(rustiron_coordinator_t)
+files_list_var_lib(rustiron_coordinator_t)
+files_list_pids(rustiron_coordinator_t)
+
+# Inventory store and writer lock.
+manage_files_pattern(rustiron_coordinator_t, rustiron_coordinator_var_lib_t, rustiron_coordinator_var_lib_t)
+manage_dirs_pattern(rustiron_coordinator_t, rustiron_coordinator_var_lib_t, rustiron_coordinator_var_lib_t)
+# SQLite WAL maps the -shm index.
+allow rustiron_coordinator_t rustiron_coordinator_var_lib_t:file map;
+# Own control socket.
+manage_sock_files_pattern(rustiron_coordinator_t, rustiron_coordinator_run_t, rustiron_coordinator_run_t)
+list_dirs_pattern(rustiron_coordinator_t, rustiron_coordinator_run_t, rustiron_coordinator_run_t)
+
+# Doctor host facts (os-release, kernel, confinement state).
+files_read_etc_files(rustiron_coordinator_t)
+kernel_read_system_state(rustiron_coordinator_t)
+selinux_getattr_fs(rustiron_coordinator_t)
+seutil_read_config(rustiron_coordinator_t)
+
+# The executor socket, its directory checks, and nothing else of the executor.
+list_dirs_pattern(rustiron_coordinator_t, rustiron_executor_run_t, rustiron_executor_run_t)
+stream_connect_pattern(rustiron_coordinator_t, rustiron_executor_run_t, rustiron_executor_run_t, rustiron_executor_t)
+
+# W466 (D-061): the active OLS generation (no secrets) and the local listener.
+# W646: include http_port_t alongside rustiron_ols_port_t so site-cron works on
+# public-IP hosts where OLS listens on port 80 (matching rustiron_admin.te).
+list_dirs_pattern(rustiron_coordinator_t, rustiron_ols_generation_t, rustiron_ols_generation_t)
+read_files_pattern(rustiron_coordinator_t, rustiron_ols_generation_t, rustiron_ols_generation_t)
+read_lnk_files_pattern(rustiron_coordinator_t, rustiron_ols_generation_t, rustiron_ols_generation_t)
+allow rustiron_coordinator_t self:tcp_socket create_stream_socket_perms;
+allow rustiron_coordinator_t rustiron_ols_port_t:tcp_socket name_connect;
+corenet_tcp_connect_http_port(rustiron_coordinator_t)

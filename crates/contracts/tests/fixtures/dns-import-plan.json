@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "plan_id": "plan_dns_import",
+  "host_id": "host_lab",
+  "host_epoch": "epoch_1",
+  "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "requester": "agent_1",
+  "verb": "dns_zone_import",
+  "zone": "example.test",
+  "zone_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "record_sets": 12,
+  "expected_effects": {
+    "creates_zone": true,
+    "answers_queries": true,
+    "changes_other_zones": false,
+    "changes_delegation": false
+  },
+  "risk_class": "lab_only",
+  "valid_from": 1000,
+  "expires_at": 2000,
+  "limitations": [
+    "SYNTHETIC fixture"
+  ]
+}

@@ -1,0 +1,63 @@
+[Unit]
+Description=Rustiron PHP for site %i
+Requires=rustiron-site-php@%i.socket
+After=rustiron-site-php@%i.socket
+# W231: starts are request-driven (socket, no Restart=); a start limit would
+# leave the site down after repeated OOM kills of its own pool (W227).
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=%i
+Group=%i
+# Refuse to start unless the MAC sandbox is complete (runs as root, unsandboxed).
+ExecStartPre=+/usr/libexec/rustiron/check-site-sandbox %i
+ExecStart=/usr/local/lsws/lsphp84/bin/lsphp
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+Environment=PHP_LSAPI_CHILDREN=4 PHP_LSAPI_MAX_REQUESTS=500 TMPDIR=/srv/sites/%i/tmp
+UMask=0027
+
+# Resources for this site's whole cgroup, including every PHP descendant.
+MemoryMax=512M
+MemorySwapMax=0
+TasksMax=32
+CPUQuota=100%
+# D-050 (W406): io.max on the sites disk. IOWeight needs an I/O-weighting
+# scheduler and had no effect with the `none` scheduler.
+IOReadBandwidthMax=/srv/sites 64M
+IOWriteBandwidthMax=/srv/sites 32M
+IOReadIOPSMax=/srv/sites 2000
+IOWriteIOPSMax=/srv/sites 1000
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/sites/%i/tmp
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+InaccessiblePaths=-/etc/rustiron -/var/lib/rustiron -/run/rustiron -/run/rustiron-admin -/run/rustiron-coordinator -/var/lib/rustiron-coordinator -/run/rustiron-sites
+# Private empty /dev/shm: OLS keeps its shared status there.
+TemporaryFileSystem=/dev/shm:mode=1777,nosuid,nodev,noexec

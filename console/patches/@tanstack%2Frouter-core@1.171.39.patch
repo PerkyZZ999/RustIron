@@ -1,0 +1,50 @@
+diff --git a/dist/cjs/router.cjs b/dist/cjs/router.cjs
+index 68b6ef850a1e1cd10d492dff39b8542adcc372db..56be6e26a0fd406d76ed304b9f373d6c7bec3b08 100644
+--- a/dist/cjs/router.cjs
++++ b/dist/cjs/router.cjs
+@@ -835,12 +835,14 @@ async function documentNavigation(router, href, { replace, ignoreBlocker }) {
+ * dedicated to HMR.
+ */
+ if (process.env.NODE_ENV !== "production") {
+-	RouterCore.prototype._replaceRouteChunk = require_load_client.replaceRouteChunk;
+-	RouterCore.prototype._refreshRoute = async function() {
+-		this._serverResult = void 0;
+-		this.updateLatestLocation();
+-		await require_load_client.refreshClientRoute(this);
+-	};
++	queueMicrotask(() => {
++		RouterCore.prototype._replaceRouteChunk = require_load_client.replaceRouteChunk;
++		RouterCore.prototype._refreshRoute = async function() {
++			this._serverResult = void 0;
++			this.updateLatestLocation();
++			await require_load_client.refreshClientRoute(this);
++		};
++	});
+ }
+ /** Error thrown when search parameter validation fails. */
+ var SearchParamError = class extends Error {};
+diff --git a/dist/esm/router.js b/dist/esm/router.js
+index a31886020d1dfff3c10ee27fea6ae781e6211f9a..b4c7d5390035d245beb0b5cee192e08c93c8fb23 100644
+--- a/dist/esm/router.js
++++ b/dist/esm/router.js
+@@ -835,12 +835,14 @@ async function documentNavigation(router, href, { replace, ignoreBlocker }) {
+ * dedicated to HMR.
+ */
+ if (process.env.NODE_ENV !== "production") {
+-	RouterCore.prototype._replaceRouteChunk = replaceRouteChunk;
+-	RouterCore.prototype._refreshRoute = async function() {
+-		this._serverResult = void 0;
+-		this.updateLatestLocation();
+-		await refreshClientRoute(this);
+-	};
++	queueMicrotask(() => {
++		RouterCore.prototype._replaceRouteChunk = replaceRouteChunk;
++		RouterCore.prototype._refreshRoute = async function() {
++			this._serverResult = void 0;
++			this.updateLatestLocation();
++			await refreshClientRoute(this);
++		};
++	});
+ }
+ /** Error thrown when search parameter validation fails. */
+ var SearchParamError = class extends Error {};

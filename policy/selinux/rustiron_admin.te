@@ -1,0 +1,193 @@
+# Administration helper domain (W171/W172b split confinement; packaged in
+# packaging/selinux/ and lab-verified on AlmaLinux 10; independent human
+# review open). Serves one request per connection on its own socket; runs one
+# fixed step derived from the journaled intent. Reads the journal, never
+# writes it. Residual power stays in the trusted computing base.
+policy_module(rustiron_admin, 0.5.4)
+
+gen_require(`
+	type rustiron_executor_t, rustiron_executor_var_lib_t, rustiron_executor_conf_t;
+	type rustiron_ols_generation_t;
+	type httpd_sys_content_t, httpd_sys_rw_content_t, rustiron_php_exec_t;
+	type systemd_unit_file_t, init_t, mail_spool_t, systemd_userdbd_runtime_t;
+	type ifconfig_var_run_t, nsfs_t, ifconfig_exec_t, iptables_exec_t, ifconfig_t, iptables_t;
+	type quota_t, quota_exec_t;
+	type pdns_control_exec_t;
+	type mysqld_unit_file_t;
+	class system { start status reload };
+	class service { start stop status reload };
+')
+
+type rustiron_admin_t;
+type rustiron_admin_exec_t;
+init_daemon_domain(rustiron_admin_t, rustiron_admin_exec_t)
+# The lab units set NoNewPrivileges=yes; without this the exec stays init_t.
+init_nnp_daemon_domain(rustiron_admin_t)
+type rustiron_admin_run_t;
+files_pid_file(rustiron_admin_run_t)
+
+allow rustiron_admin_t self:process { signal sigchld };
+allow rustiron_admin_t self:unix_stream_socket create_stream_socket_perms;
+manage_sock_files_pattern(rustiron_admin_t, rustiron_admin_run_t, rustiron_admin_run_t)
+list_dirs_pattern(rustiron_admin_t, rustiron_admin_run_t, rustiron_admin_run_t)
+# W174: capture unit stdout files PID 1 writes here; read, then removed.
+manage_files_pattern(rustiron_admin_t, rustiron_admin_run_t, rustiron_admin_run_t)
+
+# Descriptor-relative walks open every ancestor directory.
+files_list_root(rustiron_admin_t)
+files_list_etc(rustiron_admin_t)
+files_list_var(rustiron_admin_t)
+files_list_var_lib(rustiron_admin_t)
+files_list_pids(rustiron_admin_t)
+auth_read_passwd(rustiron_admin_t)
+
+read_files_pattern(rustiron_admin_t, rustiron_executor_var_lib_t, rustiron_executor_var_lib_t)
+read_files_pattern(rustiron_admin_t, rustiron_executor_conf_t, rustiron_executor_conf_t)
+list_dirs_pattern(rustiron_admin_t, rustiron_executor_var_lib_t, rustiron_executor_var_lib_t)
+list_dirs_pattern(rustiron_admin_t, rustiron_executor_conf_t, rustiron_executor_conf_t)
+
+# Account step; probe account create/remove (useradd, groupadd, userdel)
+usermanage_domtrans_useradd(rustiron_admin_t)
+usermanage_domtrans_groupadd(rustiron_admin_t)
+
+# Labels step and probe labels: fcontext rules and relabels
+seutil_domtrans_semanage(rustiron_admin_t)
+# restorecon runs in this domain (W173), not setfiles_t: setfiles_t has no
+# dac_override for the 0750 site-owned dirs, and widening a system domain
+# would reach every caller. Relabel rights stay limited to the site types.
+seutil_exec_setfiles(rustiron_admin_t)
+
+# The fixed steps run python3/stat for checks (measured W172c).
+corecmd_exec_bin(rustiron_admin_t)
+
+# PhpUnits step, probe unit stop, and every job launched with systemd-run
+systemd_exec_systemctl(rustiron_admin_t)
+# The per-site drop-in dir and file under /etc/systemd/system: generic
+# systemd_unit_file_t only (W173 narrowed from systemd_manage_all_unit_files).
+manage_dirs_pattern(rustiron_admin_t, systemd_unit_file_t, systemd_unit_file_t)
+manage_files_pattern(rustiron_admin_t, systemd_unit_file_t, systemd_unit_file_t)
+init_start_transient_unit(rustiron_admin_t)
+init_stop_transient_unit(rustiron_admin_t)
+# Start/stop/reload only units labelled systemd_unit_file_t (the lab
+# rustiron-site-php@ template), W173 narrowed from systemd_start_all_unit_files.
+allow rustiron_admin_t systemd_unit_file_t:service { start stop status reload };
+# systemd's own checks for StartTransientUnit, daemon-reload and unit
+# lookups are on init_t:system (USER_AVC, W173).
+allow rustiron_admin_t init_t:system { start status reload };
+
+# W173: every provision step runs here (provision_step).
+# Peer check: the executor's /proc/<pid>/attr/current while it is connected.
+ps_process_pattern(rustiron_admin_t, rustiron_executor_t)
+# Directories, Credentials, Recipe, Verify: the derived site tree, created
+# and chowned to the site account, then relabelled by the step.
+allow rustiron_admin_t self:capability { chown fowner dac_override };
+apache_manage_sys_content(rustiron_admin_t)
+apache_manage_sys_content_rw(rustiron_admin_t)
+allow rustiron_admin_t { httpd_sys_content_t httpd_sys_rw_content_t }:{ dir file lnk_file } { relabelfrom relabelto };
+# Database, Credentials: the local MariaDB socket and client config.
+mysql_stream_connect(rustiron_admin_t)
+mysql_read_config(rustiron_admin_t)
+mysql_search_db(rustiron_admin_t)
+# The mariadb client reads the system OpenSSL config.
+miscfiles_read_generic_certs(rustiron_admin_t)
+# Labels: setfiles and policy reload through semanage.
+seutil_read_file_contexts(rustiron_admin_t)
+seutil_domtrans_loadpolicy(rustiron_admin_t)
+# Recipe, Verify: the enrolled recipe store and the lsphp job via systemd-run.
+files_read_var_lib_files(rustiron_admin_t)
+allow rustiron_admin_t rustiron_php_exec_t:file { getattr execute };
+dbus_system_bus_client(rustiron_admin_t)
+init_dbus_chat(rustiron_admin_t)
+fs_getattr_all_fs(rustiron_admin_t)
+
+# W174: restore probes run here (probe_run). The probe tree lives under
+# /srv/restore-probes (httpd_sys_content_t, see the .fc), created and
+# relabelled like a site tree. Cleanup checks and removes the probe
+# account's mail spool file (userdel leaves it).
+allow rustiron_admin_t mail_spool_t:dir { search_dir_perms del_entry_dir_perms };
+allow rustiron_admin_t mail_spool_t:file { getattr unlink };
+# NSS lookups by install/chown fall back to passwd; userdbd is not needed.
+dontaudit rustiron_admin_t systemd_userdbd_runtime_t:dir { search_dir_perms read };
+
+# W200 (LAB ONLY, not an accepted production policy; D-016 stays proposed):
+# the OLS activation checks moved here from the executor, whose domain is not
+# widened. The parent and adopted vhosts are usr_t, already readable above.
+# Steps ols_preflight / ols_verify read the generation the journal names.
+list_dirs_pattern(rustiron_admin_t, rustiron_ols_generation_t, rustiron_ols_generation_t)
+read_files_pattern(rustiron_admin_t, rustiron_ols_generation_t, rustiron_ols_generation_t)
+read_lnk_files_pattern(rustiron_admin_t, rustiron_ols_generation_t, rustiron_ols_generation_t)
+# webadmin_closed: /proc/net/tcp and tcp6 only (proc_net_t read).
+kernel_read_network_state(rustiron_admin_t)
+# Listener probes: TCP connect to ONE port type. Modules cannot carry
+# portcon, so the lab labels tcp/8090 only with `semanage port`; C07 checks
+# the local port list against lab/s10/c07_ports.txt. No bind, no other port.
+type rustiron_ols_port_t;
+corenet_port(rustiron_ols_port_t)
+allow rustiron_admin_t self:tcp_socket { create connect getattr getopt setopt read write shutdown };
+allow rustiron_admin_t rustiron_ols_port_t:tcp_socket name_connect;
+
+# W318: the product store launch (crates/executor/src/store_network.rs)
+# runs here. It checks the /run/netns/rustiron-store handle by metadata only
+# and starts the fixed namespace readers and the worker with systemd-run.
+allow rustiron_admin_t ifconfig_var_run_t:dir { getattr search };
+allow rustiron_admin_t nsfs_t:file getattr;
+# systemd-run's access(X_OK) check on ip and nft: PID 1 runs them in their
+# own domains, so the check is refused and kept out of the audit log.
+allow rustiron_admin_t { ifconfig_exec_t iptables_exec_t }:file getattr;
+dontaudit rustiron_admin_t { ifconfig_exec_t iptables_exec_t }:file execute;
+# The readers (ip in ifconfig_t, nft in iptables_t) write their stdout to
+# the file PID 1 opened for the unit in this domain's runtime directory, as
+# the capture jobs do. DAC keeps them from opening other root run files.
+allow { ifconfig_t iptables_t } rustiron_admin_run_t:file { getattr write append };
+# Their terminal probe (TCGETS) on that file: refused, not needed.
+dontaudit { ifconfig_t iptables_t } rustiron_admin_run_t:file ioctl;
+
+# W358 (W335 quota steps): PID 1 runs quotaon in the base quota_t domain and
+# gives it the unit's stdout file in this domain's runtime directory. It may
+# write that file only, as the readers above do. setquota and repquota are
+# bin_t and run unconfined in their units. The helper's check_program reads
+# quotaon's metadata; PID 1, not the helper, executes it.
+allow quota_t rustiron_admin_run_t:file { getattr write append };
+dontaudit quota_t rustiron_admin_run_t:file ioctl;
+allow rustiron_admin_t quota_exec_t:file getattr;
+# systemd-run's access(X_OK) probe of quotaon: refused, not needed.
+dontaudit rustiron_admin_t quota_exec_t:file execute;
+
+# W566 (W564-F5): the DNS steps start pdns_control with systemd-run as the
+# pdns user; PID 1 runs it in pdns_control_t from the unit. systemd-run's
+# metadata check of the program is allowed and its access(X_OK) probe is
+# refused without audit; the helper never executes it.
+allow rustiron_admin_t pdns_control_exec_t:file getattr;
+dontaudit rustiron_admin_t pdns_control_exec_t:file execute;
+
+# W361: the provision Verify step runs `systemctl is-enabled -- mariadb.service`.
+# systemctl stats the vendor unit file (mysqld_unit_file_t) before it asks
+# PID 1, which answers the state over D-Bus. W358 recorded `enabled` with the
+# stat refused, so the result is unused: refused, not audited.
+dontaudit rustiron_admin_t mysqld_unit_file_t:file getattr;
+
+# W462 (D-059): certificate issuance. The installed chains and keys in
+# /etc/rustiron-tls are the helper's to write; OLS reads them as a system
+# service. certbot runs as rustiron-acme in a transient unit, outside this
+# domain, and the helper only reads its state.
+type rustiron_tls_t;
+files_type(rustiron_tls_t)
+type rustiron_acme_state_t;
+files_type(rustiron_acme_state_t)
+files_etc_filetrans(rustiron_admin_t, rustiron_tls_t, dir, "rustiron-tls")
+manage_dirs_pattern(rustiron_admin_t, rustiron_tls_t, rustiron_tls_t)
+manage_files_pattern(rustiron_admin_t, rustiron_tls_t, rustiron_tls_t)
+# D-060 (W463): the probe that the TLS listener serves the new leaf. The
+# TLS port is an http_port_t port (8443 in the lab, 443 in production).
+corenet_tcp_connect_http_port(rustiron_admin_t)
+# D-060 (W463): each site's `live` link to its served chain folder.
+manage_lnk_files_pattern(rustiron_admin_t, rustiron_tls_t, rustiron_tls_t)
+allow rustiron_admin_t rustiron_tls_t:{ dir file lnk_file } { relabelfrom relabelto };
+list_dirs_pattern(rustiron_admin_t, rustiron_acme_state_t, rustiron_acme_state_t)
+read_files_pattern(rustiron_admin_t, rustiron_acme_state_t, rustiron_acme_state_t)
+read_lnk_files_pattern(rustiron_admin_t, rustiron_acme_state_t, rustiron_acme_state_t)
+# The chain checks run openssl; it reads the system OpenSSL config through
+# miscfiles_read_generic_certs above.
+# W475: openssl in the TLS probe opens a netlink route socket for its
+# address lookup (23 denials in the W463 and W464 lab runs).
+allow rustiron_admin_t self:netlink_route_socket r_netlink_socket_perms;

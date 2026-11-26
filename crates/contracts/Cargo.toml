@@ -1,0 +1,18 @@
+[package]
+name = "rustiron-contracts"
+description = "Versioned local protocol contracts for Rustiron Core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+rustix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_json_canonicalizer.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

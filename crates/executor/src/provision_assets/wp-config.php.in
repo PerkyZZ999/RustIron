@@ -1,0 +1,20 @@
+<?php
+// Written once by the Rustiron lab executor. Database credentials are read
+// at runtime from private/db.cnf (0600, site-owned) and are not copied here.
+$rustiron_db = parse_ini_file(dirname(__DIR__) . '/private/db.cnf', true, INI_SCANNER_RAW)['client'];
+define('DB_NAME', $rustiron_db['database']);
+define('DB_USER', $rustiron_db['user']);
+define('DB_PASSWORD', $rustiron_db['password']);
+define('DB_HOST', 'localhost:' . $rustiron_db['socket']);
+define('DB_CHARSET', 'utf8mb4');
+define('DB_COLLATE', '');
+unset($rustiron_db);
+@SALTS@
+$table_prefix = 'wp_';
+define('WP_DEBUG', false);
+define('DISALLOW_FILE_EDIT', true);
+define('DISALLOW_FILE_MODS', true);
+if (!defined('ABSPATH')) {
+    define('ABSPATH', __DIR__ . '/');
+}
+require_once ABSPATH . 'wp-settings.php';

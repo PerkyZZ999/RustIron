@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "plan_id": "plan_eject",
+  "host_id": "host_lab",
+  "host_epoch": "epoch_1",
+  "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "requester": "agent_1",
+  "verb": "site_eject",
+  "target": "ols_lab_listener",
+  "site_id": "blog5",
+  "expected_generation": "g1",
+  "expected_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "observations": [
+    {
+      "state": "observed",
+      "generation": "g1",
+      "content_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "observed_at": 990,
+      "source": "reported_registry"
+    }
+  ],
+  "risk_class": "lab_only",
+  "valid_from": 1000,
+  "expires_at": 2000,
+  "compensation": {
+    "recipe": "ols_restore_lkg_v1",
+    "max_attempts": 1,
+    "valid_until": 2100
+  },
+  "limitations": [
+    "SYNTHETIC fixture"
+  ]
+}

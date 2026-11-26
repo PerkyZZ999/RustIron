@@ -1,0 +1,7 @@
+/usr/libexec/rustiron/rustiron-executor	--	gen_context(system_u:object_r:rustiron_executor_exec_t,s0)
+/etc/rustiron(/.*)?	gen_context(system_u:object_r:rustiron_executor_conf_t,s0)
+/etc/rustiron/receipt-key(/.*)?	gen_context(system_u:object_r:rustiron_receipt_key_t,s0)
+/var/lib/rustiron(/.*)?	gen_context(system_u:object_r:rustiron_executor_var_lib_t,s0)
+/run/rustiron(/.*)?	gen_context(system_u:object_r:rustiron_executor_run_t,s0)
+/etc/rustiron-ols(/.*)?	gen_context(system_u:object_r:rustiron_ols_generation_t,s0)
+/etc/rustiron-ejected(/.*)?	gen_context(system_u:object_r:rustiron_ols_generation_t,s0)

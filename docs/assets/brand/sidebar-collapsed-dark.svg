@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40" role="img" aria-label="RustIron sidebar icon"><title>RustIron sidebar icon</title><g transform="translate(2,2) scale(.10) translate(-135,-75)"><path d="M145.5,85.5 L421,85.5 L487,154 L375,269 L375,312 L492,427.5 L347,427.5 L246,332 L219,359 L219,384 L174,427.5 L145.5,399 Z M219.5,165.5 L374,165.5 L297,239.5 L283,234.5 L219.5,296.5 Z" fill="#8893A3" fill-rule="evenodd"/>
+    <path d="M145.5,85.5 H421 L487,154 H213 Z" fill="#E4E7EC"/>
+    <path d="M213,154 H487 L375,269 V165.5 H219.5 Z" fill="#515D6C"/>
+    <path d="M374,165.5 L297,239.5 L375,312 Z" fill="#4169E1"/>
+    <path d="M283,234.5 L492,427.5 H350 L219.5,296.5 Z" fill="#E4E7EC"/>
+    <path d="M219.5,296.5 L350,427.5 H347 L246,332 L219,308 Z" fill="#515D6C"/></g></svg>

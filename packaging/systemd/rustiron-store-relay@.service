@@ -1,0 +1,31 @@
+# Relays each store job connection from the host namespace to the one
+# enrolled endpoint address and port (W352). TLS is end to end; the relay
+# holds no CA or secret. rustiron_store_relay_t may only bind and connect
+# the HTTPS port and the dedicated store port type (W316, W352).
+[Unit]
+Description=Rustiron store relay for listener port %i
+Requires=rustiron-store-relay@%i.socket
+After=rustiron-store-relay@%i.socket
+
+[Service]
+EnvironmentFile=/etc/rustiron/store-network.env
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --connections-max=8 ${RUSTIRON_STORE_ENDPOINT}:${RUSTIRON_STORE_PORT}
+SELinuxContext=system_u:system_r:rustiron_store_relay_t:s0
+DynamicUser=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+MemoryMax=64M
+TasksMax=16

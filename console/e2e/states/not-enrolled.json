@@ -1,0 +1,4 @@
+{
+  "schema": "rustiron-executor-refusal/1",
+  "error": "EXECUTOR_NOT_ENROLLED"
+}

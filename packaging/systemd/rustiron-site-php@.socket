@@ -1,0 +1,13 @@
+[Unit]
+Description=Rustiron LSAPI socket for site %i
+
+[Socket]
+ListenStream=/run/rustiron-sites/%i.sock
+SocketUser=root
+SocketGroup=nobody
+SocketMode=0660
+DirectoryMode=0755
+Accept=no
+
+[Install]
+WantedBy=sockets.target

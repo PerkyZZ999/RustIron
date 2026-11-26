@@ -1,0 +1,63 @@
+# W381 (D-032): the OLS boot guard. lshttpd.service wants this unit through
+# the 51-rustiron-boot-guard.conf drop-in and starts after it. The guard runs
+# once per boot, before OLS, the admin helper, and the executor. When the
+# journal holds an OLS activation with its effect mark recorded and not
+# settled, and `current` is that activation's target, the guard points
+# `current` back at the journaled predecessor, or removes `current` for a
+# bootstrap activation. It records nothing in the journal; the operation
+# stays for `reconcile` and `compensate`. Every other finding changes nothing.
+# W413: after the link check the one-shot helper starts the restored site's
+# PHP socket and timer if an interrupted eject could have stopped them.
+# Each command takes the writer lease before acting.
+[Unit]
+Description=Rustiron OLS boot guard
+Documentation=file:///usr/share/doc/rustiron/README.md
+Before=lshttpd.service rustiron-admin-helper.service rustiron-executor.service
+RefuseManualStart=yes
+RefuseManualStop=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/rustiron/rustiron-executor ols-boot-guard
+ExecStartPost=/usr/libexec/rustiron/rustiron-admin-helper boot-restore-ejected-php
+TimeoutStartSec=60
+UMask=0077
+
+User=root
+Group=root
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+SecureBits=noroot-locked
+
+ProtectSystem=strict
+ReadWritePaths=/var/lib/rustiron /etc/rustiron-ols
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# SQLite can retain the root owner on journal files, as in the executor unit.
+SystemCallFilter=@chown
+LimitNOFILE=64
+TasksMax=4
+MemoryMax=128M

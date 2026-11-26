@@ -1,0 +1,704 @@
+// W629 (P29 Slice 9): Console Sign-In, First-Run Admin Setup (/login), and
+// Console User Accounts & Roles management (/users) powered by Better Auth.
+import { Link, useNavigate } from "@tanstack/react-router";
+import {
+  AlertCircle,
+  Check,
+  Eye,
+  EyeOff,
+  KeyRound,
+  Lock,
+  LogIn,
+  LogOut,
+  Trash2,
+  UserPlus,
+  Users,
+} from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+
+import { BrandLockup, BrandMark } from "@/components/console/brand-logo";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import type { ConsoleAccountUser, ConsoleRole } from "./auth-backend";
+import { useAuth } from "./auth-context";
+import { Crumbs, Glyph, Page, TableScroll } from "./ui";
+
+const roleDescriptions: Record<ConsoleRole, string> = {
+  admin: "Full panel access, user management, and signed plan submission",
+  operator: "View all server resources, draft plans, and submit signed plans",
+  viewer: "Read-only access to dashboards, metrics, sites, and logs",
+};
+
+function AuthAlert({ tone, text }: { tone: "err" | "ok"; text: string }) {
+  return (
+    <div className={tone === "err" ? "attention err" : "attention info"} role="alert">
+      <Glyph icon={tone === "err" ? AlertCircle : Check} />
+      <div className="att-body">{text}</div>
+    </div>
+  );
+}
+
+function AdminSetupForm({ onDone }: { onDone: () => Promise<void> }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [setupToken, setSetupToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (password.length < 10) {
+      setErr("Password must be at least 10 characters.");
+      return;
+    }
+    if (password !== confirm) {
+      setErr("Passwords do not match.");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await fetch("/api/accounts/setup", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name,
+          email,
+          password,
+          ...(setupToken.trim() ? { setupToken: setupToken.trim() } : {}),
+        }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
+      if (!res.ok) {
+        setErr(body.message ?? body.error ?? `Setup failed (HTTP ${res.status}).`);
+        return;
+      }
+      await onDone();
+    } catch {
+      setErr("Could not reach the Console authentication service.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="panel stack" onSubmit={(e) => void handleSubmit(e)}>
+      <div className="panel-head">
+        <div className="row" style={{ gap: 10 }}>
+          <BrandMark className="size-7 shrink-0" />
+          <h2>Create administrator account</h2>
+        </div>
+        <span className="pill ok">Better Auth</span>
+      </div>
+      <p className="muted">
+        Set up the first Admin account to protect access to the Rustiron Console with secure
+        HttpOnly sessions.
+      </p>
+      {err ? <AuthAlert tone="err" text={err} /> : null}
+      <div className="form-grid">
+        <div className="form-row">
+          <label htmlFor="setup-name">Full name</label>
+          <input
+            id="setup-name"
+            className="input"
+            required
+            autoComplete="name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Alex Rivera"
+          />
+        </div>
+        <div className="form-row">
+          <label htmlFor="setup-email">Email address</label>
+          <input
+            id="setup-email"
+            className="input"
+            type="email"
+            required
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="admin@example.com"
+          />
+        </div>
+        <div className="form-row">
+          <label htmlFor="setup-pass">Password (min 10 characters)</label>
+          <input
+            id="setup-pass"
+            className="input"
+            type="password"
+            required
+            minLength={10}
+            autoComplete="new-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        </div>
+        <div className="form-row">
+          <label htmlFor="setup-confirm">Confirm password</label>
+          <input
+            id="setup-confirm"
+            className="input"
+            type="password"
+            required
+            minLength={10}
+            autoComplete="new-password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+          />
+        </div>
+        <div className="form-row">
+          <label htmlFor="setup-token">Setup token (if configured on host)</label>
+          <input
+            id="setup-token"
+            className="input mono"
+            type="password"
+            autoComplete="one-time-code"
+            value={setupToken}
+            onChange={(e) => setSetupToken(e.target.value)}
+            placeholder="Optional RUSTIRON_CONSOLE_SETUP_TOKEN"
+          />
+        </div>
+      </div>
+      <div className="row">
+        <button type="submit" className="btn primary" disabled={busy}>
+          <Glyph icon={UserPlus} />
+          {busy ? "Creating admin…" : "Create admin account"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function SignInForm({ onSignedIn }: { onSignedIn: () => Promise<void> }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function handleSignIn(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await fetch("/api/auth/sign-in/email", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      if (!res.ok) {
+        setErr("Invalid email or password.");
+        return;
+      }
+      await onSignedIn();
+    } catch {
+      setErr("Could not reach the Console authentication service.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form
+      className="motion-hero rounded-panel border border-border bg-surface p-6 shadow-[var(--shadow-float)] matte-surface sm:p-8"
+      onSubmit={(e) => void handleSignIn(e)}
+    >
+      <div className="mb-6 flex flex-col gap-2">
+        <BrandLockup className="h-8 w-auto self-start" />
+        <div className="min-w-0">
+          <h2 className="text-base font-semibold leading-6 tracking-tight text-foreground">
+            Sign in
+          </h2>
+          <p className="text-xs text-muted-foreground">Operations Console · Better Auth</p>
+        </div>
+      </div>
+      <div className="space-y-4">
+        {err ? <AuthAlert tone="err" text={err} /> : null}
+        <div className="form-row">
+          <label htmlFor="login-email">Email address</label>
+          <Input
+            id="login-email"
+            type="email"
+            required
+            autoComplete="email"
+            placeholder="operator@lab.test"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+        </div>
+        <div className="form-row">
+          <label htmlFor="login-pass">Password</label>
+          <div className="relative w-full">
+            <Input
+              id="login-pass"
+              type={showPassword ? "text" : "password"}
+              required
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="pr-9"
+            />
+            <button
+              type="button"
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              onClick={() => setShowPassword((v) => !v)}
+              className="absolute right-2 top-1/2 z-10 grid size-7 -translate-y-1/2 cursor-pointer place-items-center rounded text-muted-foreground transition-colors hover:bg-hover hover:text-foreground"
+            >
+              {showPassword ? (
+                <EyeOff aria-hidden="true" className="size-4" strokeWidth={1.75} />
+              ) : (
+                <Eye aria-hidden="true" className="size-4" strokeWidth={1.75} />
+              )}
+            </button>
+          </div>
+          <span className="hint">Authentication errors never reveal which factor failed.</span>
+        </div>
+        <Button type="submit" variant="default" className="w-full" disabled={busy}>
+          <Glyph icon={LogIn} />
+          {busy ? "Signing in…" : "Sign in"}
+        </Button>
+      </div>
+      <div className="mt-6 flex items-center justify-center gap-1.5 border-t border-border pt-4 text-xs text-muted-foreground">
+        <Lock aria-hidden="true" className="size-3.5" strokeWidth={1.75} />
+        <span>Better Auth · HttpOnly Strict cookie</span>
+      </div>
+    </form>
+  );
+}
+
+export function StandaloneAuthGate({ themeControl }: { themeControl?: React.ReactNode }) {
+  const { status, refresh } = useAuth();
+  const navigate = useNavigate();
+  const setupRequired = status?.setup_required ?? false;
+
+  async function handleSuccess() {
+    await refresh();
+    void navigate({ to: "/" });
+  }
+
+  return (
+    <div className="relative flex min-h-screen flex-col items-center justify-center bg-background px-4 py-10 text-foreground">
+      <a className="skip-link" href="#main">
+        Skip to content
+      </a>
+      {themeControl ? <div className="absolute right-4 top-4">{themeControl}</div> : null}
+      <main id="main" className="w-full max-w-[440px]">
+        <div className="mb-6 text-center">
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+            {setupRequired ? "Console account setup" : "Sign in to RustIron Console"}
+          </h1>
+          <p className="mt-1.5 text-sm text-muted-foreground">
+            {setupRequired
+              ? "Create your administrator account to unlock the operations panel."
+              : "Sign in with your administrator or operator credentials to continue."}
+          </p>
+        </div>
+        {setupRequired ? (
+          <AdminSetupForm onDone={handleSuccess} />
+        ) : (
+          <SignInForm onSignedIn={handleSuccess} />
+        )}
+      </main>
+    </div>
+  );
+}
+
+export function LoginPage() {
+  const { status, refresh, signOut } = useAuth();
+  const navigate = useNavigate();
+  const setupRequired = status?.setup_required ?? true;
+
+  async function handleSuccess() {
+    await refresh();
+    void navigate({ to: "/" });
+  }
+
+  return (
+    <Page live>
+      <div className="page-head">
+        <div>
+          <h1>{setupRequired ? "Console account setup" : "Sign in to Rustiron Console"}</h1>
+          <p className="sub">
+            {setupRequired
+              ? "Create your first administrator account to enable Better Auth login and role-based access."
+              : "Enter your Console credentials to access server administration."}
+          </p>
+        </div>
+      </div>
+      <div style={{ maxWidth: 560 }}>
+        {status?.session ? (
+          <section className="panel stack">
+            <div className="panel-head">
+              <h2>Signed in as {status.session.user.name}</h2>
+              <span className="pill ok">{status.session.user.role}</span>
+            </div>
+            <p className="muted mono">{status.session.user.email}</p>
+            <div className="row" style={{ gap: 8 }}>
+              <Link className="btn primary sm" to="/users">
+                Manage accounts
+              </Link>
+              <button type="button" className="btn quiet sm" onClick={() => void signOut()}>
+                <Glyph icon={LogOut} />
+                Sign out
+              </button>
+            </div>
+          </section>
+        ) : setupRequired ? (
+          <AdminSetupForm onDone={handleSuccess} />
+        ) : (
+          <SignInForm onSignedIn={handleSuccess} />
+        )}
+      </div>
+    </Page>
+  );
+}
+
+function CreateUserForm({ onCreated }: { onCreated: () => Promise<void> }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState<ConsoleRole>("operator");
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<{ tone: "err" | "ok"; text: string } | null>(null);
+
+  async function handleCreate(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setFeedback(null);
+    try {
+      const res = await fetch("/api/accounts/users", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, email, password, role }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
+      if (!res.ok) {
+        setFeedback({ tone: "err", text: body.message ?? body.error ?? "Failed to create user." });
+        return;
+      }
+      setName("");
+      setEmail("");
+      setPassword("");
+      setFeedback({ tone: "ok", text: `Created ${role} account for ${email}.` });
+      await onCreated();
+    } catch {
+      setFeedback({ tone: "err", text: "Could not reach the accounts API." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="panel stack" onSubmit={(e) => void handleCreate(e)}>
+      <div className="panel-head">
+        <div className="row" style={{ gap: 8 }}>
+          <Glyph icon={UserPlus} />
+          <h2>Add Console user</h2>
+        </div>
+      </div>
+      {feedback ? <AuthAlert tone={feedback.tone} text={feedback.text} /> : null}
+      <div className="form-grid">
+        <div className="form-row">
+          <label htmlFor="u-name">Full name</label>
+          <input
+            id="u-name"
+            className="input"
+            required
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Jordan Lee"
+          />
+        </div>
+        <div className="form-row">
+          <label htmlFor="u-email">Email</label>
+          <input
+            id="u-email"
+            className="input"
+            type="email"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="operator@example.com"
+          />
+        </div>
+        <div className="form-row">
+          <label htmlFor="u-pass">Initial password (min 10 chars)</label>
+          <input
+            id="u-pass"
+            className="input"
+            type="password"
+            required
+            minLength={10}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        </div>
+        <div className="form-row">
+          <label htmlFor="u-role">Role</label>
+          <select
+            id="u-role"
+            className="input"
+            value={role}
+            onChange={(e) => setRole(e.target.value as ConsoleRole)}
+          >
+            <option value="admin">Admin</option>
+            <option value="operator">Operator</option>
+            <option value="viewer">Viewer (read-only)</option>
+          </select>
+        </div>
+      </div>
+      <p className="cap">{roleDescriptions[role]}</p>
+      <div>
+        <button type="submit" className="btn primary sm" disabled={busy}>
+          <Glyph icon={UserPlus} />
+          {busy ? "Creating…" : "Create account"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function AccountsTable({
+  users,
+  currentUserId,
+  onRoleChange,
+  onDelete,
+}: {
+  users: ConsoleAccountUser[];
+  currentUserId: string;
+  onRoleChange: (id: string, role: ConsoleRole) => Promise<void>;
+  onDelete: (id: string) => Promise<void>;
+}) {
+  return (
+    <section className="panel flush" aria-label="Console user accounts">
+      <div className="panel-head" style={{ padding: "14px 16px 10px" }}>
+        <div className="row" style={{ gap: 8 }}>
+          <Glyph icon={Users} />
+          <h2>Console accounts ({users.length})</h2>
+        </div>
+        <span className="meta">Managed by Better Auth · SQLite</span>
+      </div>
+      <TableScroll label="Console user accounts">
+        <table className="data">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Email</th>
+              <th>Role</th>
+              <th>Sessions</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map((u) => (
+              <tr key={u.id}>
+                <td>
+                  <strong>{u.name}</strong>
+                  {u.id === currentUserId ? (
+                    <span className="pill ok" style={{ marginLeft: 8 }}>
+                      You
+                    </span>
+                  ) : null}
+                </td>
+                <td className="mono">{u.email}</td>
+                <td>
+                  <select
+                    aria-label={`Role for ${u.email}`}
+                    className="input"
+                    value={u.role}
+                    onChange={(e) => void onRoleChange(u.id, e.target.value as ConsoleRole)}
+                  >
+                    <option value="admin">Admin</option>
+                    <option value="operator">Operator</option>
+                    <option value="viewer">Viewer</option>
+                  </select>
+                </td>
+                <td className="tnum">{u.activeSessions}</td>
+                <td>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    disabled={u.id === currentUserId}
+                    aria-label={`Delete ${u.email}`}
+                    onClick={() => void onDelete(u.id)}
+                  >
+                    <Glyph icon={Trash2} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </TableScroll>
+    </section>
+  );
+}
+
+async function fetchConsoleUsers(): Promise<ConsoleAccountUser[] | null> {
+  try {
+    const res = await fetch("/api/accounts/users", {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (res.ok) {
+      const body = (await res.json()) as { users?: ConsoleAccountUser[] };
+      return body.users ?? [];
+    }
+  } catch {
+    // Ignore in offline unit tests.
+  }
+  return null;
+}
+
+export function UsersPage() {
+  const { status, refresh, signOut } = useAuth();
+  const [users, setUsers] = useState<ConsoleAccountUser[]>([]);
+  const [notice, setNotice] = useState<{ tone: "err" | "ok"; text: string } | null>(null);
+
+  const loadUsers = useCallback(async () => {
+    const list = await fetchConsoleUsers();
+    if (list) setUsers(list);
+  }, []);
+
+  const isAdmin = status?.session?.user.role === "admin";
+  useEffect(() => {
+    if (!isAdmin) return undefined;
+    let active = true;
+    void fetchConsoleUsers().then((list) => {
+      if (active && list) setUsers(list);
+    });
+    return () => {
+      active = false;
+    };
+  }, [isAdmin]);
+
+  async function handleRoleChange(id: string, role: ConsoleRole) {
+    setNotice(null);
+    const res = await fetch(`/api/accounts/users/${id}`, {
+      method: "PATCH",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ role }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
+    if (!res.ok) {
+      setNotice({ tone: "err", text: body.message ?? body.error ?? "Role update failed." });
+      return;
+    }
+    setNotice({ tone: "ok", text: "Account role updated." });
+    await loadUsers();
+  }
+
+  async function handleDelete(id: string) {
+    setNotice(null);
+    const res = await fetch(`/api/accounts/users/${id}`, {
+      method: "DELETE",
+      credentials: "same-origin",
+    });
+    const body = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
+    if (!res.ok) {
+      setNotice({ tone: "err", text: body.message ?? body.error ?? "Could not delete account." });
+      return;
+    }
+    setNotice({ tone: "ok", text: "Account removed and sessions revoked." });
+    await loadUsers();
+  }
+
+  async function handleRevokeOthers() {
+    const res = await fetch("/api/accounts/sessions/revoke-others", {
+      method: "POST",
+      credentials: "same-origin",
+    });
+    if (res.ok) {
+      setNotice({ tone: "ok", text: "All other sessions for your account have been signed out." });
+      await loadUsers();
+    }
+  }
+
+  const session = status?.session ?? null;
+  const setupRequired = status ? status.setup_required : true;
+
+  return (
+    <Page live>
+      <Crumbs items={[{ href: "/", label: "Overview" }, { label: "Users & access" }]} />
+      <div className="page-head">
+        <div>
+          <h1>Users &amp; access</h1>
+          <p className="sub">
+            Manage Console administrator, operator, and read-only accounts powered by Better Auth.
+          </p>
+        </div>
+        {session ? (
+          <div className="row" style={{ gap: 8 }}>
+            <button
+              type="button"
+              className="btn quiet sm"
+              onClick={() => void handleRevokeOthers()}
+            >
+              <Glyph icon={KeyRound} />
+              Sign out other sessions
+            </button>
+            <button type="button" className="btn sm" onClick={() => void signOut()}>
+              <Glyph icon={LogOut} />
+              Sign out
+            </button>
+          </div>
+        ) : (
+          <Link className="btn primary sm" to="/login">
+            <Glyph icon={LogIn} />
+            Sign in
+          </Link>
+        )}
+      </div>
+
+      {notice ? <AuthAlert tone={notice.tone} text={notice.text} /> : null}
+
+      {setupRequired ? (
+        <AdminSetupForm
+          onDone={async () => {
+            await refresh();
+            await loadUsers();
+          }}
+        />
+      ) : session?.user.role === "admin" ? (
+        <div className="stack">
+          <AccountsTable
+            users={users}
+            currentUserId={session.user.id}
+            onRoleChange={handleRoleChange}
+            onDelete={handleDelete}
+          />
+          <CreateUserForm onCreated={loadUsers} />
+        </div>
+      ) : session ? (
+        <section className="panel">
+          <div className="panel-head">
+            <h2>Your account</h2>
+            <span className="pill ok">{session.user.role}</span>
+          </div>
+          <dl className="kv">
+            <dt>Name</dt>
+            <dd>{session.user.name}</dd>
+            <dt>Email</dt>
+            <dd className="mono">{session.user.email}</dd>
+            <dt>Permissions</dt>
+            <dd>{roleDescriptions[session.user.role]}</dd>
+          </dl>
+        </section>
+      ) : (
+        <SignInForm
+          onSignedIn={async () => {
+            await refresh();
+            await loadUsers();
+          }}
+        />
+      )}
+    </Page>
+  );
+}

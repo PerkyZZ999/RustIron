@@ -1,0 +1,8 @@
+{"schema_version":1,
+"source_profile":{"os":"AlmaLinux 10.2","panel":"CyberPanel 3.0 build 8","web_server":"OpenLiteSpeed 1.9.4"},
+"hostname":"cp02.example.test",
+"php_extensions":["curl","dom","exif","fileinfo","gd","intl","mbstring","mysqli","openssl","simplexml","zip"],
+"cron_entries":0,
+"dns":{"authority":"lab hosts file","addresses":["192.0.2.52"]},
+"mail":{"mx":0,"spf":false,"dkim":false,"dmarc":false,"outbound":"none"},
+"api_consumers":0}

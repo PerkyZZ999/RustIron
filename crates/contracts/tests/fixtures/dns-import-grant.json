@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "grant_id": "grant_dns_import",
+  "nonce": "nonce_dns_import",
+  "plan_id": "plan_dns_import",
+  "plan_digest": "5c0bd1a59dadf79c81966dd8b334d54dd2d6572692c1a8443c3c6aee49ce9a60",
+  "host_id": "host_lab",
+  "host_epoch": "epoch_1",
+  "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "issuer": "operator_1",
+  "requester": "agent_1",
+  "signer_policy_epoch": "policy_1",
+  "zones": [
+    "example.test"
+  ],
+  "verbs": [
+    "dns_zone_import"
+  ],
+  "zone_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "risk_class": "lab_only",
+  "valid_from": 1100,
+  "expires_at": 1900,
+  "max_operations": 1
+}

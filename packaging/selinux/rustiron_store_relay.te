@@ -1,0 +1,66 @@
+# Candidate (W316): a dedicated domain for the store relay. PID 1 starts the
+# stock systemd-socket-proxyd binary in it. The relay accepts on ENDPOINT:PORT
+# inside the store network namespace and opens one connection per client to
+# the same enrolled ENDPOINT:PORT from the host namespace. It reads no files
+# beyond what a daemon needs to start. The stock systemd_socket_proxyd_t
+# domain can reach port 443 only through the host-wide connect_any boolean.
+#
+# W352: PORT is the enrolled store port, 443 by default. Port 443 keeps its
+# policy label http_port_t. Any other enrolled port gets the dedicated
+# rustiron_store_port_t from the operator at enrollment:
+#   semanage port -a -t rustiron_store_port_t -p tcp PORT
+# Without that label the relay cannot bind or connect the port and the store
+# job cannot connect to it, so an unlabeled port fails closed. No rule here
+# names unreserved_port_t, ephemeral_port_t or any other shared port type.
+policy_module(rustiron_store_relay, 0.2.1)
+
+gen_require(`
+	type init_t, systemd_socket_proxyd_exec_t, nsfs_t, cgroup_t;
+	role system_r;
+')
+
+type rustiron_store_relay_t;
+domain_type(rustiron_store_relay_t)
+domain_entry_file(rustiron_store_relay_t, systemd_socket_proxyd_exec_t)
+role system_r types rustiron_store_relay_t;
+allow init_t rustiron_store_relay_t:process transition;
+allow init_t rustiron_store_relay_t:process2 { nnp_transition nosuid_transition };
+# PID 1's sd-listen helper creates and binds the listening socket with the
+# service's label inside the store namespace, then hands it to the relay.
+allow init_t rustiron_store_relay_t:tcp_socket { create_stream_socket_perms listen };
+
+allow rustiron_store_relay_t self:tcp_socket { create_stream_socket_perms listen accept };
+corenet_tcp_bind_http_port(rustiron_store_relay_t)
+corenet_tcp_bind_generic_node(rustiron_store_relay_t)
+corenet_tcp_connect_http_port(rustiron_store_relay_t)
+
+# W352: the enrolled store port when it is not 443. Only the relay and the
+# store job domain may use it.
+type rustiron_store_port_t;
+corenet_port(rustiron_store_port_t)
+allow rustiron_store_relay_t rustiron_store_port_t:tcp_socket { name_bind name_connect };
+# The store jobs (rustiron_capture_t: restic and curl) connect to the
+# relay listener on the enrolled port inside the store namespace. The block
+# is enabled only while the capture module is loaded.
+optional_policy(`
+	gen_require(`
+		type rustiron_capture_t;
+	')
+	allow rustiron_capture_t rustiron_store_port_t:tcp_socket name_connect;
+')
+
+# Journal logging, and the stdout/stderr stream PID 1 opened for the unit.
+logging_send_syslog_msg(rustiron_store_relay_t)
+allow rustiron_store_relay_t self:unix_dgram_socket { create_socket_perms sendto };
+init_search_pid_dirs(rustiron_store_relay_t)
+allow rustiron_store_relay_t init_t:unix_stream_socket { getattr write };
+# Incidental probes during libsystemd log setup (kernel command line, PID 1,
+# cgroup namespace). The relay works without them (W316 permissive run).
+kernel_dontaudit_read_system_state(rustiron_store_relay_t)
+init_dontaudit_read_state(rustiron_store_relay_t)
+dontaudit rustiron_store_relay_t nsfs_t:file getattr;
+# W365: at each start libsystemd calls statfs() on the cgroup2 root
+# (/sys/fs/cgroup) to find the cgroup version. The relay reads no cgroup
+# data and relays without it (W316, W356, W363 under Enforcing): refused,
+# not audited.
+dontaudit rustiron_store_relay_t cgroup_t:filesystem getattr;

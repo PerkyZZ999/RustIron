@@ -1,0 +1,16 @@
+# D-035 (W386): the D-010 daily capture at 03:00 America/Toronto. Sign the
+# standing grant with a window that holds this time in EST and EDT (for
+# example 06:55 to 08:55 UTC). Persistent= runs a missed start after boot;
+# outside the window that run submits nothing and alerts. Not enabled by
+# default: enable it after the signed files are in place.
+[Unit]
+Description=Rustiron daily scheduled capture (D-035)
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 America/Toronto
+Persistent=true
+AccuracySec=1s
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target

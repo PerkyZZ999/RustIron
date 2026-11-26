@@ -1,0 +1,30 @@
+# Forwards connections from a site's private Unix socket to that site's own
+# Postfix smtpd service at /var/spool/postfix/public/rustiron-%i (D-071, W482,
+# W610). Runs in rustiron_mail_relay_t with AF_UNIX only and zero credentials.
+[Unit]
+Description=Rustiron outbound mail relay proxy for site %i
+Requires=rustiron-mail-relay@%i.socket postfix.service
+After=rustiron-mail-relay@%i.socket postfix.service
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --connections-max=8 /var/spool/postfix/public/rustiron-%i
+SELinuxContext=system_u:system_r:rustiron_mail_relay_t:s0
+DynamicUser=yes
+SupplementaryGroups=postdrop
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+MemoryMax=32M
+TasksMax=16

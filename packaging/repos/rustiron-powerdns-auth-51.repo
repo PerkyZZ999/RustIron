@@ -1,0 +1,14 @@
+# D-092: PowerDNS Authoritative 5.1 from PowerDNS's own repository, for a
+# host with the `dns` section enrolled. Only pdns, pdns-backend-sqlite and
+# pdns-tools may come from it; priority 90 keeps EPEL's older pdns from
+# replacing them. Signatures are required; the key is the pinned file of
+# powerdns-keys.sha256 (fingerprint 9FAA A557 7E8F CF62 093D 036C 1B0C 6205 FD38 0FBB).
+[rustiron-powerdns-auth-51]
+name=PowerDNS Authoritative 5.1, three packages only - EL$releasever $basearch
+baseurl=https://repo.powerdns.com/el/$basearch/$releasever/auth-51
+enabled=1
+gpgcheck=1
+repo_gpgcheck=0
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-powerdns-FD380FBB
+priority=90
+includepkgs=pdns pdns-backend-sqlite pdns-tools

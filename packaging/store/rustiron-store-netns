@@ -1,0 +1,53 @@
+#!/bin/sh
+# Rustiron store namespace setup (W317, W352). Started only by
+# rustiron-store-netns.service, which supplies RUSTIRON_STORE_ENDPOINT and
+# RUSTIRON_STORE_PORT from /etc/rustiron/store-network.env. Creates a
+# loopback-only network namespace with the endpoint on lo and one nftables
+# table for the enrolled TCP port; host routing, forwarding and the serving
+# firewall are not touched. The executor verifies the result before every
+# store job (crates/executor/src/store_network.rs).
+set -eu
+PATH=/usr/sbin:/usr/bin
+namespace=rustiron-store
+action=${1:-}
+case $action in
+    start|stop) ;;
+    *) echo 'usage: rustiron-store-netns start|stop' >&2; exit 2 ;;
+esac
+if [ "$action" = stop ]; then
+    if [ -e "/run/netns/$namespace" ]; then
+        ip netns delete "$namespace"
+    fi
+    exit 0
+fi
+endpoint=${RUSTIRON_STORE_ENDPOINT:-}
+port=${RUSTIRON_STORE_PORT:-}
+# grep -x matches each line, so a quoted multi-line value must fail first.
+case "$endpoint$port" in
+    *'
+'*) echo 'store endpoint values must be single lines' >&2; exit 2 ;;
+esac
+# Canonical dotted-decimal IPv4: four 0-255 octets without leading zeros.
+octet='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])'
+if ! printf '%s\n' "$endpoint" | grep -Eqx "$octet\.$octet\.$octet\.$octet"; then
+    echo 'RUSTIRON_STORE_ENDPOINT is not a canonical IPv4 address' >&2
+    exit 2
+fi
+# Canonical decimal TCP port 1-65535 without leading zeros.
+if ! printf '%s\n' "$port" | grep -Eqx '[1-9][0-9]{0,4}' || [ "$port" -gt 65535 ]; then
+    echo 'RUSTIRON_STORE_PORT is not a canonical TCP port' >&2
+    exit 2
+fi
+# A leftover namespace is never reused: refuse, so the operator removes it.
+ip netns add "$namespace"
+ip -n "$namespace" link set lo up
+ip -n "$namespace" address add "$endpoint/32" dev lo
+ip netns exec "$namespace" nft -f - <<NFT
+table inet rustiron_store {
+    chain output {
+        type filter hook output priority filter; policy drop;
+        ip daddr $endpoint tcp dport $port accept
+        ip saddr $endpoint tcp sport $port accept
+    }
+}
+NFT

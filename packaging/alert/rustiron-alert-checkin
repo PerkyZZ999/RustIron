@@ -1,0 +1,53 @@
+#!/bin/sh
+# Rustiron alert check-in (D-083, P05). Started only by
+# rustiron-alert-checkin.service. Takes the executor's journal observation,
+# diagnoses it with the host status as the unprivileged coordinator account,
+# and pushes the result to the owner's Uptime Kuma monitor: `up` when no
+# finding alerts, `down` with the redacted findings otherwise. Kuma alerts
+# on a `down` push and on silence. Changes nothing on the host.
+#
+# The push link stays in the root-only /etc/rustiron/alert-push.url. It is
+# given to curl on standard input, so it never appears in an argument list
+# or a log.
+set -eu
+PATH=/usr/sbin:/usr/bin
+link_file=/etc/rustiron/alert-push.url
+account=rustiron-coordinator
+# The runtime folder is root's, 0711, and systemd removes it after the run.
+observation=${RUNTIME_DIRECTORY:?}/observation.json
+
+# The saved link, without its `?status=...` part. Only an http(s) Kuma push
+# path with an alphanumeric token is accepted; the link itself is never
+# printed.
+link=$(head -c 512 "$link_file" | head -n 1 | tr -d '\r')
+link=${link%%\?*}
+if ! printf '%s\n' "$link" | grep -Eqx 'https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._-]+)*/api/push/[A-Za-z0-9]{1,64}'; then
+    echo 'alert-checkin: the push link is not a Kuma push link' >&2
+    exit 2
+fi
+
+push() {
+    printf 'url = "%s?%s"\n' "$link" "$1" | curl -fsS -m 20 --retry 2 --retry-delay 5 -o /dev/null -K -
+}
+
+# Root writes the observation; only the coordinator group may read it.
+rm -f "$observation"
+install -m 0640 -g "$account" /dev/null "$observation"
+query=
+# W510-F1: the executor's read-only observation (read-only journal, no
+# writer lease) runs here, in this service's domain. `systemd-run --pipe`
+# cannot work from a system service: SELinux denies dbus-broker the write to
+# this service's pipe when it passes the descriptor to PID 1.
+if /usr/libexec/rustiron/rustiron-executor observe > "$observation"; then
+    query=$(setpriv --reuid="$account" --regid="$account" --clear-groups --inh-caps=-all \
+        /usr/libexec/rustiron/rustiron-control --merge-observation "$observation" \
+        --diagnose --alert-line) || query=
+fi
+rm -f "$observation"
+case $query in
+    status=up\&msg=*|status=down\&msg=*) ;;
+    *) query='status=down&msg=diagnosis%20unavailable&ping=' ;;
+esac
+# The message is the diagnosis' fixed text and subjects, already encoded.
+echo "alert-checkin: ${query%%&ping=*}"
+push "$query"

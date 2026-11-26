@@ -1,0 +1,618 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* ------------------------------------------------------------------ *
+ * RustIron Console — refined prototype design tokens.
+ * Matte Charcoal / Royal-Blue system from docs/DESIGN.md, mapped onto
+ * the Coss UI / Tailwind v4 token contract.
+ * Dark is the default experience; light is a secondary theme.
+ * ------------------------------------------------------------------ */
+
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+:root {
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-heading: var(--font-sans);
+  --font-mono: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  /* radii (DESIGN.md shapes: 8px controls, 12px panels, pills for chips) */
+  --radius-control: 8px;
+  --radius-panel: 12px;
+  --radius: 8px;
+
+  /* motion — Cinematic Animation System (Apple × Linear × Stripe × Vercel) */
+  --duration-micro: 150ms;
+  --duration-state: 220ms;
+  --duration-overlay: 260ms;
+  --duration-drawer: 380ms;
+  --duration-stage: 520ms;
+  --duration-hero: 820ms;
+  --stagger: 55ms;
+  --offset-sm: 8px;
+  --offset-md: 14px;
+  --offset-lg: 20px;
+  --ease-cinematic: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-ui: cubic-bezier(0.2, 0, 0, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+
+  /* light theme (secondary) — DESIGN.md light-* */
+  --canvas: #f5f7fb;
+  --surface: #ffffff;
+  --subtle: #eef2f8;
+  --raised: #ffffff;
+  --background: var(--canvas);
+  --foreground: #111827;
+  --card: var(--surface);
+  --card-foreground: #111827;
+  --popover: #ffffff;
+  --popover-foreground: #111827;
+  --primary: #4169e1;
+  --primary-hover: #3155c7;
+  --primary-foreground: #ffffff;
+  --secondary: #eef2f8;
+  --secondary-foreground: #111827;
+  --muted: #eef2f8;
+  --muted-foreground: #526178;
+  --accent: #e7efff;
+  --accent-foreground: #3155c7;
+  --destructive: #b42336;
+  --destructive-foreground: #b42336;
+  --success: #137a45;
+  --success-foreground: #137a45;
+  --warning: #8a5600;
+  --warning-foreground: #8a5600;
+  --info: #3155c7;
+  --info-foreground: #3155c7;
+
+  /* semantic surfaces & borders (explicit tokens — avoids CSS minifier color-mix bugs) */
+  --success-surface: #ecfdf3;
+  --success-border: #a6e3bf;
+  --warning-surface: #fff7e8;
+  --warning-border: #ebd09b;
+  --error-surface: #fef2f2;
+  --error-border: #f3b8bf;
+  --info-surface: #eef4ff;
+  --info-border: #b8cdfa;
+  --border-hover: #96a3b7;
+  --selection-surface: #eef4ff;
+  --gap-band: rgba(15, 23, 42, 0.08);
+  --skeleton-shimmer: #e2e8f2;
+
+  /* borders & interactive states */
+  --border: #dce3ee;
+  --border-subtle: #e7ecf4;
+  --border-strong: #7a889d;
+  --input: #b8c4d6;
+  --ring: #3155c7;
+  --focus: #3155c7;
+  --selection: #e7efff;
+  --selection-text: rgba(65, 105, 225, 0.18);
+  --hover: #f0f3f9;
+  --pressed: #e6ebf4;
+  --disabled-foreground: #8a97ab;
+  --surface-highlight: rgba(255, 255, 255, 0.9);
+  --scrim: rgba(15, 23, 42, 0.42);
+
+  /* chart + semantic series (preserved across themes per DESIGN.md) */
+  --cpu: #3155c7;
+  --memory: #7950c8;
+  --disk: #137a45;
+
+  /* RustIron Brand Kit v1.0 vector plane tokens (light surfaces) */
+  --brand-plane-base: #526071;
+  --brand-plane-light: #394451;
+  --brand-plane-dark: #252e3a;
+  --brand-rust: #1a1d23;
+
+  /* shell — 8pt grid aligned */
+  --sidebar-w: 240px;
+  --topbar-h: 64px;
+  --shell: rgba(248, 250, 253, 0.92);
+  --glass-edge: rgba(17, 24, 39, 0.08);
+  --shadow-float: 0 12px 32px rgba(15, 23, 42, 0.12), 0 2px 8px rgba(15, 23, 42, 0.06);
+
+  /* documented z-index scale (DESIGN.md) */
+  --z-topbar: 100;
+  --z-scrim: 150;
+  --z-drawer: 200;
+  --z-skip: 300;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* dark theme (default) — DESIGN.md dark-* matte charcoal */
+  --canvas: #101011;
+  --surface: #1b1b1d;
+  --subtle: #151516;
+  --raised: #242426;
+  --background: var(--canvas);
+  --foreground: #f0f0f1;
+  --card: var(--surface);
+  --card-foreground: #f0f0f1;
+  --popover: #242426;
+  --popover-foreground: #f0f0f1;
+  --primary: #4169e1;
+  --primary-hover: #3a60d4;
+  --primary-foreground: #ffffff;
+  --secondary: #242426;
+  --secondary-foreground: #f0f0f1;
+  --muted: #151516;
+  --muted-foreground: #a5a5aa;
+  --accent: #23252b;
+  --accent-foreground: #8aa8ff;
+  --destructive: #ff8f9a;
+  --destructive-foreground: #ff8f9a;
+  --success: #63d397;
+  --success-foreground: #63d397;
+  --warning: #f2bd58;
+  --warning-foreground: #f2bd58;
+  --info: #8aa8ff;
+  --info-foreground: #8aa8ff;
+
+  /* semantic surfaces & borders (DESIGN.md dark-*-surface tokens) */
+  --success-surface: #19271f;
+  --success-border: #2a5940;
+  --warning-surface: #292317;
+  --warning-border: #614d24;
+  --error-surface: #2d1c20;
+  --error-border: #6b353e;
+  --info-surface: #1a2236;
+  --info-border: #364a78;
+  --border-hover: #585860;
+  --selection-surface: #1e2128;
+  --gap-band: rgba(255, 255, 255, 0.06);
+  --skeleton-shimmer: #242429;
+
+  /* borders & interactive states */
+  --border: #2c2c30;
+  --border-subtle: #232327;
+  --border-strong: #727278;
+  --input: #48484f;
+  --ring: #8aa8ff;
+  --focus: #8aa8ff;
+  --selection: #23252b;
+  --selection-text: rgba(65, 105, 225, 0.32);
+  --hover: #212124;
+  --pressed: #2b2b2f;
+  --disabled-foreground: #85858a;
+  --surface-highlight: rgba(255, 255, 255, 0.045);
+  --scrim: rgba(0, 0, 0, 0.64);
+
+  --cpu: #7b9cff;
+  --memory: #b19bff;
+  --disk: #63d397;
+
+  /* RustIron Brand Kit v1.0 vector plane tokens (dark surfaces) */
+  --brand-plane-base: #8893a3;
+  --brand-plane-light: #e4e7ec;
+  --brand-plane-dark: #515d6c;
+  --brand-rust: #ffffff;
+
+  --shell: rgba(21, 21, 22, 0.92);
+  --glass-edge: rgba(255, 255, 255, 0.08);
+  --shadow-float: 0 16px 40px rgba(0, 0, 0, 0.48), 0 2px 10px rgba(0, 0, 0, 0.32);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-subtle: var(--subtle);
+  --color-raised: var(--raised);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-success-surface: var(--success-surface);
+  --color-warning-surface: var(--warning-surface);
+  --color-error-surface: var(--error-surface);
+  --color-info-surface: var(--info-surface);
+  --color-border: var(--border);
+  --color-border-subtle: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-focus: var(--focus);
+  --color-selection: var(--selection);
+  --color-hover: var(--hover);
+  --color-pressed: var(--pressed);
+  --color-disabled-foreground: var(--disabled-foreground);
+  --color-scrim: var(--scrim);
+  --color-cpu: var(--cpu);
+  --color-memory: var(--memory);
+  --color-disk: var(--disk);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  --radius-control: var(--radius-control);
+  --radius-panel: var(--radius-panel);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: var(--radius-panel);
+
+  --breakpoint-xs: 30rem;
+
+  --animate-skeleton: skeleton 1.8s ease-in-out infinite;
+  --animate-caret-blink: 1s ease-out infinite caret-blink;
+  --animate-stage-in: stage-in var(--duration-stage) var(--ease-cinematic) backwards;
+  --animate-beat-in: beat-in 200ms var(--ease-cinematic) backwards;
+  --animate-hero-in: hero-in 640ms var(--ease-cinematic) backwards;
+  --animate-line-draw: line-draw var(--duration-hero) var(--ease-cinematic) both;
+  --animate-area-fade: area-fade 640ms var(--ease-smooth) 160ms both;
+  --animate-bar-grow: bar-grow 680ms var(--ease-cinematic) 120ms both;
+  --animate-live-pulse: live-pulse 2.2s ease-in-out infinite;
+  --animate-toast-success-odd: toast-success-odd 0.32s cubic-bezier(0.5, 1, 0.89, 1);
+  --animate-toast-success-even: toast-success-even 0.32s cubic-bezier(0.5, 1, 0.89, 1);
+  --animate-toast-error-odd: toast-error-odd 0.28s cubic-bezier(0.5, 1, 0.89, 1);
+  --animate-toast-error-even: toast-error-even 0.28s cubic-bezier(0.5, 1, 0.89, 1);
+
+  @keyframes stage-in {
+    from {
+      transform: translate3d(0, var(--offset-sm), 0) scale(0.996);
+    }
+    to {
+      transform: none;
+    }
+  }
+  @keyframes beat-in {
+    from {
+      transform: translate3d(0, var(--offset-sm), 0);
+    }
+    to {
+      transform: none;
+    }
+  }
+  @keyframes hero-in {
+    from {
+      opacity: 0;
+      transform: translate3d(0, var(--offset-lg), 0) scale(0.975);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes line-draw {
+    from {
+      stroke-dashoffset: 1;
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+  @keyframes area-fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes bar-grow {
+    from {
+      transform: scaleX(0);
+    }
+    to {
+      transform: scaleX(1);
+    }
+  }
+  @keyframes live-pulse {
+    0%,
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.45;
+      transform: scale(0.82);
+    }
+  }
+
+  @keyframes skeleton {
+    0% {
+      background-position: 200% 0;
+    }
+    100% {
+      background-position: -200% 0;
+    }
+  }
+  @keyframes caret-blink {
+    0%,
+    70%,
+    to {
+      opacity: 1;
+    }
+    20%,
+    50% {
+      opacity: 0;
+    }
+  }
+  @keyframes toast-success-odd {
+    0% {
+      scale: 1;
+    }
+    30% {
+      scale: 1.025;
+    }
+    60% {
+      scale: 0.99;
+    }
+    100% {
+      scale: 1;
+    }
+  }
+  @keyframes toast-error-odd {
+    0% {
+      translate: 0 0;
+    }
+    25% {
+      translate: -3px 0;
+    }
+    50% {
+      translate: 3px 0;
+    }
+    75% {
+      translate: -3px 0;
+    }
+    100% {
+      translate: 0 0;
+    }
+  }
+  @keyframes toast-success-even {
+    0% {
+      scale: 1;
+    }
+    30% {
+      scale: 1.025;
+    }
+    60% {
+      scale: 0.99;
+    }
+    100% {
+      scale: 1;
+    }
+  }
+  @keyframes toast-error-even {
+    0% {
+      translate: 0 0;
+    }
+    25% {
+      translate: -3px 0;
+    }
+    50% {
+      translate: 3px 0;
+    }
+    75% {
+      translate: -3px 0;
+    }
+    100% {
+      translate: 0 0;
+    }
+  }
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+    border-color: var(--border);
+  }
+  html {
+    font-size: 16px;
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    margin: 0;
+    overflow-x: clip;
+    font-family: var(--font-sans);
+    font-size: 1rem;
+    line-height: 1.5rem;
+    background-color: var(--canvas);
+    color: var(--foreground);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    touch-action: manipulation;
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    margin: 0;
+    font-family: var(--font-heading);
+    text-wrap: balance;
+  }
+  p {
+    margin: 0;
+  }
+  a {
+    color: var(--focus);
+    text-decoration: none;
+  }
+  a:hover {
+    text-decoration: underline;
+  }
+  code,
+  .mono {
+    font-family: var(--font-mono);
+  }
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+  ::selection {
+    background: var(--selection-text);
+  }
+}
+
+@layer utilities {
+  .tabular {
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+  .matte-surface {
+    box-shadow: inset 0 1px 0 0 var(--surface-highlight);
+  }
+  .motion-stage {
+    animation: var(--animate-stage-in);
+  }
+  .motion-beat {
+    animation: var(--animate-beat-in);
+    animation-delay: calc(var(--beat, 0) * var(--stagger));
+  }
+  .motion-hero {
+    animation: var(--animate-hero-in);
+  }
+  .motion-card-lift {
+    transition:
+      transform var(--duration-state) var(--ease-cinematic),
+      border-color var(--duration-state) var(--ease-ui),
+      box-shadow var(--duration-state) var(--ease-cinematic),
+      background-color var(--duration-micro) var(--ease-ui);
+  }
+  .motion-card-lift:hover {
+    transform: translate3d(0, -2px, 0);
+    border-color: var(--border-hover);
+    box-shadow:
+      inset 0 1px 0 0 var(--surface-highlight),
+      0 8px 24px -8px rgba(0, 0, 0, 0.32);
+  }
+  .motion-line-draw {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+    animation: var(--animate-line-draw);
+    animation-delay: calc(var(--series-beat, 0) * 110ms);
+  }
+  .motion-area-fade {
+    animation: var(--animate-area-fade);
+  }
+  .motion-bar-grow {
+    transform-origin: left center;
+    animation: var(--animate-bar-grow);
+    animation-delay: calc(var(--beat, 0) * var(--stagger) + 120ms);
+  }
+  .motion-disclosure {
+    display: grid;
+    grid-template-rows: 0fr;
+    opacity: 0;
+    transition:
+      grid-template-rows 280ms var(--ease-cinematic),
+      opacity 220ms var(--ease-ui);
+  }
+  .motion-disclosure[data-open="true"] {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+  .motion-disclosure > div {
+    overflow: hidden;
+  }
+  .glass-shell {
+    background: var(--shell);
+    backdrop-filter: blur(12px) saturate(105%);
+    -webkit-backdrop-filter: blur(12px) saturate(105%);
+    border-color: var(--glass-edge);
+  }
+  .skeleton-shimmer {
+    background: linear-gradient(90deg, var(--subtle) 25%, var(--raised) 50%, var(--subtle) 75%);
+    background-size: 200% 100%;
+    animation: var(--animate-skeleton);
+  }
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .scrollbar-thin:hover {
+    scrollbar-color: var(--border-strong) transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .motion-stage,
+  .motion-beat,
+  .motion-hero,
+  .motion-area-fade {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  .motion-line-draw {
+    stroke-dashoffset: 0 !important;
+  }
+  .motion-bar-grow {
+    transform: scaleX(1) !important;
+  }
+}
+
+:root[data-motion="reduce"] *,
+:root[data-motion="reduce"] *::before,
+:root[data-motion="reduce"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-delay: 0ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+
+:root[data-motion="reduce"] .motion-stage,
+:root[data-motion="reduce"] .motion-beat,
+:root[data-motion="reduce"] .motion-hero,
+:root[data-motion="reduce"] .motion-area-fade {
+  opacity: 1 !important;
+  transform: none !important;
+}
+
+:root[data-motion="reduce"] .motion-line-draw {
+  stroke-dashoffset: 0 !important;
+}
+
+:root[data-motion="reduce"] .motion-bar-grow {
+  transform: scaleX(1) !important;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass-shell {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--surface);
+    border-color: var(--border);
+  }
+}
+
+:root[data-transparency="reduce"] .glass-shell {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: var(--surface);
+  border-color: var(--border);
+}

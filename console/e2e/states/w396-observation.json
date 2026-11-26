@@ -1,0 +1,753 @@
+{
+  "schema": "rustiron-lab-observation/1",
+  "limits": ["synthetic W379 console state fixture; not a host observation"],
+  "machine": {
+    "schema": "rustiron-host-status/1",
+    "observed_at": 1794554330,
+    "os": {
+      "name": "AlmaLinux",
+      "version": "10.2",
+      "kernel": "6.12.0-211.7.3.el10_2.x86_64"
+    },
+    "uptime_seconds": 86400,
+    "cpu": {
+      "count": 4,
+      "load": [0.2, 0.3, 0.25]
+    },
+    "memory": {
+      "total_bytes": 8589934592,
+      "available_bytes": 6442450944
+    },
+    "disk": {
+      "path": "/",
+      "total_bytes": 42949672960,
+      "available_bytes": 32212254720
+    },
+    "selinux": "enforcing",
+    "services": [
+      {
+        "unit": "lshttpd.service",
+        "label": "OpenLiteSpeed web server",
+        "active": "active",
+        "sub": "running",
+        "since": 1794547730
+      }
+    ]
+  },
+  "host": {
+    "host_id": "rustiron_w379_states",
+    "host_epoch": "epoch_w379_1",
+    "issuer": "lab_agent",
+    "signer_policy_epoch": "policy_3",
+    "ols_listener": "127.0.0.1:8090",
+    "adopted_sites": null,
+    "backup_destination": "w379_tls_store",
+    "backup_retention_days": 30,
+    "packages": null,
+    "package_source": "not_observed",
+    "signer": {
+      "principal": "lab_agent",
+      "namespace": "rustiron-plan-v1",
+      "algorithm": "ssh-ed25519",
+      "fingerprint": "SHA256:W396syntheticPlanSignerFingerprintNotReal00",
+      "revocations_bytes": 0,
+      "revocations_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "receipt_key": {
+      "state": "present",
+      "algorithm": "ssh-ed25519",
+      "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFc3eW50aGV0aWMtVzM5Ni1zdGF0ZS1rZXktbm90LXJlYWw= w396-state",
+      "fingerprint": "SHA256:W396syntheticReceiptKeyFingerprintNotReal00",
+      "namespace": "rustiron-receipt-v1"
+    }
+  },
+  "journal_last_time": 1794554330,
+  "sites": [
+    {
+      "site_id": "w379a",
+      "hostname": "w379a.example.test",
+      "operation_id": "prov_w379a",
+      "state": "succeeded",
+      "steps_done": 8,
+      "steps_recorded": 8,
+      "failed_step": null,
+      "ejected": false,
+      "page_cache": "opted_in",
+      "quota": {
+        "state": "enforced",
+        "source": "plan",
+        "block_hard_kib": 5242880,
+        "inode_hard": 500000
+      }
+    },
+    {
+      "site_id": "w379b",
+      "hostname": "w379b.example.test",
+      "operation_id": "prov_w379b",
+      "state": "succeeded",
+      "steps_done": 8,
+      "steps_recorded": 8,
+      "failed_step": null,
+      "ejected": false,
+      "page_cache": "opted_out",
+      "quota": {
+        "state": "enforced",
+        "source": "policy",
+        "block_hard_kib": 1048576,
+        "inode_hard": 100000
+      }
+    },
+    {
+      "site_id": "w379c",
+      "hostname": "w379c.example.test",
+      "operation_id": "op_w379_readopt",
+      "state": "adopted",
+      "steps_done": 0,
+      "steps_recorded": 0,
+      "failed_step": null,
+      "ejected": false,
+      "page_cache": null,
+      "quota": {
+        "state": "enforced",
+        "source": "readoption",
+        "block_hard_kib": 262144,
+        "inode_hard": 20000
+      }
+    },
+    {
+      "site_id": "w379d",
+      "hostname": "w379d.example.test",
+      "operation_id": "prov_w379d",
+      "state": "succeeded",
+      "steps_done": 8,
+      "steps_recorded": 8,
+      "failed_step": null,
+      "ejected": false,
+      "page_cache": null,
+      "quota": {
+        "state": "not_enforced",
+        "source": "policy"
+      }
+    }
+  ],
+  "operations": [
+    {
+      "operation_id": "op_w379_act",
+      "kind": "config_activate",
+      "resource_id": "ols_lab_listener",
+      "site_id": null,
+      "target_generation": "generation_2",
+      "state": "succeeded",
+      "effect_attempted": true,
+      "expires_at": 1794558530
+    },
+    {
+      "operation_id": "op_w379_pc_in",
+      "kind": "page_cache_opt_in",
+      "resource_id": "ols_lab_listener",
+      "site_id": "w379a",
+      "target_generation": "generation_3",
+      "state": "succeeded",
+      "effect_attempted": true,
+      "expires_at": 1794558530
+    },
+    {
+      "operation_id": "op_w379_pc_in_b",
+      "kind": "page_cache_opt_in",
+      "resource_id": "ols_lab_listener",
+      "site_id": "w379b",
+      "target_generation": "generation_4",
+      "state": "succeeded",
+      "effect_attempted": true,
+      "expires_at": 1794558530
+    },
+    {
+      "operation_id": "op_w379_pc_out",
+      "kind": "page_cache_opt_out",
+      "resource_id": "ols_lab_listener",
+      "site_id": "w379b",
+      "target_generation": "generation_5",
+      "state": "succeeded",
+      "effect_attempted": true,
+      "expires_at": 1794558530
+    }
+  ],
+  "captures": [
+    {
+      "operation_id": "op_w379_cap_1",
+      "site_id": "w379a",
+      "state": "succeeded",
+      "snapshot_id": "5422c3fe1d1efea8c28e23dc7c1762b37556806d8fe3c8fb01b5ff2e48fca3d6",
+      "started_at": 1794551330,
+      "finished_at": 1794551365,
+      "capture_method": "site_files_db_v1",
+      "retention_days": 30,
+      "snapshot_files": null,
+      "snapshot_bytes": null,
+      "manifest": {
+        "sha256": "aef81bf448f40c7cfdcac20e01db930dbdfc102d104aa98d0bbe6d7ce5938402",
+        "entries": 4257,
+        "regular_bytes": 110080800,
+        "truncated": false
+      },
+      "fields": {
+        "artifacts_complete": {
+          "status": "unknown",
+          "scope": "snapshot id recorded; the capture row does not count files or the database dump",
+          "observed_at": 1794551365,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "repository_integrity_checked": {
+          "status": "pass",
+          "scope": "succeeded is recorded only after restic check passes",
+          "observed_at": 1794551365,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "decryption_tested": {
+          "status": "not_run",
+          "scope": "capture does not decrypt the snapshot",
+          "observed_at": 1794551365,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "application_consistency_assessed": {
+          "status": "unknown",
+          "scope": "admitted recipe uses a single-transaction dump followed by files; there is no shared freeze point or application read-back; database marker label: matched",
+          "observed_at": 1794551365,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "restored_in_isolation": {
+          "status": "not_run",
+          "scope": "a capture is not a restore",
+          "observed_at": 1794551365,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "health_checks_passed": {
+          "status": "not_run",
+          "scope": "application health is a restore probe, not a capture",
+          "observed_at": 1794551365,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "independent_copy_confirmed": {
+          "status": "unknown",
+          "scope": "the capture row does not store a destination; independence is unproven",
+          "observed_at": 1794551365,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        }
+      },
+      "consistency": {
+        "label": "matched",
+        "reason": null
+      },
+      "unclaimed_snapshot_id": null
+    },
+    {
+      "operation_id": "op_w379_cap_2",
+      "site_id": "w379a",
+      "state": "failed",
+      "snapshot_id": null,
+      "started_at": 1794551485,
+      "finished_at": 1794551486,
+      "capture_method": "site_files_db_v1",
+      "retention_days": 30,
+      "snapshot_files": null,
+      "snapshot_bytes": null,
+      "manifest": null,
+      "fields": {
+        "artifacts_complete": {
+          "status": "not_run",
+          "scope": "no checked snapshot was recorded",
+          "observed_at": 1794551486,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "repository_integrity_checked": {
+          "status": "not_run",
+          "scope": "restic check was not recorded as passed",
+          "observed_at": 1794551486,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "decryption_tested": {
+          "status": "not_run",
+          "scope": "capture does not decrypt the snapshot",
+          "observed_at": 1794551486,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "application_consistency_assessed": {
+          "status": "not_run",
+          "scope": "admitted recipe uses a single-transaction dump followed by files; there is no shared freeze point or application read-back",
+          "observed_at": 1794551486,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "restored_in_isolation": {
+          "status": "not_run",
+          "scope": "a capture is not a restore",
+          "observed_at": 1794551486,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "health_checks_passed": {
+          "status": "not_run",
+          "scope": "application health is a restore probe, not a capture",
+          "observed_at": 1794551486,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "independent_copy_confirmed": {
+          "status": "unknown",
+          "scope": "the capture row does not store a destination; independence is unproven",
+          "observed_at": 1794551486,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        }
+      },
+      "consistency": null,
+      "unclaimed_snapshot_id": null
+    },
+    {
+      "operation_id": "op_w379_cap_3",
+      "site_id": "w379d",
+      "state": "failed",
+      "snapshot_id": null,
+      "started_at": 1794551730,
+      "finished_at": 1794551743,
+      "capture_method": "site_files_db_v1",
+      "retention_days": 30,
+      "snapshot_files": null,
+      "snapshot_bytes": null,
+      "manifest": null,
+      "fields": {
+        "artifacts_complete": {
+          "status": "unknown",
+          "scope": "a snapshot carries this operation's tag, but the capture outcome was uncertain; whether it holds every source file is not known",
+          "observed_at": 1794551743,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "repository_integrity_checked": {
+          "status": "not_run",
+          "scope": "restic check was not recorded as passed",
+          "observed_at": 1794551743,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "decryption_tested": {
+          "status": "not_run",
+          "scope": "capture does not decrypt the snapshot",
+          "observed_at": 1794551743,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "application_consistency_assessed": {
+          "status": "not_run",
+          "scope": "admitted recipe uses a single-transaction dump followed by files; there is no shared freeze point or application read-back",
+          "observed_at": 1794551743,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "restored_in_isolation": {
+          "status": "not_run",
+          "scope": "a capture is not a restore",
+          "observed_at": 1794551743,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "health_checks_passed": {
+          "status": "not_run",
+          "scope": "application health is a restore probe, not a capture",
+          "observed_at": 1794551743,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "independent_copy_confirmed": {
+          "status": "unknown",
+          "scope": "the capture row does not store a destination; independence is unproven",
+          "observed_at": 1794551743,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        }
+      },
+      "consistency": null,
+      "unclaimed_snapshot_id": "f184d11a72d660c1ac1775db20edfcc21ec41ac6994f62a01ffcd4f7aaec3a91"
+    },
+    {
+      "operation_id": "op_w379_cap_4",
+      "site_id": "w379b",
+      "state": "running",
+      "snapshot_id": null,
+      "started_at": 1794554230,
+      "finished_at": null,
+      "capture_method": "site_files_db_v1",
+      "retention_days": 30,
+      "snapshot_files": null,
+      "snapshot_bytes": null,
+      "manifest": null,
+      "fields": null,
+      "consistency": null,
+      "unclaimed_snapshot_id": null
+    },
+    {
+      "operation_id": "op_w391_cap_1",
+      "site_id": "w379a",
+      "state": "succeeded",
+      "snapshot_id": "9d4b1f0c3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e",
+      "started_at": 1794550000,
+      "finished_at": 1794550042,
+      "capture_method": "site_files_db_v1",
+      "retention_days": 30,
+      "snapshot_files": null,
+      "snapshot_bytes": null,
+      "manifest": {
+        "sha256": "aef81bf448f40c7cfdcac20e01db930dbdfc102d104aa98d0bbe6d7ce5938402",
+        "entries": 4257,
+        "regular_bytes": 110080800,
+        "truncated": false
+      },
+      "fields": {
+        "artifacts_complete": {
+          "status": "unknown",
+          "scope": "snapshot id recorded; the capture row does not count files or the database dump",
+          "observed_at": 1794550042,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "repository_integrity_checked": {
+          "status": "pass",
+          "scope": "succeeded is recorded only after restic check passes",
+          "observed_at": 1794550042,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "decryption_tested": {
+          "status": "not_run",
+          "scope": "capture does not decrypt the snapshot",
+          "observed_at": 1794550042,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "application_consistency_assessed": {
+          "status": "unknown",
+          "scope": "admitted recipe uses a single-transaction dump followed by files; there is no shared freeze point or application read-back; database marker label: matched",
+          "observed_at": 1794550042,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "restored_in_isolation": {
+          "status": "not_run",
+          "scope": "a capture is not a restore",
+          "observed_at": 1794550042,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "health_checks_passed": {
+          "status": "not_run",
+          "scope": "application health is a restore probe, not a capture",
+          "observed_at": 1794550042,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "independent_copy_confirmed": {
+          "status": "unknown",
+          "scope": "the capture row does not store a destination; independence is unproven",
+          "observed_at": 1794550042,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        }
+      },
+      "consistency": {
+        "label": "matched",
+        "reason": null
+      },
+      "unclaimed_snapshot_id": null,
+      "retention": {
+        "status": "recorded",
+        "before_days": 30,
+        "after_days": 30,
+        "objects": 7,
+        "earliest_retain_until": 1797186012,
+        "latest_retain_until": 1797186031
+      },
+      "refusal": null
+    },
+    {
+      "operation_id": "op_w391_cap_2",
+      "site_id": "w379a",
+      "state": "failed",
+      "snapshot_id": null,
+      "started_at": 1794550100,
+      "finished_at": 1794550104,
+      "capture_method": "site_files_db_v1",
+      "retention_days": 30,
+      "snapshot_files": null,
+      "snapshot_bytes": null,
+      "manifest": null,
+      "fields": {
+        "artifacts_complete": {
+          "status": "not_run",
+          "scope": "no checked snapshot was recorded",
+          "observed_at": 1794550104,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "repository_integrity_checked": {
+          "status": "not_run",
+          "scope": "restic check was not recorded as passed",
+          "observed_at": 1794550104,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "decryption_tested": {
+          "status": "not_run",
+          "scope": "capture does not decrypt the snapshot",
+          "observed_at": 1794550104,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "application_consistency_assessed": {
+          "status": "not_run",
+          "scope": "admitted recipe uses a single-transaction dump followed by files; there is no shared freeze point or application read-back",
+          "observed_at": 1794550104,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "restored_in_isolation": {
+          "status": "not_run",
+          "scope": "a capture is not a restore",
+          "observed_at": 1794550104,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "health_checks_passed": {
+          "status": "not_run",
+          "scope": "application health is a restore probe, not a capture",
+          "observed_at": 1794550104,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        },
+        "independent_copy_confirmed": {
+          "status": "unknown",
+          "scope": "the capture row does not store a destination; independence is unproven",
+          "observed_at": 1794550104,
+          "evidence_refs": [],
+          "limitations": ["no separate evidence object is stored for this field"]
+        }
+      },
+      "consistency": null,
+      "unclaimed_snapshot_id": null,
+      "retention": null,
+      "refusal": "RETENTION_LOCK_UNVERIFIED"
+    }
+  ],
+  "probes": [
+    {
+      "operation_id": "op_w379_probe_2",
+      "site_id": "w379a",
+      "snapshot_id": "5422c3fe1d1efea8c28e23dc7c1762b37556806d8fe3c8fb01b5ff2e48fca3d6",
+      "state": "failed",
+      "started_at": 1794551450,
+      "finished_at": 1794551454,
+      "fields": null,
+      "refusal": "NOT_ADMITTED_FOR_EFFECT"
+    },
+    {
+      "operation_id": "op_w379_probe_1",
+      "site_id": "w379a",
+      "snapshot_id": "5422c3fe1d1efea8c28e23dc7c1762b37556806d8fe3c8fb01b5ff2e48fca3d6",
+      "state": "passed",
+      "started_at": 1794553794,
+      "finished_at": 1794553811,
+      "fields": {
+        "artifacts_complete": {
+          "status": "pass",
+          "scope": "inventory completed: 3784 regular html files; dump present=true; non-atomic metadata observation"
+        },
+        "repository_integrity_checked": {
+          "status": "pass",
+          "scope": "restic check (structure, no data read) with the fetch key, by the store worker in the store namespace"
+        },
+        "decryption_tested": {
+          "status": "pass",
+          "scope": "snapshot decrypted by restore with the site's repository password"
+        },
+        "application_consistency_assessed": {
+          "status": "pass",
+          "scope": "dump imported by a throwaway database user (single-transaction capture); files were not captured atomically"
+        },
+        "restored_in_isolation": {
+          "status": "pass",
+          "scope": "throwaway account and SELinux level; the fetch reaches only the store relay from the store namespace; the import and health check run with no network and no credentials; enforced by unit settings and SELinux, not a proof of containment"
+        },
+        "health_checks_passed": {
+          "status": "pass",
+          "scope": "restored WordPress loads, reports installed, renders a titled home page, admin user present"
+        },
+        "independent_copy_confirmed": {
+          "status": "not_run",
+          "scope": "D-026: the probe restores from the enrolled store only; no independent or off-site copy is checked"
+        }
+      },
+      "refusal": null
+    }
+  ],
+  "readoptions": [
+    {
+      "operation_id": "op_w379_readopt",
+      "form": "site",
+      "site_id": "w379c",
+      "state": "adopted",
+      "previous_epoch": "epoch_w379_0",
+      "evidence_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "refusal": null,
+      "rule": null
+    },
+    {
+      "operation_id": "op_w379_readopt_gen",
+      "form": "generation",
+      "site_id": null,
+      "state": "refused",
+      "previous_epoch": "epoch_w379_0",
+      "evidence_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "refusal": "READOPT_MISMATCH",
+      "rule": "generation"
+    }
+  ],
+  "admissions": [
+    {
+      "operation_id": "op_w379_cap_1",
+      "kind": "capture",
+      "plan_digest": "b41ee1a7b4e433e3cf56149487105b7d5b28eb5b53aeb05ded639091b9341c58",
+      "grant_digest": "fa3ef0be2eaa26df89e94ba593f26b00c214362458c89aca0fe41855ec37cf8f",
+      "signed": {
+        "issuer": "lab_agent",
+        "signer_policy_epoch": "policy_3",
+        "verification": "sshsig_verified",
+        "namespace": "rustiron-plan-v1",
+        "plan": {
+          "sha256": "4153dead3556b897627d8be75d33859190a7cd1e24c7f954a99f50a31571215a",
+          "bytes": 313,
+          "stored": true
+        },
+        "grant": {
+          "sha256": "fa3ef0be2eaa26df89e94ba593f26b00c214362458c89aca0fe41855ec37cf8f",
+          "bytes": 388,
+          "stored": true
+        }
+      }
+    },
+    {
+      "operation_id": "op_w379_cap_2",
+      "kind": "capture",
+      "plan_digest": "7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c",
+      "grant_digest": "3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a",
+      "signed": null
+    },
+    {
+      "operation_id": "op_w391_cap_1",
+      "kind": "capture",
+      "plan_digest": "abbc8db0e8bd4464946cc5b41b323e70c9cf3fc37068a74235438ef10dd5a8d2",
+      "grant_digest": "64ffe523111327c88c6c0d787bd5992f96847c02bdef7bc003b882fb96400983",
+      "signed": {
+        "issuer": "lab_agent",
+        "signer_policy_epoch": "policy_3",
+        "verification": "sshsig_verified",
+        "namespace": "rustiron-plan-v1",
+        "plan": {
+          "sha256": "6a5f0682e1a87326f7e8fb7fe5d37dea4b2462c37ca58295904cb5af54332b75",
+          "bytes": 313,
+          "stored": true
+        },
+        "grant": {
+          "sha256": "64ffe523111327c88c6c0d787bd5992f96847c02bdef7bc003b882fb96400983",
+          "bytes": 388,
+          "stored": true
+        }
+      }
+    },
+    {
+      "operation_id": "op_w379_act",
+      "kind": "operation",
+      "plan_digest": "c0c74faa98469e184ec9e55750303d04353d1cd262c0624246e39a806d59ddb6",
+      "grant_digest": "8c817a10d9b57320c106c8a0ea115469d035c13ed23584f785515ab73511e9bf",
+      "signed": {
+        "issuer": "lab_agent",
+        "signer_policy_epoch": "policy_3",
+        "verification": "sshsig_verified",
+        "namespace": "rustiron-plan-v1",
+        "plan": {
+          "sha256": "21539c59f4b821e07402ae1092f4c4beacddacd1c167293ddcd98fa2e42835ed",
+          "bytes": 292,
+          "stored": true
+        },
+        "grant": {
+          "sha256": "8c817a10d9b57320c106c8a0ea115469d035c13ed23584f785515ab73511e9bf",
+          "bytes": 382,
+          "stored": true
+        }
+      }
+    },
+    {
+      "operation_id": "op_w379_probe_1",
+      "kind": "probe",
+      "plan_digest": "098f77836dc1a034c5e06730661665d703fa4885b25e1fb4be81629ad95a3d6c",
+      "grant_digest": "80b7ba2a4567b9303dc1cd49057aa8cc9a92a9a4a96e5e2c004e444524120105",
+      "signed": {
+        "issuer": "lab_agent",
+        "signer_policy_epoch": "policy_3",
+        "verification": "sshsig_verified",
+        "namespace": "rustiron-plan-v1",
+        "plan": {
+          "sha256": "d783d1e440ef919ad285e0380bd798dbb4cd66ac4d3765f0df9fcb50eefe3f63",
+          "bytes": 364,
+          "stored": true
+        },
+        "grant": {
+          "sha256": "80b7ba2a4567b9303dc1cd49057aa8cc9a92a9a4a96e5e2c004e444524120105",
+          "bytes": 394,
+          "stored": true
+        }
+      }
+    },
+    {
+      "operation_id": "op_w379_readopt",
+      "kind": "readoption",
+      "plan_digest": "8dd3148db4b7fc6f044974a1f8118ce62000f2c6ba58e0aa9900d730933b2c64",
+      "grant_digest": "f4e2e264eacf528bcf688f52ff0269060899c14cb42f935d76c16e0325af30eb",
+      "signed": {
+        "issuer": "lab_agent",
+        "signer_policy_epoch": "policy_3",
+        "verification": "sshsig_verified",
+        "namespace": "rustiron-plan-v1",
+        "plan": {
+          "sha256": "a7522e46c81ea5f00fa3c176ad3031f79295d48b13d3ace8491f0c3a4a0addd1",
+          "bytes": 9301,
+          "stored": false
+        },
+        "grant": {
+          "sha256": "f4e2e264eacf528bcf688f52ff0269060899c14cb42f935d76c16e0325af30eb",
+          "bytes": 394,
+          "stored": true
+        }
+      }
+    }
+  ],
+  "signed_objects": {
+    "21539c59f4b821e07402ae1092f4c4beacddacd1c167293ddcd98fa2e42835ed": "{\"expires_at\":1794552600,\"host_epoch\":\"epoch_w379_1\",\"host_id\":\"rustiron_w379_states\",\"limitations\":[\"Synthetic W396 state: \\\"dépôt\\\" with a tab\\tand a newline\\n\"],\"plan_id\":\"plan_op_w379_act\",\"schema_version\":2,\"target_generation\":\"gen_42\",\"valid_from\":1794549000,\"verb\":\"config_activate\"}",
+    "4153dead3556b897627d8be75d33859190a7cd1e24c7f954a99f50a31571215a": "{\"expires_at\":1794552600,\"host_epoch\":\"epoch_w379_1\",\"host_id\":\"rustiron_w379_states\",\"limitations\":[\"Synthetic W396 state: \\\"dépôt\\\" with a tab\\tand a newline\\n\"],\"plan_id\":\"plan_op_w379_cap_1\",\"recipe_id\":\"site_files_db_v1\",\"schema_version\":2,\"site_id\":\"w379b\",\"valid_from\":1794549000,\"verb\":\"backup_capture\"}",
+    "64ffe523111327c88c6c0d787bd5992f96847c02bdef7bc003b882fb96400983": "{\"expires_at\":1794552600,\"grant_id\":\"grant_op_w391_cap_1\",\"host_epoch\":\"epoch_w379_1\",\"host_id\":\"rustiron_w379_states\",\"issuer\":\"lab_agent\",\"nonce\":\"nonce_op_w391_cap_1\",\"plan_digest\":\"abbc8db0e8bd4464946cc5b41b323e70c9cf3fc37068a74235438ef10dd5a8d2\",\"plan_id\":\"plan_op_w391_cap_1\",\"requester\":\"coordinator_lab\",\"schema_version\":2,\"signer_policy_epoch\":\"policy_3\",\"valid_from\":1794549000}",
+    "6a5f0682e1a87326f7e8fb7fe5d37dea4b2462c37ca58295904cb5af54332b75": "{\"expires_at\":1794552600,\"host_epoch\":\"epoch_w379_1\",\"host_id\":\"rustiron_w379_states\",\"limitations\":[\"Synthetic W396 state: \\\"dépôt\\\" with a tab\\tand a newline\\n\"],\"plan_id\":\"plan_op_w391_cap_1\",\"recipe_id\":\"site_files_db_v1\",\"schema_version\":2,\"site_id\":\"w379a\",\"valid_from\":1794549000,\"verb\":\"backup_capture\"}",
+    "80b7ba2a4567b9303dc1cd49057aa8cc9a92a9a4a96e5e2c004e444524120105": "{\"expires_at\":1794552600,\"grant_id\":\"grant_op_w379_probe_1\",\"host_epoch\":\"epoch_w379_1\",\"host_id\":\"rustiron_w379_states\",\"issuer\":\"lab_agent\",\"nonce\":\"nonce_op_w379_probe_1\",\"plan_digest\":\"098f77836dc1a034c5e06730661665d703fa4885b25e1fb4be81629ad95a3d6c\",\"plan_id\":\"plan_op_w379_probe_1\",\"requester\":\"coordinator_lab\",\"schema_version\":2,\"signer_policy_epoch\":\"policy_3\",\"valid_from\":1794549000}",
+    "8c817a10d9b57320c106c8a0ea115469d035c13ed23584f785515ab73511e9bf": "{\"expires_at\":1794552600,\"grant_id\":\"grant_op_w379_act\",\"host_epoch\":\"epoch_w379_1\",\"host_id\":\"rustiron_w379_states\",\"issuer\":\"lab_agent\",\"nonce\":\"nonce_op_w379_act\",\"plan_digest\":\"c0c74faa98469e184ec9e55750303d04353d1cd262c0624246e39a806d59ddb6\",\"plan_id\":\"plan_op_w379_act\",\"requester\":\"coordinator_lab\",\"schema_version\":2,\"signer_policy_epoch\":\"policy_3\",\"valid_from\":1794549000}",
+    "d783d1e440ef919ad285e0380bd798dbb4cd66ac4d3765f0df9fcb50eefe3f63": "{\"expires_at\":1794552600,\"host_epoch\":\"epoch_w379_1\",\"host_id\":\"rustiron_w379_states\",\"limitations\":[\"Synthetic W396 state: \\\"dépôt\\\" with a tab\\tand a newline\\n\"],\"plan_id\":\"plan_op_w379_probe_1\",\"schema_version\":2,\"site_id\":\"w379a\",\"snapshot_id\":\"5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e\",\"valid_from\":1794549000,\"verb\":\"restore_probe\"}",
+    "f4e2e264eacf528bcf688f52ff0269060899c14cb42f935d76c16e0325af30eb": "{\"expires_at\":1794552600,\"grant_id\":\"grant_op_w379_readopt\",\"host_epoch\":\"epoch_w379_1\",\"host_id\":\"rustiron_w379_states\",\"issuer\":\"lab_agent\",\"nonce\":\"nonce_op_w379_readopt\",\"plan_digest\":\"8dd3148db4b7fc6f044974a1f8118ce62000f2c6ba58e0aa9900d730933b2c64\",\"plan_id\":\"plan_op_w379_readopt\",\"requester\":\"coordinator_lab\",\"schema_version\":2,\"signer_policy_epoch\":\"policy_3\",\"valid_from\":1794549000}",
+    "fa3ef0be2eaa26df89e94ba593f26b00c214362458c89aca0fe41855ec37cf8f": "{\"expires_at\":1794552600,\"grant_id\":\"grant_op_w379_cap_1\",\"host_epoch\":\"epoch_w379_1\",\"host_id\":\"rustiron_w379_states\",\"issuer\":\"lab_agent\",\"nonce\":\"nonce_op_w379_cap_1\",\"plan_digest\":\"b41ee1a7b4e433e3cf56149487105b7d5b28eb5b53aeb05ded639091b9341c58\",\"plan_id\":\"plan_op_w379_cap_1\",\"requester\":\"coordinator_lab\",\"schema_version\":2,\"signer_policy_epoch\":\"policy_3\",\"valid_from\":1794549000}"
+  }
+}

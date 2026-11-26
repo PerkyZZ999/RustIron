@@ -1,0 +1,12 @@
+# D-061 (W466): WordPress jobs every five minutes; a missed run happens
+# after downtime. Not enabled at installation.
+[Unit]
+Description=Rustiron WordPress jobs every five minutes (D-061)
+
+[Timer]
+OnCalendar=*-*-* *:00/5:00
+Persistent=true
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

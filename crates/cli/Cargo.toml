@@ -1,0 +1,43 @@
+[package]
+name = "rustiron-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rustiron"
+path = "src/main.rs"
+
+[[bin]]
+name = "rustiron-review"
+path = "src/review_main.rs"
+
+[[bin]]
+name = "rustiron-plan"
+path = "src/plan_main.rs"
+
+[[bin]]
+name = "rustiron-submit"
+path = "src/submit_main.rs"
+
+[[bin]]
+name = "rustiron-mcp"
+path = "src/mcp_main.rs"
+
+[dependencies]
+clap.workspace = true
+rustiron-contracts.workspace = true
+rustiron-core.workspace = true
+rustix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+rustiron-control.workspace = true
+rustiron-core.workspace = true
+
+[lints]
+workspace = true

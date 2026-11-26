@@ -1,0 +1,10 @@
+{
+  "ignorePatterns": [
+    "dist/**",
+    "src/theme/rustiron.css",
+    "src/theme/rustiron.js",
+    "src/theme/rustiron.d.ts",
+    "src/theme/rustiron.css.d.ts",
+    "src/theme/rustiron.variants.d.ts"
+  ]
+}

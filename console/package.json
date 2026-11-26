@@ -1,0 +1,55 @@
+{
+  "name": "rustiron-console",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --hot src/server.ts",
+    "start:live": "bun scripts/build.ts && NODE_ENV=production RUSTIRON_CONSOLE_NO_FIXTURE=1 bun src/server.ts",
+    "build": "bun scripts/build.ts",
+    "typecheck": "bun check",
+    "lint": "oxlint",
+    "format": "oxfmt --check",
+    "format:write": "oxfmt",
+    "test": "bun test",
+    "fallow": "fallow",
+    "verify": "oxfmt --check && oxlint && bun check && fallow && bun test && bun scripts/build.ts",
+    "check:browser": "bun e2e/check.ts",
+    "dev:live": "RUSTIRON_OBSERVATION=.live/observation.json bun --hot src/server.ts",
+    "lab:pull": "RUSTIRON_LAB_SSH=${RUSTIRON_LAB_SSH:-$HOME/.config/rustiron-lab/ssh.sh} bun scripts/lab-pull.ts .live/observation.json"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.9.0",
+    "@tanstack/react-router": "1.170.46",
+    "better-auth": "1.7.28",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "evlog": "^2.37.1",
+    "lucide-animated": "^1.0.5",
+    "lucide-react": "^1.80.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "tailwind-merge": "^2.6.0"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "@happy-dom/global-registrator": "21.0.4",
+    "@testing-library/dom": "10.4.2",
+    "@testing-library/react": "16.3.3",
+    "@types/bun": "1.4.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "bun-plugin-tailwind": "^0.1.2",
+    "fallow": "3.36.0",
+    "happy-dom": "21.0.4",
+    "oxfmt": "0.74.0",
+    "oxlint": "1.89.0",
+    "playwright": "1.64.1",
+    "tailwindcss": "^4.0.0",
+    "tw-animate-css": "^1.3.0",
+    "typescript": "7.0.2"
+  },
+  "patchedDependencies": {
+    "@tanstack/router-core@1.171.39": "patches/@tanstack%2Frouter-core@1.171.39.patch"
+  }
+}

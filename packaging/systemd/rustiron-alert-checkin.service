@@ -1,0 +1,33 @@
+# D-083 (P05): push the read-only diagnosis to the owner's Uptime Kuma
+# monitor. Runs only when the root-only push link exists. Changes nothing
+# on the host. Not enabled by default.
+[Unit]
+Description=Rustiron alert check-in to Uptime Kuma (D-083)
+Documentation=file:///usr/share/doc/rustiron/README.md
+After=network-online.target rustiron-executor.service
+Wants=network-online.target
+ConditionPathExists=/etc/rustiron/alert-push.url
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/rustiron/alert-checkin
+TimeoutStartSec=4min
+UMask=0077
+RuntimeDirectory=rustiron-alert
+# The coordinator account crosses it to read the observation by group.
+RuntimeDirectoryMode=0711
+
+# Root: it reads the executor's journal observation (read-only) and drops
+# to the coordinator account for the diagnosis.
+CapabilityBoundingSet=CAP_CHOWN CAP_SETUID CAP_SETGID
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryMax=256M
+TasksMax=64

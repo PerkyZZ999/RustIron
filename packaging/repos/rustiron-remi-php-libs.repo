@@ -1,0 +1,14 @@
+# D-055: the optional source of the two libraries that the LiteSpeed EL10
+# packages lsphp84-mbstring and lsphp84-intl need. Only oniguruma5php and
+# libicu78 may come from it; every other package keeps its own repository.
+# Signatures are required; the keys are the pinned files of remi-keys.sha256.
+[rustiron-remi-php-libs]
+name=Remi safe repository, two PHP libraries only - EL10 $basearch
+baseurl=https://rpms.remirepo.net/enterprise/10/safe/$basearch/
+enabled=1
+gpgcheck=1
+repo_gpgcheck=0
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-remi2024
+       file:///etc/pki/rpm-gpg/RPM-GPG-KEY-remi2025
+       file:///etc/pki/rpm-gpg/RPM-GPG-KEY-remi2026
+includepkgs=oniguruma5php libicu78

@@ -1,0 +1,49 @@
+[package]
+name = "rustiron-executor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rustiron-s02-executor"
+path = "src/main.rs"
+
+[[bin]]
+name = "rustiron-admin-helper"
+path = "src/admin/main.rs"
+
+[[bin]]
+name = "rustiron-restore-inventory"
+path = "src/inventory/main.rs"
+
+[[bin]]
+name = "rustiron-migration-inventory"
+path = "src/migration_inventory/main.rs"
+
+[[bin]]
+name = "rustiron-capture-manifest"
+path = "src/manifest/main.rs"
+
+[dependencies]
+# D-020: getsockopt(SO_PEERSEC) in src/peer_label.rs only; already in the lock.
+libc = "=0.2.191"
+# P01 (W435): the migration export worker reads CyberPanel meta.xml only.
+quick-xml = { version = "=0.42.0", default-features = false }
+rustix.workspace = true
+rustiron-contracts.workspace = true
+rustiron-journal.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[features]
+# Test-only crash points; never enabled for the lab binary.
+fault-injection = []
+
+[dev-dependencies]
+rustiron-executor = { path = ".", version = "=0.1.0", features = ["fault-injection"] }
+
+[lints]
+workspace = true

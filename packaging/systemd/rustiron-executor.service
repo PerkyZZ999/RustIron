@@ -1,0 +1,51 @@
+[Unit]
+Description=Rustiron executor
+Requires=rustiron-admin-helper.service
+After=rustiron-admin-helper.service
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/rustiron/rustiron-executor serve --admin-helper
+RuntimeDirectory=rustiron
+RuntimeDirectoryMode=0750
+UMask=0077
+Restart=no
+
+User=root
+# Socket access still requires the enrolled requester UID.
+Group=rustiron-requesters
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+SecureBits=noroot-locked
+
+ProtectSystem=strict
+ReadWritePaths=/var/lib/rustiron /etc/rustiron-ols /etc/rustiron-ejected
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# SQLite can retain the root owner on new journal files.
+SystemCallFilter=@chown
+LimitNOFILE=256
+TasksMax=16
+MemoryMax=256M

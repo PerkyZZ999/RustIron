@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "grant_id": "grant_clone_scrub",
+  "nonce": "nonce_clone_scrub",
+  "plan_id": "plan_clone_scrub",
+  "plan_digest": "67dfa302da0e85bda6cd500a1a737ea0712cb8213a356b6f03502a336a0b2276",
+  "host_id": "host_lab",
+  "host_epoch": "epoch_1",
+  "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "issuer": "operator_1",
+  "requester": "agent_1",
+  "signer_policy_epoch": "policy_1",
+  "site_ids": [
+    "blog2"
+  ],
+  "verbs": [
+    "clone_scrub"
+  ],
+  "risk_class": "lab_only",
+  "valid_from": 1100,
+  "expires_at": 1900,
+  "max_operations": 1
+}

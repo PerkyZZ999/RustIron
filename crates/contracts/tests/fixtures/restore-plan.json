@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "plan_id": "plan_restore",
+  "host_id": "host_lab",
+  "host_epoch": "epoch_1",
+  "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "requester": "agent_1",
+  "verb": "site_restore",
+  "site_id": "blog1",
+  "hostname": "blog1.example.test",
+  "scope": "files_and_database",
+  "source": {
+    "capture_operation_id": "op_capture_old",
+    "snapshot_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "manifest_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "destination_id": "isolated_store",
+    "destination_policy_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "repository_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
+  "safety_capture_operation_id": "op_capture_safety",
+  "expected_effects": {
+    "fetches_snapshot": true,
+    "replaces_database": true,
+    "replaces_files": true,
+    "deletes_backups": false,
+    "traffic_activation": false
+  },
+  "risk_class": "lab_only",
+  "valid_from": 1000,
+  "expires_at": 2000,
+  "limitations": [
+    "SYNTHETIC fixture"
+  ]
+}

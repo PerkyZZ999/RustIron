@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "grant_id": "grant_retire",
+  "nonce": "nonce_retire",
+  "plan_id": "plan_retire",
+  "plan_digest": "2bfe7c77fad7ed2ec99935df29ada7089f5771b7cb9fc1d3d45a70d4d012c693",
+  "host_id": "host_lab",
+  "host_epoch": "epoch_1",
+  "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "issuer": "operator_1",
+  "requester": "agent_1",
+  "signer_policy_epoch": "policy_1",
+  "site_ids": [
+    "blog1"
+  ],
+  "verbs": [
+    "site_retire"
+  ],
+  "risk_class": "lab_only",
+  "valid_from": 1100,
+  "expires_at": 1900,
+  "max_operations": 1
+}

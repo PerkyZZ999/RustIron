@@ -1,0 +1,19 @@
+# Large local experiments, generated artifacts and upstream checkout.
+# Keep their navigation indexes; preserve evidence on disk without staging it.
+/research/*
+!/research/g0/
+!/research/g1/
+/research/g0/*
+!/research/g0/README.md
+/research/g1/*
+!/research/g1/README.md
+
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+.private/
+target/
+node_modules/
+dist/

@@ -1,0 +1,5 @@
+/usr/libexec/rustiron/rustiron-admin-helper	--	gen_context(system_u:object_r:rustiron_admin_exec_t,s0)
+/run/rustiron-admin(/.*)?	gen_context(system_u:object_r:rustiron_admin_run_t,s0)
+/srv/restore-probes	-d	gen_context(system_u:object_r:httpd_sys_content_t,s0)
+/etc/rustiron-tls(/.*)?	gen_context(system_u:object_r:rustiron_tls_t,s0)
+/var/lib/rustiron-acme(/.*)?	gen_context(system_u:object_r:rustiron_acme_state_t,s0)

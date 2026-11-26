@@ -1,0 +1,76 @@
+# Steady executor domain (W171/D-016 split confinement; packaged in
+# packaging/selinux/ and lab-verified on AlmaLinux 10; independent human
+# review open). Admission, journal, sockets, owned OLS generations and the
+# fixed lshttpd reload. Accounts, the policy store, unit files, relabels and
+# job launches belong to rustiron_admin_t.
+policy_module(rustiron_executor, 0.1.0)
+
+gen_require(`
+	type rustiron_admin_t, rustiron_admin_run_t;
+')
+
+type rustiron_executor_t;
+type rustiron_executor_exec_t;
+init_daemon_domain(rustiron_executor_t, rustiron_executor_exec_t)
+# The lab units set NoNewPrivileges=yes; without this the exec stays init_t.
+init_nnp_daemon_domain(rustiron_executor_t)
+
+# Trusted policy and keys (read-only), journal and admission mark, sockets,
+# and the managed OLS generation roots.
+type rustiron_executor_conf_t;
+files_config_file(rustiron_executor_conf_t)
+type rustiron_executor_var_lib_t;
+files_type(rustiron_executor_var_lib_t)
+type rustiron_executor_run_t;
+files_pid_file(rustiron_executor_run_t)
+type rustiron_ols_generation_t;
+files_type(rustiron_ols_generation_t)
+
+allow rustiron_executor_t self:process { signal sigchld };
+# SQLite keeps the root owner of new journal files (fchown to itself).
+allow rustiron_executor_t self:capability chown;
+# UID/category allocation and the OLS group lookup read the account files.
+auth_read_passwd(rustiron_executor_t)
+miscfiles_read_generic_certs(rustiron_executor_t)
+allow rustiron_executor_t self:unix_stream_socket create_stream_socket_perms;
+
+# Descriptor-relative walks open every ancestor directory.
+files_list_root(rustiron_executor_t)
+files_list_etc(rustiron_executor_t)
+files_list_var(rustiron_executor_t)
+files_list_var_lib(rustiron_executor_t)
+files_list_pids(rustiron_executor_t)
+
+read_files_pattern(rustiron_executor_t, rustiron_executor_conf_t, rustiron_executor_conf_t)
+list_dirs_pattern(rustiron_executor_t, rustiron_executor_conf_t, rustiron_executor_conf_t)
+manage_files_pattern(rustiron_executor_t, rustiron_executor_var_lib_t, rustiron_executor_var_lib_t)
+manage_dirs_pattern(rustiron_executor_t, rustiron_executor_var_lib_t, rustiron_executor_var_lib_t)
+manage_sock_files_pattern(rustiron_executor_t, rustiron_executor_run_t, rustiron_executor_run_t)
+manage_dirs_pattern(rustiron_executor_t, rustiron_executor_run_t, rustiron_executor_run_t)
+manage_files_pattern(rustiron_executor_t, rustiron_ols_generation_t, rustiron_ols_generation_t)
+manage_dirs_pattern(rustiron_executor_t, rustiron_ols_generation_t, rustiron_ols_generation_t)
+manage_lnk_files_pattern(rustiron_executor_t, rustiron_ols_generation_t, rustiron_ols_generation_t)
+
+# Signature verification runs ssh-keygen in this domain.
+ssh_exec_keygen(rustiron_executor_t)
+
+# W392 (D-042): the host receipt key. ssh-keygen -Y sign runs in this
+# domain and reads the private key. It has its own type, not a config type,
+# so no other Rustiron domain (admin helper, coordinator, site PHP, capture)
+# can read it. It is an authentication file (as shadow_t is), so the base
+# policy rules for every non-security or non-auth file do not reach it.
+type rustiron_receipt_key_t;
+files_auth_file(rustiron_receipt_key_t)
+list_dirs_pattern(rustiron_executor_t, rustiron_receipt_key_t, rustiron_receipt_key_t)
+read_files_pattern(rustiron_executor_t, rustiron_receipt_key_t, rustiron_receipt_key_t)
+
+# The one fixed reload; the drop-in limits which unit systemctl targets.
+systemd_exec_systemctl(rustiron_executor_t)
+init_reload_services(rustiron_executor_t)
+
+# Requests to the helper go over its socket only.
+stream_connect_pattern(rustiron_executor_t, rustiron_admin_run_t, rustiron_admin_run_t, rustiron_admin_t)
+
+# W173: category allocation reads the generated local rules file
+# (file_contexts.local) instead of running semanage. Read only.
+seutil_read_file_contexts(rustiron_executor_t)

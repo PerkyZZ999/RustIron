@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "plan_id": "plan_proxy_site",
+  "host_id": "host_lab",
+  "host_epoch": "epoch_1",
+  "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "requester": "agent_1",
+  "verb": "proxy_site_provision",
+  "site_id": "ytproxy",
+  "hostname": "yt.example.test",
+  "routes": [
+    {
+      "prefix": "/",
+      "port": 3100
+    },
+    {
+      "prefix": "/api/",
+      "port": 3101
+    },
+    {
+      "prefix": "/downloads/",
+      "port": 3101
+    }
+  ],
+  "websockets": [
+    {
+      "prefix": "/ws/",
+      "port": 3100
+    }
+  ],
+  "expected_effects": {
+    "creates_account": true,
+    "forwards_to_loopback": true,
+    "traffic_activation": false,
+    "starts_services": false,
+    "backs_up_services": false
+  },
+  "risk_class": "lab_only",
+  "valid_from": 1000,
+  "expires_at": 2000,
+  "limitations": [
+    "SYNTHETIC fixture"
+  ]
+}

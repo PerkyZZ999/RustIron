@@ -1,0 +1,32 @@
+[
+  {
+    "name": "rfc8785_property_order",
+    "input": "{\"\\u20ac\":\"Euro Sign\",\"\\r\":\"Carriage Return\",\"\\ufb33\":\"Hebrew Letter Dalet With Dagesh\",\"1\":\"One\",\"\\ud83d\\ude00\":\"Emoji: Grinning Face\",\"\\u0080\":\"Control\",\"\\u00f6\":\"Latin Small Letter O With Diaeresis\"}",
+    "canonical": "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"\":\"Control\",\"ö\":\"Latin Small Letter O With Diaeresis\",\"€\":\"Euro Sign\",\"😀\":\"Emoji: Grinning Face\",\"דּ\":\"Hebrew Letter Dalet With Dagesh\"}",
+    "plan_digest": "0583a1a529cc9aa5f92fd26e951df03edc622d1489b68ba6b45188ff1ddf99b8"
+  },
+  {
+    "name": "escaping_and_literal_types",
+    "input": "{ \"string\": \"\\u20ac$\\u000F\\nA\\u0027B\\u0022\\u005c\\\\\\\"\\/\", \"literals\":[null,true,false] }",
+    "canonical": "{\"literals\":[null,true,false],\"string\":\"€$\\u000f\\nA'B\\\"\\\\\\\\\\\"/\"}",
+    "plan_digest": "faea9a4f37f5bc16b8d4e3ec947b10e4469192c1a8b1ce9939af3f1b8e88ff0c"
+  },
+  {
+    "name": "nested_unsigned_limits",
+    "input": "{\"z\":[{\"b\":9007199254740991,\"a\":0}],\"a\":42}",
+    "canonical": "{\"a\":42,\"z\":[{\"a\":0,\"b\":9007199254740991}]}",
+    "plan_digest": "240bb31d993700bb165852803eb24c8f53560ccbf1a38da0518448a9fba3478c"
+  },
+  {
+    "name": "unicode_not_normalized",
+    "input": "{\"text\":\"e\\u0301\",\"composed\":\"\\u00e9\"}",
+    "canonical": "{\"composed\":\"é\",\"text\":\"é\"}",
+    "plan_digest": "1120ed616d24aa92e60f7ed78422b9f071387eda4c76b9dff7029291d77a9fa4"
+  },
+  {
+    "name": "empty_object",
+    "input": " { } ",
+    "canonical": "{}",
+    "plan_digest": "9ad3949469475d557b30aefd0acfae3c44f9414a1829b88876289a753cd816f7"
+  }
+]

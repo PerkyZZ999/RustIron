@@ -1,0 +1,6 @@
+# Rustiron (W569, W558-F1): MariaDB answers on loopback only. Rustiron and
+# its sites use the Unix socket /var/lib/mysql/mysql.sock. The zz- name loads
+# this file after the distribution's files, so a bind-address there does not
+# override it; the installer and the diagnosis check the listeners.
+[mysqld]
+bind-address=127.0.0.1

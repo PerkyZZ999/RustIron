@@ -1,0 +1,24 @@
+entry = [
+  "src/main.tsx",
+  "src/server.ts",
+  "src/overview.test.tsx",
+  "src/live.test.tsx",
+  "src/platform.test.tsx",
+  "src/backend-server.test.ts",
+  "src/write-workflows.test.ts",
+  "src/auth.test.tsx",
+  "src/cli-commands.test.ts",
+  "src/mail.test.tsx",
+  "e2e/check.ts",
+  "e2e/b14.ts",
+  "e2e/signed-bytes.ts",
+  "scripts/build.ts",
+  "scripts/lab-pull.ts",
+  "scripts/verify-auth.ts",
+]
+
+[rules]
+unused-files = "error"
+unused-exports = "error"
+unused-dependencies = "error"
+circular-dependencies = "error"

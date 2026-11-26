@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "grant_id": "grant_dns_change",
+  "nonce": "nonce_dns_change",
+  "plan_id": "plan_dns_change",
+  "plan_digest": "314fb7e2c2325c30df93f5c9993a8953851e1630485e2eda54c64230dfe03be8",
+  "host_id": "host_lab",
+  "host_epoch": "epoch_1",
+  "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "issuer": "operator_1",
+  "requester": "agent_1",
+  "signer_policy_epoch": "policy_1",
+  "zones": [
+    "example.test"
+  ],
+  "verbs": [
+    "dns_change"
+  ],
+  "risk_class": "lab_only",
+  "valid_from": 1100,
+  "expires_at": 1900,
+  "max_operations": 1
+}

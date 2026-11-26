@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "grant_id": "grant_restore",
+  "nonce": "nonce_restore",
+  "plan_id": "plan_restore",
+  "plan_digest": "45854e066de823f7960e4dbda990837490f15b2101da6e8f64d3585ff0e8cd8b",
+  "host_id": "host_lab",
+  "host_epoch": "epoch_1",
+  "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "issuer": "operator_1",
+  "requester": "agent_1",
+  "signer_policy_epoch": "policy_1",
+  "site_ids": [
+    "blog1"
+  ],
+  "verbs": [
+    "site_restore"
+  ],
+  "snapshot_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "risk_class": "lab_only",
+  "valid_from": 1100,
+  "expires_at": 1900,
+  "max_operations": 1
+}

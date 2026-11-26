@@ -1,0 +1,6 @@
+# Use the project-local, verified official patch instead of the older crate bundle.
+[env]
+LIBSQLITE3_SYS_USE_PKG_CONFIG = { value = "1", force = true }
+SQLITE3_STATIC = { value = "1", force = true }
+SQLITE3_LIB_DIR = { value = "target/native/sqlite-3.54.1/lib", relative = true, force = true }
+SQLITE3_INCLUDE_DIR = { value = "target/native/sqlite-3.54.1/include", relative = true, force = true }

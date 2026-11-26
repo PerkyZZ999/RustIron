@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "plan_id": "plan_capture",
+  "host_id": "host_lab",
+  "host_epoch": "epoch_1",
+  "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "requester": "agent_1",
+  "verb": "backup_capture",
+  "site_id": "blog9",
+  "destination_id": "lab_pc_store",
+  "recipe_id": "site_files_db_v1",
+  "risk_class": "lab_only",
+  "valid_from": 1000,
+  "expires_at": 2000,
+  "limitations": [
+    "SYNTHETIC fixture"
+  ]
+}

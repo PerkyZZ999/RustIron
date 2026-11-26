@@ -1,0 +1,76 @@
+{
+  "schema": "rustiron-support-matrix/1",
+  "decision": "D-063",
+  "reviewed": "2026-11-17",
+  "reviewed_unix": 1794873600,
+  "review_days": 120,
+  "warn_before_end_days": 180,
+  "components": [
+    {
+      "name": "os",
+      "label": "AlmaLinux",
+      "series": "10",
+      "minimum": "10.2",
+      "end_of_life": "2035-05-31",
+      "end_of_life_unix": 2064182400,
+      "source": "AlmaLinux 10 security support"
+    },
+    {
+      "name": "openlitespeed",
+      "label": "OpenLiteSpeed",
+      "series": "1.9",
+      "minimum": "1.9.4",
+      "end_of_life": null,
+      "end_of_life_unix": null,
+      "source": "No published end of life; reviewed with the matrix"
+    },
+    {
+      "name": "php",
+      "label": "PHP (lsphp84)",
+      "series": "8.4",
+      "minimum": "8.4.27",
+      "end_of_life": "2028-12-31",
+      "end_of_life_unix": 1861833600,
+      "source": "PHP 8.4 upstream security support"
+    },
+    {
+      "name": "mariadb",
+      "label": "MariaDB",
+      "series": "10.11",
+      "minimum": "10.11.18",
+      "end_of_life": "2028-02-16",
+      "end_of_life_unix": 1834272000,
+      "source": "MariaDB 10.11 upstream LTS (the earlier of upstream and AppStream)"
+    },
+    {
+      "name": "powerdns",
+      "label": "PowerDNS Authoritative",
+      "series": "5.1",
+      "minimum": "5.1.5",
+      "end_of_life": "2028-01-01",
+      "end_of_life_unix": 1830297600,
+      "when_installed": true,
+      "source": "PowerDNS 5.1 end of life about January 2028 (D-092); checked only where pdns is installed"
+    },
+    {
+      "name": "nodejs",
+      "label": "Node.js",
+      "series": "22",
+      "minimum": "22.23.4",
+      "end_of_life": "2027-04-30",
+      "end_of_life_unix": 1809043200,
+      "when_installed": true,
+      "source": "Node.js 22 LTS upstream security support through April 2027 (D-099); checked where Node.js is installed"
+    },
+    {
+      "name": "bun",
+      "label": "Bun",
+      "series": "1",
+      "minimum": "1.4.2",
+      "end_of_life": null,
+      "end_of_life_unix": null,
+      "when_installed": true,
+      "source": "Bun 1.4 pinned runtime (D-099); no published upstream EOL date, reviewed with the matrix"
+    }
+  ]
+}

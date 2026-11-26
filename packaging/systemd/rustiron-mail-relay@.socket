@@ -1,0 +1,20 @@
+# Per-site Unix socket for outbound WordPress mail relay (D-071, W482, W610).
+# The instance name %i is the site account (rs_<site>). Only root and that site
+# group can traverse /run/rustiron-mail/%i or connect to smtp; a per-site drop-in
+# sets SELinuxContext=system_u:system_r:rustiron_mail_relay_t:s0:cN to match the
+# site's MCS category.
+[Unit]
+Description=Rustiron outbound mail relay socket for site %i
+After=postfix.service
+Wants=postfix.service
+
+[Socket]
+ListenStream=/run/rustiron-mail/%i/smtp
+SocketUser=root
+SocketGroup=%i
+SocketMode=0660
+DirectoryMode=0750
+SELinuxContext=system_u:system_r:rustiron_mail_relay_t:s0
+
+[Install]
+WantedBy=multi-user.target

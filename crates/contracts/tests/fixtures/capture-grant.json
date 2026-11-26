@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "grant_id": "grant_capture",
+  "nonce": "nonce_capture",
+  "plan_id": "plan_capture",
+  "plan_digest": "31441613f3d96fe2b9cbdafa8dceea164405fa09d877d63ccdda3d06f3e28135",
+  "host_id": "host_lab",
+  "host_epoch": "epoch_1",
+  "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "issuer": "operator_1",
+  "requester": "agent_1",
+  "signer_policy_epoch": "policy_1",
+  "verbs": [
+    "backup_capture"
+  ],
+  "site_ids": [
+    "blog9"
+  ],
+  "destinations": [
+    "lab_pc_store"
+  ],
+  "risk_class": "lab_only",
+  "valid_from": 1100,
+  "expires_at": 1900,
+  "max_operations": 1
+}

@@ -1,0 +1,3 @@
+# C-01 / W640: rustiron_app_t enters via existing bin_t (/usr/bin/node-22,
+# /usr/local/bin/bun) through systemd SELinuxContext=system_u:system_r:rustiron_app_t:s0:c<N>.
+# Per-site data/tmp/releases labels are installed by semanage fcontext per site.

@@ -1,0 +1,7 @@
+Host inspection (read-only)
+OS name: AlmaLinux [observed; source=OsRelease; unix_seconds=1]
+OS version: unknown (NotChecked)
+Kernel: fixture-kernel [stale; source=Kernel; unix_seconds=1]
+Architecture: x86_64 [inferred; source=Profile; unix_seconds=2]
+Hosting profile: unknown (NotChecked)
+Site confinement: unknown (NotChecked)

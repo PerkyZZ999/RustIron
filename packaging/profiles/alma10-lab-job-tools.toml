@@ -1,0 +1,15 @@
+# AlmaLinux 10.2 lab tuple measured on 2026-11-11.
+[restic]
+package = "restic"
+evr_arch = "0:0.19.1-1.el10_2.x86_64"
+sha256 = "12dd15690b54281cbd964e7972adee2b86a65bf8e77a05886e0cc2c54ad5e1ba"
+
+[mariadb]
+package = "mariadb"
+evr_arch = "3:10.11.18-1.el10_2.alma.2.x86_64"
+sha256 = "05d885aeb2a1c8838abee327203695a90fc923f45b3da70ff8da49de930509e9"
+
+[mariadb-dump]
+package = "mariadb"
+evr_arch = "3:10.11.18-1.el10_2.alma.2.x86_64"
+sha256 = "c88a8e9ef502f695e381df9ebb953dec7e37ae3c760b89348529b31447d11efa"
