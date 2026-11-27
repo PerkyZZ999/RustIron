@@ -16,9 +16,9 @@ use rustiron_executor::{
         OLS_DROPIN, SiteInput, dropin_text, expected_grants,
     },
 };
-use rustiron_journal::{ProvisionState, ReadoptResult, ReadoptState};
 use serde_json::{Value, json};
 mod support;
+use rustiron_journal::{Admitted, ProvisionState, ReadoptState};
 use support::{KEYGEN, hex, new_key, private_dir, private_file, sign};
 #[path = "readopt/w377.rs"]
 mod w377;
@@ -75,7 +75,9 @@ type Plant = (&'static str, fn(&mut SiteInput));
 
 impl Lab {
     fn new(name: &str) -> Self {
-        let serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        let serial = SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = std::env::temp_dir().join(format!("ri-readopt-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         private_dir(&root);
@@ -311,7 +313,7 @@ fn adopt_site(
     executor.inject_readopt_observation(ReadoptObservation::Site(Box::new(site_facts(
         name, uid, category,
     ))));
-    let ReadoptResult::New(row) = executor
+    let Admitted::New(row) = executor
         .readopt(&request.request(&format!("op_{nonce}")))
         .unwrap()
     else {
@@ -378,7 +380,7 @@ fn a_mismatching_fact_is_refused_and_nothing_else_is_recorded() {
     // The same request again is status only, and the grant stays spent.
     assert!(matches!(
         executor.readopt(&request.request("op_n1")).unwrap(),
-        ReadoptResult::Existing(row) if row.state == ReadoptState::Refused
+        Admitted::Existing(row) if row.state == ReadoptState::Refused
     ));
     assert_eq!(
         executor.readopt(&request.request("op_other")).err(),
@@ -518,7 +520,7 @@ fn a_crash_after_intent_stays_verifying_blocks_work_and_reconcile_settles_it() {
     // The exact repeat is status only and observes nothing.
     assert!(matches!(
         executor.readopt(&request.request("op_n1")).unwrap(),
-        ReadoptResult::Existing(row) if row.state == ReadoptState::Verifying
+        Admitted::Existing(row) if row.state == ReadoptState::Verifying
     ));
     executor.inject_readopt_observation(ReadoptObservation::Site(Box::new(site_facts(
         "blog1", 3001, 201,
@@ -666,10 +668,10 @@ fn the_live_generation_is_adopted_only_when_it_is_the_render_of_owned_sites() {
     );
     // The byte-identical render is adopted, once.
     executor.inject_readopt_observation(ReadoptObservation::Generation(Box::new(
-        generation_input(files.clone()),
+        generation_input(files),
     )));
     let request = lab.generation(&["blog1"], &live, "g4");
-    let ReadoptResult::New(row) = executor.readopt(&request.request("op_g4")).unwrap() else {
+    let Admitted::New(row) = executor.readopt(&request.request("op_g4")).unwrap() else {
         panic!("new");
     };
     assert_eq!(row.state, ReadoptState::Adopted);

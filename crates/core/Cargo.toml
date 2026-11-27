@@ -10,6 +10,7 @@ license.workspace = true
 rusqlite.workspace = true
 rustix.workspace = true
 rustiron-contracts.workspace = true
+sha2.workspace = true
 
 [lints]
 workspace = true

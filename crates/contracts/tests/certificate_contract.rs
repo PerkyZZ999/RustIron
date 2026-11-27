@@ -84,7 +84,8 @@ fn fixture_decodes_with_independently_computed_digest_and_binds() {
 fn schema_three_binds_the_alias_and_renewal_to_the_grant() {
     let plan = CertificatePlan::decode(ALIAS_PLAN).unwrap();
     assert_eq!(
-        plan.alias_hostname().map(|name| name.as_str()),
+        plan.alias_hostname()
+            .map(rustiron_contracts::approval::Hostname::as_str),
         Some("alternate.example.test")
     );
     assert_eq!(

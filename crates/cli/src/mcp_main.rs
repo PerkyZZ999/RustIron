@@ -8,6 +8,12 @@
 //! externally signed, non-blanket, unexpired, single-operation executor grant
 //! within configured D-098 budgets and never allows self-approval or
 //! destructive verbs.
+#![warn(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "W672: production code returns errors; tests may unwrap (clippy.toml)"
+)]
 
 mod mcp;
 mod plan_summary;

@@ -1,14 +1,54 @@
 import { Link } from "@tanstack/react-router";
-import { Check, ChevronRight, Copy, type LucideIcon, ServerOff } from "lucide-react";
+import { Check, ChevronRight, Copy, type LucideIcon, ServerOff, Trash2 } from "lucide-react";
 import { type CSSProperties, type PointerEvent, type ReactNode, useEffect, useState } from "react";
 
 import { toastManager } from "@/components/ui/toast";
-import { useData } from "./data";
+import { hostLabel, isRealHost, useData } from "./data";
 import { evidenceLabel, fields, type Mark } from "./fixture";
 import type { HostHistory } from "./live";
 
 export function Glyph({ icon: Icon, className }: { icon: LucideIcon; className?: string }) {
   return <Icon className={className} aria-hidden="true" strokeWidth={2} />;
+}
+
+/**
+ * W741 (QA-10): a delete button that asks once. The first click arms it and
+ * shows "Confirm"; the second runs `onConfirm`. Leaving the button (blur or
+ * Escape) disarms it.
+ */
+export function ConfirmDeleteButton({
+  label,
+  disabled = false,
+  onConfirm,
+}: {
+  label: string;
+  disabled?: boolean;
+  onConfirm: () => void;
+}) {
+  const [armed, setArmed] = useState(false);
+  return (
+    <button
+      type="button"
+      className={armed ? "btn danger sm" : "icon-btn"}
+      disabled={disabled}
+      aria-label={armed ? `Confirm: ${label}` : label}
+      onBlur={() => setArmed(false)}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") setArmed(false);
+      }}
+      onClick={() => {
+        if (!armed) {
+          setArmed(true);
+          return;
+        }
+        setArmed(false);
+        onConfirm();
+      }}
+    >
+      <Glyph icon={Trash2} />
+      {armed ? "Confirm" : null}
+    </button>
+  );
 }
 
 const markClass: Record<Mark, string> = {
@@ -82,24 +122,73 @@ export function Crumbs({ items }: { items: { href?: string; label: string }[] })
   );
 }
 
-export function CopyId({ id, label }: { id: string; label: string }) {
+/**
+ * W682: copies `text` and reports the result as a toast. Never rejects: a missing
+ * clipboard (plain-HTTP origin) or a denied write shows an error toast instead.
+ */
+export async function copyText(text: string, title: string): Promise<boolean> {
+  try {
+    if (!navigator.clipboard) throw new Error("clipboard unavailable");
+    await navigator.clipboard.writeText(text);
+    toastManager.add({ id: "clipboard-copy", type: "success", title });
+    return true;
+  } catch {
+    toastManager.add({
+      id: "clipboard-copy",
+      type: "error",
+      title: "Copy failed",
+      description: "This browser blocked the clipboard. Select the text and copy it manually.",
+    });
+    return false;
+  }
+}
+
+/** True for two seconds after `markCopied()`. */
+function useCopiedFlag(): [boolean, () => void] {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return undefined;
     const timer = setTimeout(() => setCopied(false), 2000);
     return () => clearTimeout(timer);
   }, [copied]);
+  return [copied, () => setCopied(true)];
+}
+
+export function CopyButton({
+  text,
+  label,
+  toastTitle = "Command copied",
+}: {
+  text: string;
+  label: string;
+  toastTitle?: string;
+}) {
+  const [copied, markCopied] = useCopiedFlag();
+  return (
+    <button
+      type="button"
+      className="btn quiet sm"
+      aria-label={label}
+      onClick={async () => {
+        if (await copyText(text, toastTitle)) markCopied();
+      }}
+    >
+      <Glyph icon={copied ? Check : Copy} className={copied ? "check-pop list-ok" : undefined} />
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
+export function CopyId({ id, label }: { id: string; label: string }) {
+  const [copied, markCopied] = useCopiedFlag();
   return (
     <span className="copy-id">
       <span translate="no">{id}</span>
       <button
         type="button"
         aria-label={copied ? `${label} copied` : `Copy ${label}`}
-        onClick={() => {
-          void navigator.clipboard?.writeText(id).then(() => {
-            setCopied(true);
-            toastManager.add({ id: "clipboard-copy", type: "success", title: `${label} copied` });
-          });
+        onClick={async () => {
+          if (await copyText(id, `${label} copied`)) markCopied();
         }}
       >
         <Glyph icon={copied ? Check : Copy} className={copied ? "check-pop list-ok" : undefined} />
@@ -612,16 +701,17 @@ export function Legend() {
 }
 
 /** `live` pages read the data source; others are mockup samples and say so
- * whenever live data is connected, so sample rows are never taken as the host. */
+ * whenever the Console runs on a real host (live, loading, or unavailable), so
+ * sample rows are never taken as the host (W732, QA-01). */
 export function Page({ children, live = false }: { children: ReactNode; live?: boolean }) {
   const { source } = useData();
   return (
     <div className="page motion-stage">
-      {!live && source.kind === "live" ? (
+      {!live && isRealHost(source) ? (
         <div className="preview-banner" role="note">
           <span>
             <strong>Sample screen.</strong> This page still shows mockup data, not{" "}
-            {source.host.host_id}.
+            {hostLabel(source)}.
           </span>
         </div>
       ) : null}

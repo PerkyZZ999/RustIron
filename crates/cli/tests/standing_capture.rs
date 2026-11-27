@@ -49,15 +49,23 @@ struct Fixture {
     socket: PathBuf,
 }
 
+/// W720: a folder-name part that no other test in this process uses. The
+/// clock alone can repeat across parallel tests.
+fn unique_suffix() -> String {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |time| time.as_nanos());
+    let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{nanos}-{next}")
+}
+
 impl Fixture {
     fn new() -> Self {
         let directory = std::env::temp_dir().join(format!(
             "ri-cli-standing-{}-{}",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            unique_suffix()
         ));
         fs::DirBuilder::new()
             .mode(0o700)
@@ -377,7 +385,7 @@ fn a_run_submits_the_open_window_and_reports_a_missed_window() {
             .recorded
             .insert(run_id(&grant, 1), OutcomeState::Failed);
     }
-    let server = coordinator(&fixture.socket, Arc::clone(&journal), plan.clone());
+    let server = coordinator(&fixture.socket, Arc::clone(&journal), plan);
     let output = fixture.rustiron(&["schedule", "run", "--rpo-target-seconds", "600"]);
     server.join().unwrap();
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();

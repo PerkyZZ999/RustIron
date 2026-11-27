@@ -90,7 +90,9 @@ impl Drop for Lab {
 
 impl Lab {
     fn new(name: &str, crash: Crash) -> Self {
-        let serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        let serial = SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = std::env::temp_dir().join(format!("ri-w382-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         private_dir(&root);

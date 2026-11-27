@@ -1039,19 +1039,17 @@ export function liveDomains(sites: Site[], observation: Observation): DomainReco
 
 type StackLookup = { value: string | null; explicitNull: boolean };
 
-const OPTIONAL_STACK_KEYS: Record<string, "nodejs" | "bun" | "powerdns" | "caddy" | "postgresql"> =
-  {
-    "comp-node": "nodejs",
-    "comp-bun": "bun",
-    "comp-pdns": "powerdns",
-    "comp-caddy": "caddy",
-    "comp-pg": "postgresql",
-  };
+type OptionalStackKey = "nodejs" | "bun" | "powerdns" | "caddy" | "postgresql";
 
-function optionalStackKey(
-  stack: Machine["stack"],
-  key: "nodejs" | "bun" | "powerdns" | "caddy" | "postgresql",
-): StackLookup {
+const OPTIONAL_STACK_KEYS: Record<string, OptionalStackKey> = {
+  "comp-node": "nodejs",
+  "comp-bun": "bun",
+  "comp-pdns": "powerdns",
+  "comp-caddy": "caddy",
+  "comp-pg": "postgresql",
+};
+
+function optionalStackKey(stack: Machine["stack"], key: OptionalStackKey): StackLookup {
   if (!stack || !(key in stack)) return { value: null, explicitNull: false };
   const val = stack[key] ?? null;
   return { value: val, explicitNull: val === null };

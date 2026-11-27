@@ -1,6 +1,14 @@
 // Browser-local console preferences (Settings page, opaque-chrome transparency, and reduced motion).
 // Stored only in localStorage; never touches host state or security policy.
-import { createContext, type ReactNode, useContext, useEffect, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  use,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 
 export type TimeDisplay = "utc" | "local";
 export type MetricsRange = "1h" | "6h" | "24h" | "7d";
@@ -80,18 +88,19 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
     }
   }, [prefs.motion]);
 
-  function savePrefs(next: ConsolePreferences) {
+  const savePrefs = useCallback((next: ConsolePreferences) => {
     setPrefs(next);
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
     } catch {
       // Storage may be unavailable; preference still applies for this visit.
     }
-  }
+  }, []);
+  const value = useMemo(() => ({ prefs, savePrefs }), [prefs, savePrefs]);
 
-  return <PrefsContext.Provider value={{ prefs, savePrefs }}>{children}</PrefsContext.Provider>;
+  return <PrefsContext.Provider value={value}>{children}</PrefsContext.Provider>;
 }
 
 export function usePreferences() {
-  return useContext(PrefsContext);
+  return use(PrefsContext);
 }

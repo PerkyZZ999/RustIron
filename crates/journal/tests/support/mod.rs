@@ -30,11 +30,17 @@ pub fn intent(number: u32) -> Intent {
 }
 
 /// Rebuilds the import table with the original v21 dump-size constraint.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "used by only some of the test crates that share this module"
+)]
 const REBUILD_LEGACY_IMPORTS: &str = "PRAGMA foreign_keys=OFF; DROP TABLE caddy_generations; DROP TABLE app_fullstack_specs; DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; DROP TABLE proxy_routes; DROP TABLE dns_change_sets; DROP TABLE dns_changes; DROP TABLE dns_imports; DROP TABLE restore_steps; DROP TABLE restore_attempts; DROP TABLE site_restores; DROP TABLE clone_scrub_grants; DROP TABLE quota_changes; DROP TABLE deletions; CREATE TEMP TABLE p32 AS SELECT * FROM provisions; DROP TABLE provisions; CREATE TABLE provisions (operation_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, grant_id TEXT NOT NULL UNIQUE, nonce TEXT NOT NULL UNIQUE, plan_digest TEXT NOT NULL, grant_digest TEXT NOT NULL, host_id TEXT NOT NULL, host_epoch TEXT NOT NULL, site_id TEXT NOT NULL UNIQUE, hostname TEXT NOT NULL UNIQUE, expires_at INTEGER NOT NULL CHECK(expires_at>=0), state TEXT NOT NULL CHECK(state IN ('running','succeeded','quarantined','adopted'))) STRICT; INSERT INTO provisions SELECT * FROM temp.p32; DROP TABLE temp.p32; CREATE UNIQUE INDEX one_running_provision ON provisions((1)) WHERE state='running'; DROP TABLE update_rollbacks; DROP TABLE update_steps; DROP TABLE update_components; DROP INDEX one_open_update; DROP TABLE updates; DROP INDEX one_retirement; DROP TABLE retirements; DROP TABLE clone_scrubs; DROP TABLE clone_steps; DROP TABLE clones; DROP TABLE certificate_aliases; DROP TABLE import_aliases; PRAGMA foreign_keys=OFF; CREATE TEMP TABLE imports_new AS SELECT * FROM imports; DROP TABLE imports; CREATE TABLE imports (operation_id TEXT PRIMARY KEY REFERENCES provisions(operation_id), archive_sha256 TEXT NOT NULL CHECK(length(archive_sha256)=64 AND archive_sha256 NOT GLOB '*[^0-9a-f]*'), manifest_sha256 TEXT NOT NULL CHECK(length(manifest_sha256)=64 AND manifest_sha256 NOT GLOB '*[^0-9a-f]*'), file_entries INTEGER NOT NULL CHECK(file_entries BETWEEN 1 AND 200000), file_bytes INTEGER NOT NULL CHECK(file_bytes>=0), dump_bytes INTEGER NOT NULL CHECK(dump_bytes BETWEEN 1 AND 2147483648), target_php TEXT NOT NULL CHECK(length(target_php) BETWEEN 3 AND 4 AND target_php GLOB '[5-9].[0-9]*' AND substr(target_php,3) NOT GLOB '*[^0-9]*')) STRICT; INSERT INTO imports SELECT * FROM temp.imports_new; DROP TABLE temp.imports_new; ";
 
 /// SQL to downgrade a fresh journal to a historical import schema.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "used by only some of the test crates that share this module"
+)]
 pub fn legacy_import_schema(version: u8) -> String {
     let drop_tables = match version {
         21 => {
@@ -55,26 +61,38 @@ pub fn legacy_import_schema(version: u8) -> String {
 
 /// W442: turns a fresh journal into the v20 shape: the import tables (and
 /// the v22 scrubs) dropped.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "used by only some of the test crates that share this module"
+)]
 pub const TO_V20: &str = "PRAGMA foreign_keys=OFF; DROP TABLE caddy_generations; DROP TABLE app_fullstack_specs; DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; DROP TABLE proxy_routes; DROP TABLE dns_change_sets; DROP TABLE dns_changes; DROP TABLE dns_imports; DROP TABLE restore_steps; DROP TABLE restore_attempts; DROP TABLE site_restores; DROP TABLE clone_scrub_grants; DROP TABLE quota_changes; DROP TABLE deletions; CREATE TEMP TABLE p32 AS SELECT * FROM provisions; DROP TABLE provisions; CREATE TABLE provisions (operation_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, grant_id TEXT NOT NULL UNIQUE, nonce TEXT NOT NULL UNIQUE, plan_digest TEXT NOT NULL, grant_digest TEXT NOT NULL, host_id TEXT NOT NULL, host_epoch TEXT NOT NULL, site_id TEXT NOT NULL UNIQUE, hostname TEXT NOT NULL UNIQUE, expires_at INTEGER NOT NULL CHECK(expires_at>=0), state TEXT NOT NULL CHECK(state IN ('running','succeeded','quarantined','adopted'))) STRICT; INSERT INTO provisions SELECT * FROM temp.p32; DROP TABLE temp.p32; CREATE UNIQUE INDEX one_running_provision ON provisions((1)) WHERE state='running'; DROP TABLE update_rollbacks; DROP TABLE update_steps; DROP TABLE update_components; DROP INDEX one_open_update; DROP TABLE updates; DROP INDEX one_retirement; DROP TABLE retirements; DROP TABLE clone_scrubs; DROP TABLE clone_steps; DROP TABLE clones; DROP TABLE certificate_aliases; DROP TABLE import_aliases; DROP TABLE import_sources; DROP TABLE certificate_renewals; DROP TABLE certificate_grants; DROP TABLE certificates; DROP TABLE import_scrubs; DROP TABLE import_steps; DROP TABLE imports; \
 PRAGMA user_version=20;";
 
 /// W396: turns a fresh v20 journal into the v19 shape: the signed admission
 /// tables dropped.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "used by only some of the test crates that share this module"
+)]
 pub const TO_V19: &str = "PRAGMA foreign_keys=OFF; DROP TABLE caddy_generations; DROP TABLE app_fullstack_specs; DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; DROP TABLE proxy_routes; DROP TABLE dns_change_sets; DROP TABLE dns_changes; DROP TABLE dns_imports; DROP TABLE restore_steps; DROP TABLE restore_attempts; DROP TABLE site_restores; DROP TABLE clone_scrub_grants; DROP TABLE quota_changes; DROP TABLE deletions; CREATE TEMP TABLE p32 AS SELECT * FROM provisions; DROP TABLE provisions; CREATE TABLE provisions (operation_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, grant_id TEXT NOT NULL UNIQUE, nonce TEXT NOT NULL UNIQUE, plan_digest TEXT NOT NULL, grant_digest TEXT NOT NULL, host_id TEXT NOT NULL, host_epoch TEXT NOT NULL, site_id TEXT NOT NULL UNIQUE, hostname TEXT NOT NULL UNIQUE, expires_at INTEGER NOT NULL CHECK(expires_at>=0), state TEXT NOT NULL CHECK(state IN ('running','succeeded','quarantined','adopted'))) STRICT; INSERT INTO provisions SELECT * FROM temp.p32; DROP TABLE temp.p32; CREATE UNIQUE INDEX one_running_provision ON provisions((1)) WHERE state='running'; DROP TABLE update_rollbacks; DROP TABLE update_steps; DROP TABLE update_components; DROP INDEX one_open_update; DROP TABLE updates; DROP INDEX one_retirement; DROP TABLE retirements; DROP TABLE clone_scrubs; DROP TABLE clone_steps; DROP TABLE clones; DROP TABLE certificate_aliases; DROP TABLE import_aliases; DROP TABLE import_sources; DROP TABLE certificate_renewals; DROP TABLE certificate_grants; DROP TABLE certificates; DROP TABLE import_scrubs; DROP TABLE import_steps; DROP TABLE imports; DROP TABLE admission_signatures; DROP TABLE signed_objects; \
 PRAGMA user_version=19;";
 
 /// W395: turns a fresh journal into the v18 shape: the v20 tables (as
 /// [`TO_V19`]) and the page-cache recipe table dropped.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "used by only some of the test crates that share this module"
+)]
 pub const TO_V18: &str = "PRAGMA foreign_keys=OFF; DROP TABLE caddy_generations; DROP TABLE app_fullstack_specs; DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; DROP TABLE proxy_routes; DROP TABLE dns_change_sets; DROP TABLE dns_changes; DROP TABLE dns_imports; DROP TABLE restore_steps; DROP TABLE restore_attempts; DROP TABLE site_restores; DROP TABLE clone_scrub_grants; DROP TABLE quota_changes; DROP TABLE deletions; CREATE TEMP TABLE p32 AS SELECT * FROM provisions; DROP TABLE provisions; CREATE TABLE provisions (operation_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, grant_id TEXT NOT NULL UNIQUE, nonce TEXT NOT NULL UNIQUE, plan_digest TEXT NOT NULL, grant_digest TEXT NOT NULL, host_id TEXT NOT NULL, host_epoch TEXT NOT NULL, site_id TEXT NOT NULL UNIQUE, hostname TEXT NOT NULL UNIQUE, expires_at INTEGER NOT NULL CHECK(expires_at>=0), state TEXT NOT NULL CHECK(state IN ('running','succeeded','quarantined','adopted'))) STRICT; INSERT INTO provisions SELECT * FROM temp.p32; DROP TABLE temp.p32; CREATE UNIQUE INDEX one_running_provision ON provisions((1)) WHERE state='running'; DROP TABLE update_rollbacks; DROP TABLE update_steps; DROP TABLE update_components; DROP INDEX one_open_update; DROP TABLE updates; DROP INDEX one_retirement; DROP TABLE retirements; DROP TABLE clone_scrubs; DROP TABLE clone_steps; DROP TABLE clones; DROP TABLE certificate_aliases; DROP TABLE import_aliases; DROP TABLE import_sources; PRAGMA foreign_keys=OFF; \
 DROP TABLE certificate_renewals; DROP TABLE certificate_grants; DROP TABLE certificates; DROP TABLE import_scrubs; DROP TABLE import_steps; DROP TABLE imports; DROP TABLE admission_signatures; DROP TABLE signed_objects; \
 DROP TABLE page_cache_recipes; PRAGMA user_version=18;";
 
 /// W391: turns a fresh journal into the v17 shape: the v19 and v20 tables (as
 /// [`TO_V18`]), the retention evidence and capture refusal tables dropped.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "used by only some of the test crates that share this module"
+)]
 pub const TO_V17: &str = "PRAGMA foreign_keys=OFF; DROP TABLE caddy_generations; DROP TABLE app_fullstack_specs; DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; DROP TABLE proxy_routes; DROP TABLE dns_change_sets; DROP TABLE dns_changes; DROP TABLE dns_imports; DROP TABLE restore_steps; DROP TABLE restore_attempts; DROP TABLE site_restores; DROP TABLE clone_scrub_grants; DROP TABLE quota_changes; DROP TABLE deletions; CREATE TEMP TABLE p32 AS SELECT * FROM provisions; DROP TABLE provisions; CREATE TABLE provisions (operation_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, grant_id TEXT NOT NULL UNIQUE, nonce TEXT NOT NULL UNIQUE, plan_digest TEXT NOT NULL, grant_digest TEXT NOT NULL, host_id TEXT NOT NULL, host_epoch TEXT NOT NULL, site_id TEXT NOT NULL UNIQUE, hostname TEXT NOT NULL UNIQUE, expires_at INTEGER NOT NULL CHECK(expires_at>=0), state TEXT NOT NULL CHECK(state IN ('running','succeeded','quarantined','adopted'))) STRICT; INSERT INTO provisions SELECT * FROM temp.p32; DROP TABLE temp.p32; CREATE UNIQUE INDEX one_running_provision ON provisions((1)) WHERE state='running'; DROP TABLE update_rollbacks; DROP TABLE update_steps; DROP TABLE update_components; DROP INDEX one_open_update; DROP TABLE updates; DROP INDEX one_retirement; DROP TABLE retirements; DROP TABLE clone_scrubs; DROP TABLE clone_steps; DROP TABLE clones; DROP TABLE certificate_aliases; DROP TABLE import_aliases; DROP TABLE import_sources; PRAGMA foreign_keys=OFF; \
 DROP TABLE certificate_renewals; DROP TABLE certificate_grants; DROP TABLE certificates; DROP TABLE import_scrubs; DROP TABLE import_steps; DROP TABLE imports; DROP TABLE admission_signatures; DROP TABLE signed_objects; DROP TABLE page_cache_recipes; \
 DROP TABLE capture_object_retention; DROP TABLE capture_lock_checks; DROP TABLE capture_refusals; \
@@ -84,7 +102,10 @@ PRAGMA user_version=17;";
 /// [`TO_V17`]) and the re-adoption tables dropped, and `provisions` rebuilt
 /// with the v16 state check. Other tests then drop further tables to reach
 /// older versions.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "used by only some of the test crates that share this module"
+)]
 pub const TO_V16: &str = "PRAGMA foreign_keys=OFF; DROP TABLE caddy_generations; DROP TABLE app_fullstack_specs; DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; DROP TABLE proxy_routes; DROP TABLE dns_change_sets; DROP TABLE dns_changes; DROP TABLE dns_imports; DROP TABLE restore_steps; DROP TABLE restore_attempts; DROP TABLE site_restores; DROP TABLE clone_scrub_grants; DROP TABLE quota_changes; DROP TABLE deletions; CREATE TEMP TABLE p32 AS SELECT * FROM provisions; DROP TABLE provisions; CREATE TABLE provisions (operation_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, grant_id TEXT NOT NULL UNIQUE, nonce TEXT NOT NULL UNIQUE, plan_digest TEXT NOT NULL, grant_digest TEXT NOT NULL, host_id TEXT NOT NULL, host_epoch TEXT NOT NULL, site_id TEXT NOT NULL UNIQUE, hostname TEXT NOT NULL UNIQUE, expires_at INTEGER NOT NULL CHECK(expires_at>=0), state TEXT NOT NULL CHECK(state IN ('running','succeeded','quarantined','adopted'))) STRICT; INSERT INTO provisions SELECT * FROM temp.p32; DROP TABLE temp.p32; CREATE UNIQUE INDEX one_running_provision ON provisions((1)) WHERE state='running'; DROP TABLE update_rollbacks; DROP TABLE update_steps; DROP TABLE update_components; DROP INDEX one_open_update; DROP TABLE updates; DROP INDEX one_retirement; DROP TABLE retirements; DROP TABLE clone_scrubs; DROP TABLE clone_steps; DROP TABLE clones; DROP TABLE certificate_aliases; DROP TABLE import_aliases; DROP TABLE import_sources; PRAGMA foreign_keys=OFF; \
 DROP TABLE certificate_renewals; DROP TABLE certificate_grants; DROP TABLE certificates; DROP TABLE import_scrubs; DROP TABLE import_steps; DROP TABLE imports; DROP TABLE admission_signatures; DROP TABLE signed_objects; DROP TABLE page_cache_recipes; \
 DROP TABLE capture_object_retention; DROP TABLE capture_lock_checks; DROP TABLE capture_refusals; \
@@ -96,7 +117,10 @@ CREATE UNIQUE INDEX one_running_provision ON provisions((1)) WHERE state='runnin
 PRAGMA user_version=16;";
 
 /// W396: the exact v20 tables.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "used by only some of the test crates that share this module"
+)]
 pub const DDL_V20: [(&str, &str); 2] = [
     (
         "signed_objects",
@@ -110,5 +134,8 @@ pub const DDL_V20: [(&str, &str); 2] = [
 
 /// W576: turns the v41 `deletions` (nullable capture) back into the v33 to
 /// v40 table, rows kept, for a downgrade to one of those versions.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "used by only some of the test crates that share this module"
+)]
 pub const TO_V40_DELETIONS: &str = "CREATE TEMP TABLE d40 AS SELECT * FROM deletions; DROP TABLE deletions; CREATE TABLE deletions (operation_id TEXT PRIMARY KEY, provision_operation_id TEXT NOT NULL REFERENCES provisions(operation_id), capture_operation_id TEXT NOT NULL REFERENCES captures(operation_id), idempotency_key TEXT NOT NULL UNIQUE, grant_id TEXT NOT NULL UNIQUE, nonce TEXT NOT NULL UNIQUE, plan_digest TEXT NOT NULL CHECK(length(plan_digest)=64 AND plan_digest NOT GLOB '*[^0-9a-f]*'), grant_digest TEXT NOT NULL CHECK(length(grant_digest)=64 AND grant_digest NOT GLOB '*[^0-9a-f]*'), expires_at INTEGER NOT NULL CHECK(expires_at>=0), state TEXT NOT NULL CHECK(state IN ('intent','done','failed'))) STRICT; INSERT INTO deletions SELECT * FROM temp.d40; DROP TABLE temp.d40; CREATE UNIQUE INDEX one_deletion ON deletions(provision_operation_id) WHERE state<>'failed';";

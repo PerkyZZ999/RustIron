@@ -3,6 +3,8 @@
 // packaging/rustiron-install-wizard.py, packaging/rustiron-updater.py,
 // packaging/firewall-zone.py, packaging/wordpress-to-emdash.py, scripts/release/bundle_release.py).
 
+import { type KbSlug, kbArticleTitles } from "./kb-index";
+
 export type KbCategoryId =
   | "getting-started"
   | "hosting"
@@ -43,7 +45,7 @@ export type KbSection = {
 };
 
 export type KbArticle = {
-  slug: string;
+  slug: KbSlug;
   category: KbCategoryId;
   title: string;
   summary: string;
@@ -63,7 +65,8 @@ export type OperatorRunbookRef = {
   guideSlug: string;
 };
 
-export const kbCategories: KbCategory[] = [
+// W679: a non-empty tuple, so the first category needs no `!` assertion.
+export const kbCategories: [KbCategory, ...KbCategory[]] = [
   {
     id: "getting-started",
     label: "Getting Started",
@@ -104,7 +107,7 @@ export const kbArticles: KbArticle[] = [
   {
     slug: "how-rustiron-works",
     category: "getting-started",
-    title: "How RustIron Works: Architecture & Security Model",
+    title: kbArticleTitles["how-rustiron-works"],
     summary:
       "Understand the coordinator-to-executor trust boundary, why website traffic bypasses RustIron, how per-site SELinux MCS isolation works, and why signing keys stay off the server.",
     readMinutes: 4,
@@ -168,7 +171,7 @@ export const kbArticles: KbArticle[] = [
   {
     slug: "install-and-setup",
     category: "getting-started",
-    title: "Installing RustIron on AlmaLinux 10",
+    title: kbArticleTitles["install-and-setup"],
     summary:
       "Bring up a fresh AlmaLinux 10 server with the interactive installation wizard, enroll your operator signing key, configure ACME certificates, and lock down your first Console Admin account.",
     readMinutes: 5,
@@ -251,7 +254,7 @@ export const kbArticles: KbArticle[] = [
   {
     slug: "signing-and-plans",
     category: "getting-started",
-    title: "How Signed Plans & Grants Work",
+    title: kbArticleTitles["signing-and-plans"],
     summary:
       "Learn the 4-step operator workflow used for every host change: create a plan, review its canonical bytes and blast radius, sign offline with ssh-keygen, and apply through the coordinator.",
     readMinutes: 4,
@@ -304,7 +307,7 @@ export const kbArticles: KbArticle[] = [
   {
     slug: "wordpress-sites",
     category: "hosting",
-    title: "Host & Manage WordPress Websites",
+    title: kbArticleTitles["wordpress-sites"],
     summary:
       "Provision isolated WordPress sites, tune PHP 8.4 workers and LiteSpeed Page Cache, adjust quotas, run updates with automatic rollback, and safely eject or delete sites.",
     readMinutes: 5,
@@ -378,7 +381,7 @@ export const kbArticles: KbArticle[] = [
   {
     slug: "modern-apps-and-emdash",
     category: "hosting",
-    title: "Deploy EmDash CMS, Node.js 22 & Bun 1.4 Apps",
+    title: kbArticleTitles["modern-apps-and-emdash"],
     summary:
       "Provision confined Node.js 22 and Bun 1.4 applications and EmDash CMS behind OpenLiteSpeed with loopback-only networking, immutable releases, 0400 secrets, and automatic rollback.",
     readMinutes: 5,
@@ -445,7 +448,7 @@ export const kbArticles: KbArticle[] = [
   {
     slug: "fullstack-caddy",
     category: "hosting",
-    title: "Full-Stack Bun & Node.js Apps with Confined Caddy HTTP/3",
+    title: kbArticleTitles["fullstack-caddy"],
     summary:
       "Deploy modern front-end + back-end applications (Vite + Elysia, React + Hono, Next.js, Astro, TanStack Start, Static SPA) behind confined Caddy HTTP/3 with zero-downtime blue/green cutover and Dual-Mode Edge-over-OLS.",
     readMinutes: 6,
@@ -525,7 +528,7 @@ export const kbArticles: KbArticle[] = [
   {
     slug: "postgresql-18",
     category: "hosting",
-    title: "PostgreSQL 18.7 Setup, Hardening & Multi-DB Selection",
+    title: kbArticleTitles["postgresql-18"],
     summary:
       "Enable optional PostgreSQL 18 (18.7+) alongside MariaDB and SQLite, give each full-stack app its own least-privilege role and DATABASE_URL, rotate passwords locally, and verify pg_dump backups.",
     readMinutes: 5,
@@ -599,7 +602,7 @@ export const kbArticles: KbArticle[] = [
   {
     slug: "domains-ssl-and-dns",
     category: "domains-mail",
-    title: "Domains, Let's Encrypt HTTPS & PowerDNS Zones",
+    title: kbArticleTitles["domains-ssl-and-dns"],
     summary:
       "Issue ECDSA Let's Encrypt certificates, manage authoritative PowerDNS 5.1 zones and DNS records safely, and expose the Console Admin Panel on a custom HTTPS domain.",
     readMinutes: 5,
@@ -668,7 +671,7 @@ export const kbArticles: KbArticle[] = [
   {
     slug: "databases-and-credentials",
     category: "hosting",
-    title: "Databases, Password Rotation & Offline SQL Exports",
+    title: kbArticleTitles["databases-and-credentials"],
     summary:
       "Manage isolated per-site MariaDB and EmDash SQLite databases, rotate database passwords without revealing secrets in plans, and extract SQL dumps offline from encrypted backups.",
     readMinutes: 4,
@@ -730,7 +733,7 @@ export const kbArticles: KbArticle[] = [
   {
     slug: "email-and-relay",
     category: "domains-mail",
-    title: "Outbound Mail Relay & Mailbox Catalog",
+    title: kbArticleTitles["email-and-relay"],
     summary:
       "Send reliable transactional WordPress email through RustIron's confined per-site Postfix Unix-socket relay, manage optional mailbox catalogs, and verify MX/SPF/DKIM/DMARC records.",
     readMinutes: 4,
@@ -784,7 +787,7 @@ export const kbArticles: KbArticle[] = [
   {
     slug: "backups-and-recovery",
     category: "recovery-migration",
-    title: "Encrypted Backups, Retention Locks & Site Restore",
+    title: kbArticleTitles["backups-and-recovery"],
     summary:
       "Capture encrypted restic backups with Object Lock COMPLIANCE retention, configure standing schedules, read the 7-field Recovery Evidence strip, and run contained restore probes or live site restores.",
     readMinutes: 5,
@@ -854,7 +857,7 @@ export const kbArticles: KbArticle[] = [
   {
     slug: "migrations",
     category: "recovery-migration",
-    title: "Migrating from CyberPanel & WordPress to EmDash CMS",
+    title: kbArticleTitles["migrations"],
     summary:
       "Import existing CyberPanel WordPress sites with dry-run refusal checks and signed declarations, or rehearse WordPress-to-EmDash WXR content and media migrations without touching the live source.",
     readMinutes: 5,
@@ -913,7 +916,7 @@ export const kbArticles: KbArticle[] = [
   {
     slug: "security-and-diagnoses",
     category: "security-ops",
-    title: "Host Diagnoses, SELinux & Root-Only Checks",
+    title: kbArticleTitles["security-and-diagnoses"],
     summary:
       "Understand every health check on Host Diagnoses, why SSH and firewalld appear as root-only checks in the unprivileged Console, and how to inspect redacted logs and alerts.",
     readMinutes: 4,
@@ -970,7 +973,7 @@ export const kbArticles: KbArticle[] = [
   {
     slug: "firewall-and-network",
     category: "security-ops",
-    title: "Firewalld Zone, Cron Timers & Traffic Budget",
+    title: kbArticleTitles["firewall-and-network"],
     summary:
       "Lock down external ports with the enrolled rustiron firewalld zone, manage scheduled WordPress cron and backup timers, and understand traffic-aware background job deferral.",
     readMinutes: 4,
@@ -1027,7 +1030,7 @@ export const kbArticles: KbArticle[] = [
   {
     slug: "updates-and-releases",
     category: "updates-releases",
-    title: "Updating RustIron & Cutting Signed Releases",
+    title: kbArticleTitles["updates-and-releases"],
     summary:
       "Update a running RustIron host in one verified command with automatic rollback, and learn how maintainers pack, SSHSIG-sign, verify, and publish versioned release bundles.",
     readMinutes: 5,
@@ -1086,7 +1089,7 @@ export const kbArticles: KbArticle[] = [
   {
     slug: "troubleshooting-and-recovery",
     category: "updates-releases",
-    title: "Troubleshooting, Power Loss & Break-Glass Recovery",
+    title: kbArticleTitles["troubleshooting-and-recovery"],
     summary:
       "Handle Needs attention operations safely, recover after a host crash or power loss, explain manual drift without automatic resets, and uninstall cleanly without losing site data.",
     readMinutes: 5,
@@ -1523,14 +1526,7 @@ export function articleBySlug(slug: string): KbArticle | undefined {
 }
 
 export function articleCategory(id: KbCategoryId): KbCategory {
-  return kbCategories.find((c) => c.id === id) ?? kbCategories[0]!;
-}
-
-export function kbSearchTargets(): { href: string; label: string }[] {
-  return kbArticles.map((a) => ({
-    href: `/help/${a.slug}`,
-    label: `Docs: ${a.title}`,
-  }));
+  return kbCategories.find((c) => c.id === id) ?? kbCategories[0];
 }
 
 export function articleMatchesQuery(article: KbArticle, needle: string): boolean {

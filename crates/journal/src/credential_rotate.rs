@@ -13,7 +13,7 @@ use rustiron_contracts::{
     approval::{CredentialTarget, Hostname, Sha256Digest, SiteId},
 };
 
-use crate::{FixtureJournal, JournalError, app, import, provision, proxy, storage};
+use crate::{Admitted, FixtureJournal, JournalError, app, import, provision, proxy, storage};
 
 /// An admitted signed credential rotation; built by the executor from verified
 /// inputs. Contains no secret material.
@@ -101,15 +101,6 @@ pub struct CredentialRotation {
     pub target: CredentialTarget,
     /// Durable state.
     pub state: CredentialRotateState,
-}
-
-/// A new or an exactly repeated credential rotation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CredentialRotateResult {
-    /// Recorded now, in `intent`.
-    New(CredentialRotation),
-    /// The exact same request was recorded before; its stored state.
-    Existing(CredentialRotation),
 }
 
 const COLUMNS: &str = "operation_id, site_id, hostname, target, idempotency_key, grant_id, nonce, plan_digest, grant_digest, expires_at, state";
@@ -206,7 +197,7 @@ impl FixtureJournal {
         &mut self,
         intent: &CredentialRotateIntent,
         now: Timestamp,
-    ) -> Result<CredentialRotateResult, JournalError> {
+    ) -> Result<Admitted<CredentialRotation>, JournalError> {
         let signed = self.take_signed(&crate::signed::Expected {
             plan_digest: &intent.plan_digest,
             grant_digest: &intent.grant_digest,
@@ -245,7 +236,7 @@ impl FixtureJournal {
                 ]
                 && expires_at == intent.expires_at.get() as i64;
             return if exact {
-                Ok(CredentialRotateResult::Existing(rotation(&texts, &state)?))
+                Ok(Admitted::Existing(rotation(&texts, &state)?))
             } else {
                 Err(JournalError::Conflict)
             };
@@ -319,7 +310,7 @@ impl FixtureJournal {
         crate::signed::insert(&transaction, &intent.operation_id, signed.as_ref())?;
         storage::set_clock(&transaction, now)?;
         transaction.commit().map_err(storage::unavailable)?;
-        Ok(CredentialRotateResult::New(CredentialRotation {
+        Ok(Admitted::New(CredentialRotation {
             operation_id: intent.operation_id.clone(),
             site_id: intent.site_id.clone(),
             hostname: intent.hostname.clone(),

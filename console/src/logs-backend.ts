@@ -85,10 +85,14 @@ export function allowedLogUnits() {
   return Object.entries(ALLOWED_UNITS).map(([key, unit]) => ({ key, unit }));
 }
 
-function clampLineCount(raw: string | null): number {
+/**
+ * W756 (QA-25): a count outside 10-200 is clamped to the nearest limit; only a
+ * missing or non-integer value falls back to 60.
+ */
+export function clampLineCount(raw: string | null): number {
   const parsed = Number(raw ?? 60);
-  if (!Number.isInteger(parsed) || parsed < 10 || parsed > 200) return 60;
-  return parsed;
+  if (raw === "" || !Number.isInteger(parsed)) return 60;
+  return Math.min(200, Math.max(10, parsed));
 }
 
 function parseJournalOutput(stdout: string): string[] {

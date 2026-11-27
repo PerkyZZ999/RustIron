@@ -2,7 +2,6 @@
 //! zone; a done import owns the zone; a failed one frees it. Real SQLite;
 //! no host effects.
 use rustiron_contracts::approval::ZoneName;
-use rustiron_journal::{DnsImportIntent, DnsImportResult, FixtureJournal, JournalError, StepState};
 use std::{
     fs,
     os::unix::fs::DirBuilderExt,
@@ -14,6 +13,9 @@ use std::{
     reason = "shared helpers; this suite needs no fixture operation"
 )]
 mod support;
+use rustiron_journal::{
+    Admitted, DnsImport, DnsImportIntent, FixtureJournal, JournalError, StepState,
+};
 use support::*;
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -71,10 +73,10 @@ fn import(n: u32, name: &str) -> DnsImportIntent {
     }
 }
 
-fn new_import(result: DnsImportResult) -> rustiron_journal::DnsImport {
+fn new_import(result: Admitted<DnsImport>) -> rustiron_journal::DnsImport {
     match result {
-        DnsImportResult::New(row) => row,
-        DnsImportResult::Existing(_) => panic!("expected a new import"),
+        Admitted::New(row) => row,
+        Admitted::Existing(_) => panic!("expected a new import"),
     }
 }
 
@@ -90,7 +92,7 @@ fn an_import_records_once_and_replays_exactly() {
     assert_eq!(ledger.admission_count().unwrap(), before + 1);
     assert!(matches!(
         ledger.record_dns_import(&intent, time(1001)),
-        Ok(DnsImportResult::Existing(_))
+        Ok(Admitted::Existing(_))
     ));
     // The same key with another digest or count is a conflict.
     let mut other = intent.clone();
@@ -268,7 +270,6 @@ fn change(n: u32, zone_name: &str) -> rustiron_journal::DnsChangeIntent {
 
 #[test]
 fn a_change_needs_an_owned_zone_and_the_expected_sets() {
-    use rustiron_journal::DnsChangeResult;
     let state = State::new();
     let mut ledger = state.init();
     // An unowned zone takes no change.
@@ -296,15 +297,15 @@ fn a_change_needs_an_owned_zone_and_the_expected_sets() {
     assert_eq!(ledger.admission_count().unwrap(), before);
     let intent = change(1, "example.test");
     let recorded = match ledger.record_dns_change(&intent, time(1001)).unwrap() {
-        DnsChangeResult::New(row) => row,
-        DnsChangeResult::Existing(_) => panic!("expected a new change"),
+        Admitted::New(row) => row,
+        Admitted::Existing(_) => panic!("expected a new change"),
     };
     assert_eq!(recorded.state, StepState::Intent);
     assert_eq!(recorded.sets.len(), 2);
     assert_eq!(ledger.admission_count().unwrap(), before + 1);
     assert!(matches!(
         ledger.record_dns_change(&intent, time(1002)),
-        Ok(DnsChangeResult::Existing(_))
+        Ok(Admitted::Existing(_))
     ));
     let mut other = intent.clone();
     other.sets.pop();

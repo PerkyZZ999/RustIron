@@ -109,12 +109,12 @@ fn the_relayed_evidence_round_trips_and_refuses_changes() {
     let after = parse_lock(postcheck().as_bytes(), true).unwrap();
     let evidence = evidence(&before, &after, SNAPSHOT).unwrap();
     let relayed = to_relay(&evidence);
-    assert_eq!(from_relay(&relayed, SNAPSHOT), Some(evidence.clone()));
+    assert_eq!(from_relay(&relayed, SNAPSHOT), Some(evidence));
     assert_eq!(from_relay(&relayed, &"b".repeat(64)), None);
     let mut bad = relayed.clone();
     bad["objects"][1]["version_id"] = "null".into();
     assert_eq!(from_relay(&bad, SNAPSHOT), None);
-    let mut bad = relayed.clone();
+    let mut bad = relayed;
     bad["before_days"] = 0.into();
     assert_eq!(from_relay(&bad, SNAPSHOT), None);
     assert_eq!(from_relay(&serde_json::Value::Null, SNAPSHOT), None);

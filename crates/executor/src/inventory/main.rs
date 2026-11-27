@@ -1,4 +1,10 @@
 //! Fixed metadata worker. Run only as an unprivileged restore identity.
+#![warn(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "W672: production code returns errors; tests may unwrap (clippy.toml)"
+)]
 use std::{io::Write, path::Path, process::ExitCode};
 #[path = "../restore/inventory_report.rs"]
 #[expect(

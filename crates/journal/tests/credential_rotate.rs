@@ -12,9 +12,9 @@ use rustiron_contracts::{
     migration::PhpVersion,
 };
 use rustiron_journal::{
-    AppFacts, CredentialRotateIntent, CredentialRotateResult, CredentialRotateState,
-    FixtureJournal, ImportFacts, ImportStep, JournalError, ProvisionIntent, ProvisionStep,
-    ProxyFacts, QuotaChangeIntent, SignedAdmission,
+    Admitted, AppFacts, CredentialRotateIntent, CredentialRotateState, FixtureJournal, ImportFacts,
+    ImportStep, JournalError, ProvisionIntent, ProvisionStep, ProxyFacts, QuotaChangeIntent,
+    SignedAdmission,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -143,7 +143,7 @@ fn lifecycle_replay_mutual_exclusion_and_reconcile() {
     served_wp(&mut ledger, "blog1");
 
     let first = rot(1, "blog1");
-    let CredentialRotateResult::New(open) = ledger
+    let Admitted::New(open) = ledger
         .record_credential_rotation(&first, time(1000))
         .unwrap()
     else {
@@ -157,7 +157,7 @@ fn lifecycle_replay_mutual_exclusion_and_reconcile() {
         ledger
             .record_credential_rotation(&first, time(1001))
             .unwrap(),
-        CredentialRotateResult::Existing(open.clone())
+        Admitted::Existing(open)
     );
     let mut mismatch = first.clone();
     mismatch.nonce = id("other_nonce");

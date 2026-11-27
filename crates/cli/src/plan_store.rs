@@ -54,28 +54,23 @@ pub(crate) fn apply_stored(request: StoredApply<'_>) -> ExitCode {
         Ok(plan) => plan,
         Err(error) => return refuse(code(error), label(error)),
     };
-    let prepared = match rustiron_contracts::approval::PreparedPlan::decode(&plan) {
-        Ok(prepared) => prepared,
-        Err(_) => return refuse(7, "UNAVAILABLE"),
+    let Ok(prepared) = rustiron_contracts::approval::PreparedPlan::decode(&plan) else {
+        return refuse(7, "UNAVAILABLE");
     };
-    let grant = match file_input::read(grant_file, rustiron_contracts::MAX_REQUEST_BYTES) {
-        Ok(grant) => grant,
-        Err(_) => return refuse(2, "INVALID_GRANT"),
+    let Ok(grant) = file_input::read(grant_file, rustiron_contracts::MAX_REQUEST_BYTES) else {
+        return refuse(2, "INVALID_GRANT");
     };
-    let signature = match file_input::read(
+    let Ok(signature) = file_input::read(
         signature_file,
         rustiron_contracts::execution::MAX_SIGNATURE_TEXT,
-    ) {
-        Ok(signature) => signature,
-        Err(_) => return refuse(2, "INVALID_GRANT"),
+    ) else {
+        return refuse(2, "INVALID_GRANT");
     };
-    let signature = match String::from_utf8(signature) {
-        Ok(signature) => signature,
-        Err(_) => return refuse(2, "INVALID_GRANT"),
+    let Ok(signature) = String::from_utf8(signature) else {
+        return refuse(2, "INVALID_GRANT");
     };
-    let claim = match serde_json::from_slice::<serde_json::Value>(&grant) {
-        Ok(claim) => claim,
-        Err(_) => return refuse(2, "INVALID_GRANT"),
+    let Ok(claim) = serde_json::from_slice::<serde_json::Value>(&grant) else {
+        return refuse(2, "INVALID_GRANT");
     };
     let claimed_id = claim.get("plan_id").and_then(|value| value.as_str());
     let claimed_digest = claim.get("plan_digest").and_then(|value| value.as_str());

@@ -1,0 +1,52 @@
+#!/bin/sh
+# Rustiron Console observation feed (W733, QA-02). Root reads the executor
+# journal; the coordinator user adds unprivileged host status and one resource
+# sample. Replaces the observation file atomically. Installed by
+# packaging/rustiron-install-wizard.py and run by rustiron-console-observe.timer.
+#   rustiron-console-observe /var/lib/rustiron-console/observe/observation.json
+set -eu
+OUT=${1:?absolute observation path}
+case $OUT in /*) ;; *) echo "absolute path required" >&2; exit 2 ;; esac
+[ "$(id -u)" -eq 0 ] || { echo "root required for journal observe" >&2; exit 3; }
+DIR=$(dirname "$OUT")
+EXEC=/usr/libexec/rustiron/rustiron-executor
+CTRL=/usr/libexec/rustiron/rustiron-control
+JOURNAL=/var/lib/rustiron/executor/fixture-journal.sqlite
+OWNER=rustiron-coordinator
+install -d -m 0750 -o "$OWNER" -g "$OWNER" "$DIR"
+exec 9>"$DIR/lock"
+flock -w 20 9 || { echo "observation lock busy" >&2; exit 7; }
+"$EXEC" observe > "$DIR/journal.json"
+python3 - "$DIR/journal.json" "$JOURNAL" <<'PY'
+import json, os, re, sqlite3, subprocess, sys
+path, journal = sys.argv[1], sys.argv[2]
+names = ("account", "directories", "labels", "database", "credentials", "recipe", "phpunits", "verify")
+site_id = re.compile(r"[a-z][a-z0-9]{0,30}")
+obs = json.load(open(path))
+db = sqlite3.connect(f"file:{journal}?mode=ro", uri=True)
+failed = dict(db.execute(
+    "SELECT p.site_id, MIN(s.position) FROM provisions p "
+    "JOIN provision_steps s ON s.operation_id=p.operation_id "
+    "WHERE s.state='failed' GROUP BY p.site_id"))
+for site in obs.get("sites", []):
+    name = site.get("site_id")
+    position = failed.get(name)
+    if isinstance(position, int) and 0 <= position < len(names):
+        site["failed_step"] = names[position]
+    if site.get("state") != "quarantined" or not isinstance(name, str) or not site_id.fullmatch(name):
+        continue
+    account = "rs_" + name
+    user = subprocess.run(["id", "-u", account], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    site["host_account"] = "present" if user.returncode == 0 else "absent"
+    site["host_directory"] = "present" if os.path.isdir("/srv/sites/" + account) else "absent"
+json.dump(obs, open(path, "w"))
+PY
+chown "$OWNER:$OWNER" "$DIR/journal.json"
+chmod 0640 "$DIR/journal.json"
+runuser -u "$OWNER" -- "$CTRL" \
+  --merge-observation "$DIR/journal.json" \
+  --write-status "$DIR/status.json" \
+  --record-samples "$DIR/samples.json" > "$OUT.tmp"
+chown "$OWNER:$OWNER" "$OUT.tmp"
+chmod 0640 "$OUT.tmp"
+mv -f "$OUT.tmp" "$OUT"

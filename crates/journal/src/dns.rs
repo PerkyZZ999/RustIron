@@ -13,7 +13,7 @@ use rustiron_contracts::{
 };
 use sha2::Digest;
 
-use crate::{FixtureJournal, JournalError, StepState, storage};
+use crate::{Admitted, FixtureJournal, JournalError, StepState, storage};
 
 /// An admitted signed zone import; built by the executor from verified
 /// inputs.
@@ -58,15 +58,6 @@ pub struct DnsImport {
     pub record_sets: u32,
     /// `intent` until its outcome is observed.
     pub state: StepState,
-}
-
-/// A new or an exactly repeated zone import.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DnsImportResult {
-    /// Recorded now, in `intent`.
-    New(DnsImport),
-    /// The same request was recorded before; its stored state.
-    Existing(DnsImport),
 }
 
 const COLUMNS: &str = "operation_id, zone, zone_sha256, idempotency_key, grant_id, nonce, plan_digest, grant_digest, record_sets, expires_at, state";
@@ -215,7 +206,7 @@ impl FixtureJournal {
         &mut self,
         intent: &DnsImportIntent,
         now: Timestamp,
-    ) -> Result<DnsImportResult, JournalError> {
+    ) -> Result<Admitted<DnsImport>, JournalError> {
         let signed = self.take_signed(&crate::signed::Expected {
             plan_digest: &intent.plan_digest,
             grant_digest: &intent.grant_digest,
@@ -257,7 +248,7 @@ impl FixtureJournal {
                         intent.expires_at.get() as i64,
                     ];
             return if exact {
-                Ok(DnsImportResult::Existing(import(&texts, numbers, &state)?))
+                Ok(Admitted::Existing(import(&texts, numbers, &state)?))
             } else {
                 Err(JournalError::Conflict)
             };
@@ -306,7 +297,7 @@ impl FixtureJournal {
         crate::signed::insert(&transaction, &intent.operation_id, signed.as_ref())?;
         storage::set_clock(&transaction, now)?;
         transaction.commit().map_err(storage::unavailable)?;
-        Ok(DnsImportResult::New(DnsImport {
+        Ok(Admitted::New(DnsImport {
             operation_id: intent.operation_id.clone(),
             zone: intent.zone.clone(),
             zone_sha256: intent.zone_sha256.clone(),
@@ -412,15 +403,6 @@ pub struct DnsChange {
     pub sets: Vec<DnsChangeSet>,
     /// `intent` until its outcome is observed.
     pub state: StepState,
-}
-
-/// W554: a new or an exactly repeated record change.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DnsChangeResult {
-    /// Recorded now, in `intent`.
-    New(DnsChange),
-    /// The same request was recorded before; its stored state.
-    Existing(DnsChange),
 }
 
 fn expected_text(expected: &Expected) -> String {
@@ -576,7 +558,7 @@ impl FixtureJournal {
         &mut self,
         intent: &DnsChangeIntent,
         now: Timestamp,
-    ) -> Result<DnsChangeResult, JournalError> {
+    ) -> Result<Admitted<DnsChange>, JournalError> {
         let signed = self.take_signed(&crate::signed::Expected {
             plan_digest: &intent.plan_digest,
             grant_digest: &intent.grant_digest,
@@ -622,7 +604,7 @@ impl FixtureJournal {
                     a.owner == b.owner && a.kind == b.kind && a.expected == b.expected
                 });
             return if exact {
-                Ok(DnsChangeResult::Existing(stored))
+                Ok(Admitted::Existing(stored))
             } else {
                 Err(JournalError::Conflict)
             };
@@ -689,7 +671,7 @@ impl FixtureJournal {
         let (recorded, _, _) = load_change(&transaction, intent.operation_id.as_str())?
             .ok_or(JournalError::Unavailable)?;
         transaction.commit().map_err(storage::unavailable)?;
-        Ok(DnsChangeResult::New(recorded))
+        Ok(Admitted::New(recorded))
     }
 
     /// W554: records the outcome of an open change with each set read

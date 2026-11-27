@@ -7,6 +7,7 @@ import {
   CircleMinus,
   CircleX,
   LoaderCircle,
+  RotateCcw,
   type LucideIcon,
 } from "lucide-react";
 
@@ -521,7 +522,7 @@ function kibText(value: number): string {
   return `${integer.format(value)} KiB`;
 }
 
-const quotaSources: Record<string, string> = {
+const quotaSources: Record<NonNullable<RecordedQuota["source"]>, string> = {
   policy: "enrolled policy",
   plan: "signed site plan",
   readoption: "verified by re-adoption",
@@ -529,7 +530,8 @@ const quotaSources: Record<string, string> = {
 
 const MALFORMED_QUOTA = "Recorded limits are malformed; not shown";
 
-const quotaStates: Record<string, string> = {
+const quotaStates: Record<Exclude<RecordedQuota["state"], "enforced">, string> = {
+  malformed: MALFORMED_QUOTA,
   not_enforced: "Not enforced (the enrolled policy sets no quota)",
   not_recorded: "Not recorded (provisioned before per-site quotas)",
   not_attempted: "Not recorded (the directories step never began)",
@@ -627,7 +629,22 @@ function httpFact(site: ObservedSite): Pick<Site, "http" | "httpKind"> {
 
 type Outcome = { outcome: string; kind: OperationRow["kind"]; icon: LucideIcon };
 
-const outcomes: Record<string, Outcome> = {
+/** Every state the observation types declare; `satisfies` below makes a new one need a row. */
+type ObservedState =
+  | ObservedSite["state"]
+  | Observation["captures"][number]["state"]
+  | Observation["probes"][number]["state"]
+  | Readoption["state"];
+
+/** Journal operation states. `operations[].state` stays a string: unknown ones render as-is. */
+type JournalOperationState =
+  | "intent"
+  | "needs_attention"
+  | "compensating"
+  | "failed_compensated"
+  | "untouched";
+
+const outcomes: Readonly<Record<string, Outcome>> = {
   succeeded: { outcome: "Succeeded", kind: "ok", icon: CircleCheck },
   passed: { outcome: "Succeeded", kind: "ok", icon: CircleCheck },
   running: { outcome: "Running", kind: "info", icon: LoaderCircle },
@@ -635,14 +652,15 @@ const outcomes: Record<string, Outcome> = {
   needs_attention: { outcome: "Needs attention", kind: "err", icon: CircleAlert },
   cleanup_incomplete: { outcome: "Needs attention", kind: "err", icon: CircleAlert },
   compensating: { outcome: "Needs attention", kind: "err", icon: CircleAlert },
-  failed_compensated: { outcome: "Failed, compensated", kind: "warn", icon: CircleCheck },
+  // W751 (QA-20): rolled back, not a success, so not a check mark.
+  failed_compensated: { outcome: "Failed, compensated", kind: "warn", icon: RotateCcw },
   failed: { outcome: "Failed · no snapshot", kind: "err", icon: CircleX },
   quarantined: { outcome: "Failed · partial effects", kind: "err", icon: CircleX },
   untouched: { outcome: "Failed · untouched", kind: "muted", icon: CircleMinus },
   adopted: { outcome: "Succeeded", kind: "ok", icon: CircleCheck },
   verifying: { outcome: "Running", kind: "info", icon: LoaderCircle },
   refused: { outcome: "Failed · refused", kind: "err", icon: CircleX },
-};
+} satisfies Record<ObservedState | JournalOperationState, Outcome>;
 
 const operationActions: Record<Observation["operations"][number]["kind"], string> = {
   config_activate: "Config activation",
@@ -1498,7 +1516,7 @@ function uptimeDisplay(seconds: number | null): { value: string; unit: string } 
   return { value: String(Math.max(1, Math.floor(seconds / 60))), unit: " min" };
 }
 
-/** Installed OpenLiteSpeed, MariaDB, and PHP versions. Missing pieces stay out. */
+/** The executor's SELinux context, or why it was not read. */
 export function executorSelinuxText(value: Machine["executor_selinux"]): string {
   if (!value) return "Executor SELinux context was not read";
   if (!value.readable || !value.context) {
@@ -1531,6 +1549,7 @@ export function failedUnitsText(value: Machine["failed_units"]): string {
   return `${value.units.length} units failed`;
 }
 
+/** Installed OpenLiteSpeed, MariaDB, and PHP versions. Missing pieces stay out. */
 export function stackText(stack: Machine["stack"]): string {
   if (!stack) return "Stack versions were not read";
   const parts = [
@@ -1572,6 +1591,27 @@ export function tlsListenerText(tls: Machine["tls"]): string {
   if (count === 0) return "No TLS listener on port 443. Certificate expiry was not read.";
   const noun = count === 1 ? "listener" : "listeners";
   return `${count} TLS ${noun} on port 443. Certificate expiry was not read.`;
+}
+
+/**
+ * W702 (W689 candidate 5): the host-fact lines of the Services screen, in
+ * display order. A fact the observer did not report has no line.
+ */
+export function serviceFactLines(
+  machine: Machine | null,
+  journalSites: Observation["sites"] | undefined,
+): string[] {
+  if (!machine) return [];
+  return [
+    machine.ssh ? sshPolicyText(machine.ssh) : null,
+    machine.tls ? tlsListenerText(machine.tls) : null,
+    machine.firewall ? firewallText(machine.firewall) : null,
+    machine.database ? databaseText(machine.database) : null,
+    machine.stack ? stackText(machine.stack) : null,
+    machine.executor_selinux ? executorSelinuxText(machine.executor_selinux) : null,
+    machine.failed_units ? failedUnitsText(machine.failed_units) : null,
+    olsMapText(machine.ols_map, journalSites),
+  ].filter((line) => line !== null);
 }
 
 /** Effective SSH settings, or an explicit unread result. Missing means the read was not attempted. */

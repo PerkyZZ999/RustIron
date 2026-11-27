@@ -3,6 +3,7 @@
 // signing keys; supports loading plan.json, grant.json, and grant.json.sig
 // from disk or paste, verifies canonical digests, and submits byte-exact
 // plan_apply frames when RUSTIRON_CONSOLE_WRITE_WORKFLOWS=1.
+import { consoleRequest } from "./console-request";
 import { Button } from "@/components/ui/button";
 import { Link } from "@tanstack/react-router";
 import {
@@ -26,17 +27,12 @@ type WriteSession = {
 
 type SubmitOutcome =
   | { state: "idle" }
-  | { state: "error"; code: string }
+  | { state: "error"; code: string; outcomeUnknown: boolean; operationId: string }
   | { state: "applied"; result: WriteApplyResult };
 
 async function fetchCsrfToken(): Promise<WriteSession | null> {
-  try {
-    const res = await fetch("/api/write/session", { cache: "no-store" });
-    if (!res.ok) return null;
-    return (await res.json()) as WriteSession;
-  } catch {
-    return null;
-  }
+  const reply = await consoleRequest<WriteSession | null>("/api/write/session");
+  return reply.ok ? reply.data : null;
 }
 
 function ReviewResultBox({ summary }: { summary: PlanReviewSummary }) {
@@ -89,6 +85,22 @@ function ReviewResultBox({ summary }: { summary: PlanReviewSummary }) {
 
 function ApplyOutcomeBox({ outcome }: { outcome: SubmitOutcome }) {
   if (outcome.state === "idle") return null;
+  if (outcome.state === "error" && outcome.outcomeUnknown) {
+    // W682: an interrupted submission is not a refusal; only the operation record can say.
+    return (
+      <div className="attention" role="alert">
+        <Glyph icon={TriangleAlert} />
+        <div className="att-body">
+          <strong>Outcome unknown:</strong> <span className="mono">{outcome.code}</span>. The
+          submission may have reached the coordinator. Check{" "}
+          <Link to="/operations/$operationId" params={{ operationId: outcome.operationId }}>
+            {outcome.operationId}
+          </Link>{" "}
+          before retrying.
+        </div>
+      </div>
+    );
+  }
   if (outcome.state === "error") {
     return (
       <div className="attention err" role="alert">
@@ -130,25 +142,34 @@ const emptyForm: ApplyFormState = {
   signatureText: "",
 };
 
-async function postProtectedJson<T>(
+type ProtectedReply<T> =
+  | { ok: true; data: T }
+  | { ok: false; code: string; outcomeUnknown: boolean };
+
+/** Never rejects. `outcomeUnknown` is true when the request may have taken effect. */
+export async function postProtectedJson<T>(
   path: string,
   payload: unknown,
-): Promise<{ ok: true; data: T } | { ok: false; code: string }> {
+): Promise<ProtectedReply<T>> {
   const session = await fetchCsrfToken();
   if (!session?.write_workflows_enabled || !session.csrf_token) {
-    return { ok: false, code: "WRITE_WORKFLOWS_DISABLED" };
+    return { ok: false, code: "WRITE_WORKFLOWS_DISABLED", outcomeUnknown: false };
   }
-  const res = await fetch(path, {
+  const reply = await consoleRequest<T | null>(path, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-rustiron-csrf": session.csrf_token,
-    },
-    body: JSON.stringify(payload),
+    json: payload,
+    headers: { "x-rustiron-csrf": session.csrf_token },
   });
-  const body = (await res.json()) as T & { error?: string };
-  if (!res.ok) return { ok: false, code: body.error ?? "REQUEST_FAILED" };
-  return { ok: true, data: body };
+  if (reply.status === null) {
+    return { ok: false, code: "CONSOLE_UNREACHABLE", outcomeUnknown: true };
+  }
+  if (reply.ok && reply.data) return { ok: true, data: reply.data };
+  const body = reply.data as { outcome?: { kind?: string } } | null;
+  return {
+    ok: false,
+    code: (!reply.ok && reply.code) || `HTTP_${reply.status}`,
+    outcomeUnknown: !body || body.outcome?.kind === "outcome_unknown",
+  };
 }
 
 function isFormReady(
@@ -311,11 +332,15 @@ export function SeparateCustodyApplyPanel() {
   async function handleReview() {
     setReviewError(null);
     setBusy(true);
-    const res = await postProtectedJson<PlanReviewSummary>("/api/write/plan/review", {
-      plan_json: form.planJson,
-      grant_json: form.grantJson,
-    });
-    setBusy(false);
+    let res: ProtectedReply<PlanReviewSummary>;
+    try {
+      res = await postProtectedJson<PlanReviewSummary>("/api/write/plan/review", {
+        plan_json: form.planJson,
+        grant_json: form.grantJson,
+      });
+    } finally {
+      setBusy(false);
+    }
     if (!res.ok) {
       setReview(null);
       setReviewError(res.code);
@@ -327,16 +352,26 @@ export function SeparateCustodyApplyPanel() {
   async function handleApply() {
     setOutcome({ state: "idle" });
     setBusy(true);
-    const res = await postProtectedJson<WriteApplyResult>("/api/write/plan/apply", {
-      operation_id: form.operationId.trim(),
-      idempotency_key: form.idempotencyKey.trim(),
-      plan_json: form.planJson,
-      grant_json: form.grantJson,
-      signature_text: form.signatureText,
-    });
-    setBusy(false);
+    const operationId = form.operationId.trim();
+    let res: ProtectedReply<WriteApplyResult>;
+    try {
+      res = await postProtectedJson<WriteApplyResult>("/api/write/plan/apply", {
+        operation_id: operationId,
+        idempotency_key: form.idempotencyKey.trim(),
+        plan_json: form.planJson,
+        grant_json: form.grantJson,
+        signature_text: form.signatureText,
+      });
+    } finally {
+      setBusy(false);
+    }
     if (!res.ok) {
-      setOutcome({ state: "error", code: res.code });
+      setOutcome({
+        state: "error",
+        code: res.code,
+        outcomeUnknown: res.outcomeUnknown,
+        operationId,
+      });
       return;
     }
     setOutcome({ state: "applied", result: res.data });

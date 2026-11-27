@@ -14,7 +14,8 @@ use rustiron_contracts::{
 };
 
 use crate::{
-    FixtureJournal, JournalError, ProvisionState, ProvisionStep, StepState, provision, storage,
+    Admitted, FixtureJournal, JournalError, ProvisionState, ProvisionStep, StepState, provision,
+    storage,
 };
 
 /// The signed source facts of one clone (D-078 plan `source`).
@@ -126,15 +127,6 @@ pub struct CloneScrubGrant {
     pub clone_operation_id: Id,
     /// `intent` until its outcome is observed.
     pub state: StepState,
-}
-
-/// W538: a new or an exactly repeated signed clone scrub.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CloneScrubResult {
-    /// Recorded now, in `intent`.
-    New(CloneScrubGrant),
-    /// The same request was recorded before; its stored state.
-    Existing(CloneScrubGrant),
 }
 
 pub(crate) fn insert(
@@ -402,7 +394,7 @@ impl FixtureJournal {
         intent: &crate::ProvisionIntent,
         facts: &CloneFacts,
         now: rustiron_contracts::Timestamp,
-    ) -> Result<crate::ProvisionResult, JournalError> {
+    ) -> Result<crate::Admitted<crate::Provision>, JournalError> {
         self.admit_provision(intent, provision::Origin::Clone(facts), now)
     }
 
@@ -520,7 +512,7 @@ impl FixtureJournal {
         &mut self,
         intent: &CloneScrubIntent,
         now: Timestamp,
-    ) -> Result<CloneScrubResult, JournalError> {
+    ) -> Result<Admitted<CloneScrubGrant>, JournalError> {
         let signed = self.take_signed(&crate::signed::Expected {
             plan_digest: &intent.plan_digest,
             grant_digest: &intent.grant_digest,
@@ -557,7 +549,7 @@ impl FixtureJournal {
                 ]
                 && expires_at == intent.expires_at.get() as i64;
             return if exact {
-                Ok(CloneScrubResult::Existing(grant_of(&texts, &state)?))
+                Ok(Admitted::Existing(grant_of(&texts, &state)?))
             } else {
                 Err(JournalError::Conflict)
             };
@@ -610,7 +602,7 @@ impl FixtureJournal {
         crate::signed::insert(&transaction, &intent.operation_id, signed.as_ref())?;
         storage::set_clock(&transaction, now)?;
         transaction.commit().map_err(storage::unavailable)?;
-        Ok(CloneScrubResult::New(CloneScrubGrant {
+        Ok(Admitted::New(CloneScrubGrant {
             operation_id: intent.operation_id.clone(),
             clone_operation_id: intent.clone_operation_id.clone(),
             state: StepState::Intent,

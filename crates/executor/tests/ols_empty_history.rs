@@ -277,7 +277,7 @@ mod product {
             established_generation(ResourceHistory::Empty),
             Some(empty.clone())
         );
-        assert_eq!(journal.established(), Some(empty.clone()));
+        assert_eq!(journal.established(), Some(empty));
         assert_eq!(
             established_generation(ResourceHistory::Unresolved),
             None,

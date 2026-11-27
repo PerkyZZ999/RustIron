@@ -16,7 +16,7 @@ use rustiron_contracts::{
     },
 };
 
-use crate::{FixtureJournal, JournalError, StepState, storage};
+use crate::{Admitted, FixtureJournal, JournalError, StepState, storage};
 
 /// How old the update's capture may be when the intent is recorded.
 pub const UPDATE_CAPTURE_MAX_AGE_SECONDS: u64 = 3600;
@@ -138,15 +138,6 @@ pub struct SiteUpdate {
     pub rollback: Option<StepState>,
     /// The update's outcome.
     pub state: UpdateState,
-}
-
-/// A new or an exactly repeated update.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum UpdateResult {
-    /// Recorded now, in `intent`.
-    New(SiteUpdate),
-    /// The same request was recorded before; its stored state.
-    Existing(SiteUpdate),
 }
 
 const COLUMNS: &str = "operation_id, site_id, capture_operation_id, recipe_digest, idempotency_key, grant_id, nonce, plan_digest, grant_digest, expires_at, state";
@@ -442,7 +433,7 @@ impl FixtureJournal {
         &mut self,
         intent: &UpdateIntent,
         now: Timestamp,
-    ) -> Result<UpdateResult, JournalError> {
+    ) -> Result<Admitted<SiteUpdate>, JournalError> {
         let signed = self.take_signed(&crate::signed::Expected {
             plan_digest: &intent.plan_digest,
             grant_digest: &intent.grant_digest,
@@ -459,7 +450,7 @@ impl FixtureJournal {
             .map_err(storage::unavailable)?;
         if let Some((exact, existing)) = stored(&transaction, intent)? {
             return if exact {
-                Ok(UpdateResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(JournalError::Conflict)
             };
@@ -530,7 +521,7 @@ impl FixtureJournal {
         let recorded =
             load(&transaction, &intent.operation_id)?.ok_or(JournalError::Unavailable)?;
         transaction.commit().map_err(storage::unavailable)?;
-        Ok(UpdateResult::New(recorded))
+        Ok(Admitted::New(recorded))
     }
 
     /// Commits a step's intent before its effect. The update must be open

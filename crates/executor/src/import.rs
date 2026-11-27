@@ -1448,7 +1448,7 @@ mod tests {
             bad[field] = value;
             cases.push(bad);
         }
-        let mut missing = good.clone();
+        let mut missing = good;
         missing.as_object_mut().unwrap().remove("unparsed");
         cases.push(missing);
         for bad in cases {

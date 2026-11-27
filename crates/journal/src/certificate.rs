@@ -12,7 +12,7 @@ use rustiron_contracts::{
     approval::{Hostname, Sha256Digest, SiteId},
 };
 
-use crate::{FixtureJournal, JournalError, ProvisionState, provision, storage};
+use crate::{Admitted, FixtureJournal, JournalError, ProvisionState, provision, storage};
 
 /// An admitted certificate issuance; built by the executor from verified
 /// inputs.
@@ -66,15 +66,6 @@ pub struct Certificate {
     pub state: CertificateState,
     /// For `installed`: the installed chain's SHA-256 and its expiry.
     pub installed: Option<(Sha256Digest, Timestamp)>,
-}
-
-/// A new or an exactly repeated issuance.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CertificateResult {
-    /// Recorded now, in `intent`.
-    New(Certificate),
-    /// The same request was recorded before; its stored state.
-    Existing(Certificate),
 }
 
 const COLUMNS: &str = "operation_id, idempotency_key, grant_id, nonce, plan_digest, grant_digest, site_id, hostname, expires_at, state, certificate_sha256, not_after";
@@ -312,7 +303,7 @@ impl FixtureJournal {
         &mut self,
         intent: &CertificateIntent,
         now: Timestamp,
-    ) -> Result<CertificateResult, JournalError> {
+    ) -> Result<Admitted<Certificate>, JournalError> {
         let signed = self.take_signed(&crate::signed::Expected {
             plan_digest: &intent.plan_digest,
             grant_digest: &intent.grant_digest,
@@ -331,7 +322,7 @@ impl FixtureJournal {
         ] {
             if let Some(existing) = read(&transaction, (&host.0, &host.1), filter, value)? {
                 return if existing.intent == *intent {
-                    Ok(CertificateResult::Existing(existing))
+                    Ok(Admitted::Existing(existing))
                 } else {
                     Err(JournalError::Conflict)
                 };
@@ -411,7 +402,7 @@ impl FixtureJournal {
         crate::signed::insert(&transaction, &intent.operation_id, signed.as_ref())?;
         storage::set_clock(&transaction, now)?;
         transaction.commit().map_err(storage::unavailable)?;
-        Ok(CertificateResult::New(Certificate {
+        Ok(Admitted::New(Certificate {
             intent: intent.clone(),
             state: CertificateState::Intent,
             installed: None,

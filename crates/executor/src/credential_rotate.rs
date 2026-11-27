@@ -427,12 +427,10 @@ pub(crate) fn rotate_mariadb_password(
         Ok(())
     })();
 
-    if apply_stage.is_ok() {
+    let Err(failed_stage) = apply_stage else {
         log_outcome(RotateOutcome::Done, "verified");
         return Ok(RotateOutcome::Done);
-    }
-
-    let failed_stage = apply_stage.unwrap_err();
+    };
     let comp_ok = (|| -> Result<(), ExecutorError> {
         alter_mariadb_password(&layout.account, &old_password)?;
         let current_bytes = read_db_cnf(&private_dir, uid)?;
@@ -582,12 +580,10 @@ pub(crate) fn rotate_app_mariadb_password(
         Ok(())
     })();
 
-    if apply_stage.is_ok() {
+    let Err(failed_stage) = apply_stage else {
         log_outcome(RotateOutcome::Done, "verified");
         return Ok(RotateOutcome::Done);
-    }
-
-    let failed_stage = apply_stage.unwrap_err();
+    };
     let comp_ok = (|| -> Result<(), ExecutorError> {
         alter_mariadb_password(&layout.account, &old_password)?;
         let comp_suffix = format!("{}.comp", operation_id.as_str());
@@ -694,12 +690,10 @@ pub(crate) fn rotate_app_postgres_password(
         Ok(())
     })();
 
-    if apply_stage.is_ok() {
+    let Err(failed_stage) = apply_stage else {
         log_outcome(RotateOutcome::Done, "verified");
         return Ok(RotateOutcome::Done);
-    }
-
-    let failed_stage = apply_stage.unwrap_err();
+    };
     let comp_tag = format!("comp-{}", operation_id.as_str());
     let comp_ok = (|| -> Result<(), ExecutorError> {
         postgres::alter_role_password(&layout.account, &old_password)?;

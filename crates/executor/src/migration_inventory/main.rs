@@ -5,6 +5,12 @@
 //! tree, and one `<database>.sql` dump for each database that `meta.xml`
 //! names. It writes one `ExportObservation` to stdout. Other top-level entries,
 //! such as mailboxes and certificate files, are never opened.
+#![warn(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "W672: production code returns errors; tests may unwrap (clippy.toml)"
+)]
 use rustiron_contracts::{
     SchemaVersion, Text,
     migration::{

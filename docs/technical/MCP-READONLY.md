@@ -14,6 +14,7 @@ Roadmap: [P17](../planning/ROADMAP.md#p17--expose-read-only-workstation-local-mc
 | **Network exposure** | Strictly `stdin`/`stdout`; opens zero TCP/UDP/HTTP listeners. |
 | **Prompt injection in site names, logs, or plan limitations** | Every tool output is wrapped in `{"authority":"none_read_only","untrusted_data":true,"result":...}`; human text fields pass `escape_human` to strip/escape ASCII control and terminal-escape sequences; MCP `instructions` explicitly warn clients to treat returned values as untrusted data. |
 | **Unbounded memory / malformed JSON-RPC** | `read_bounded_line` caps every incoming line at `262,144` bytes (`-32600 REQUEST_TOO_LARGE`); malformed JSON returns `-32700`; wrong JSON-RPC version returns `-32600`; unknown methods return `-32601`; unknown tool fields rejected by `#[serde(deny_unknown_fields)]`. |
+| **Stalled line** | A client may idle between requests. Once a line has begun, its newline must arrive within 30 seconds; otherwise the server answers `-32600 LINE_DEADLINE` and ends the session ([W692](../validation/S10-W692/README.md)). |
 | **Path traversal & peer spoofing** | All IDs validated via `rustiron_contracts::Id` (`1..=64` ASCII `[A-Za-z0-9_-]`); coordinator socket checked via `local::connect` (absolute canonical path, `0700` dir, `0600` socket, `SO_PEERCRED` same non-root UID); errors return fixed `ErrorCode` names without echoing raw paths. |
 
 ## 2. Read-only tool catalogue

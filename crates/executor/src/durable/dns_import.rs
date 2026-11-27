@@ -1,13 +1,13 @@
 //! D-091 (W563): admission of a signed `dns_zone_import` and its one step.
 
 use rustiron_contracts::Id;
-use rustiron_journal::{DnsImport, DnsImportResult, StepState};
 
-use super::{Executor, signed_inputs};
+use super::Executor;
 use crate::{
     AdmissionRequest, ExecutorError,
     admin_helper::{self, AdminRequest, AdminStep},
 };
+use rustiron_journal::{Admitted, DnsImport, StepState};
 
 impl Executor {
     /// Admits one signed zone import, then asks the admin helper to load,
@@ -20,35 +20,33 @@ impl Executor {
     pub fn import_dns_zone(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<DnsImportResult, ExecutorError> {
+    ) -> Result<Admitted<DnsImport>, ExecutorError> {
         let (intent, _dns) = crate::verified_dns_import(&self.anchor, request)?;
-        self.check_identity(&intent.host_id, &intent.host_epoch)?;
-        let now = request.now.ok_or(ExecutorError::TimeDenied)?;
-        if self
-            .journal
-            .dns_import_status(&intent.operation_id)?
-            .is_none()
-        {
-            crate::dns_import::intake_zone(
-                std::path::Path::new(crate::layout::DNS_INTAKE_DIR),
-                self.anchor.owner_uid,
-                &intent.zone,
-                &intent.zone_sha256,
-                intent.record_sets,
-            )?;
-            // Only the admin helper runs the import; without it nothing is
-            // recorded.
-            if self.anchor.admin_socket.is_none() {
-                return Err(ExecutorError::Unavailable);
-            }
-        }
-        let import = match self.admit(signed_inputs(request)?, |journal| {
-            journal.record_dns_import(&intent, now)
-        })? {
-            DnsImportResult::Existing(existing) => return Ok(DnsImportResult::Existing(existing)),
-            DnsImportResult::New(import) => import,
+        let import = match self.admit_signed(
+            request,
+            (&intent.host_id, &intent.host_epoch),
+            |journal| Ok(journal.dns_import_status(&intent.operation_id)?.is_some()),
+            |executor, _now| {
+                crate::dns_import::intake_zone(
+                    std::path::Path::new(crate::layout::DNS_INTAKE_DIR),
+                    executor.anchor.owner_uid,
+                    &intent.zone,
+                    &intent.zone_sha256,
+                    intent.record_sets,
+                )?;
+                // Only the admin helper runs the import; without it nothing is
+                // recorded.
+                if executor.anchor.admin_socket.is_none() {
+                    return Err(ExecutorError::Unavailable);
+                }
+                Ok(())
+            },
+            |journal, now| journal.record_dns_import(&intent, now),
+        )? {
+            Admitted::Existing(existing) => return Ok(Admitted::Existing(existing)),
+            Admitted::New(import) => import,
         };
-        Ok(DnsImportResult::New(self.run_dns_import(&import)?))
+        Ok(Admitted::New(self.run_dns_import(&import)?))
     }
 
     /// Asks the admin helper to run the open import and records the

@@ -20,7 +20,7 @@ use rustiron_contracts::{
     local::{self, DEADLINE},
 };
 use rustiron_executor::serve;
-use rustiron_journal::{FixtureJournal, ProvisionIntent};
+use rustiron_journal::{Admitted, FixtureJournal, ProvisionIntent};
 
 use super::*;
 
@@ -198,7 +198,7 @@ fn w377_readopt_abuse_is_refused_before_any_record() {
     let before = replay_state(&lab);
     assert!(matches!(
         executor.readopt(&admitted.request("op_w377a")).unwrap(),
-        ReadoptResult::Existing(row) if row.state == ReadoptState::Adopted
+        Admitted::Existing(row) if row.state == ReadoptState::Adopted
     ));
     assert!(replay_state(&lab) == before, "an exact replay wrote state");
 
@@ -280,7 +280,7 @@ fn w377_readopt_abuse_is_refused_before_any_record() {
     executor.inject_readopt_observation(ReadoptObservation::Site(Box::new(site_facts(
         "blog2", 3002, 202,
     ))));
-    let ReadoptResult::New(row) = executor.readopt(&valid.request(operation)).unwrap() else {
+    let Admitted::New(row) = executor.readopt(&valid.request(operation)).unwrap() else {
         panic!("new re-adoption expected");
     };
     assert_eq!(row.state, ReadoptState::Adopted);
@@ -396,7 +396,7 @@ fn w377_a_missing_or_emptied_journal_is_refused_never_reinitialized() {
         executor
             .readopt(&lab.site("blog1", "w377l", |_| {}).request("op_w377l"))
             .unwrap(),
-        ReadoptResult::Existing(row) if row.state == ReadoptState::Adopted
+        Admitted::Existing(row) if row.state == ReadoptState::Adopted
     ));
 }
 
@@ -444,7 +444,7 @@ fn settles_by_reconcile(lab: &Lab, executor: &mut Executor, request: &Signed, op
     );
     assert!(matches!(
         executor.readopt(&request.request(operation)).unwrap(),
-        ReadoptResult::Existing(row) if row.state == ReadoptState::Verifying
+        Admitted::Existing(row) if row.state == ReadoptState::Verifying
     ));
     executor.inject_readopt_observation(ReadoptObservation::Site(Box::new(site_facts(
         "blog1", 3001, 201,

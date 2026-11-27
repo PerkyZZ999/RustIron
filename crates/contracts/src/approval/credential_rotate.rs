@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{CanonicalObject, Id, Text, Timestamp};
 
-use super::{ApprovalError, Hostname, Sha256Digest, SiteId, types::*};
+use super::{ApprovalError, Hostname, Sha256Digest, SiteId, header::Enrolled, types::*};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -293,32 +293,24 @@ pub fn check_credential_rotate_binding(
     grant: &CredentialRotateGrant,
     context: &CredentialRotateBindingContext<'_>,
 ) -> Result<(), ApprovalError> {
-    let now = context.now.ok_or(ApprovalError::ClockUncertain)?;
     let p = &plan.record;
     let g = &grant.record;
-    if p.plan_id != g.plan_id
-        || plan.digest() != g.plan_digest
-        || &p.host_id != context.host_id
-        || &g.host_id != context.host_id
-        || &p.host_epoch != context.host_epoch
-        || &g.host_epoch != context.host_epoch
-        || &p.profile_digest != context.profile_digest
-        || &g.profile_digest != context.profile_digest
-        || &p.requester != context.expected_requester
-        || &g.requester != context.expected_requester
-        || &g.issuer != context.expected_issuer
-        || &g.signer_policy_epoch != context.expected_signer_policy_epoch
-        || g.site_ids.as_slice() != [p.site_id.clone()]
-        || p.risk_class != g.risk_class
-        || g.valid_from.get() < p.valid_from.get()
-        || g.expires_at.get() > p.expires_at.get()
-    {
+    if g.site_ids.as_slice() != [p.site_id.clone()] || p.risk_class != g.risk_class {
         return Err(ApprovalError::BindingMismatch);
     }
-    if now.get() < g.valid_from.get() || now.get() >= g.expires_at.get() {
-        return Err(ApprovalError::OutsideValidity);
-    }
-    Ok(())
+    check_signed_header!(
+        plan,
+        grant,
+        Enrolled {
+            host_id: context.host_id,
+            host_epoch: context.host_epoch,
+            profile_digest: context.profile_digest,
+            requester: context.expected_requester,
+            issuer: context.expected_issuer,
+            signer_policy_epoch: context.expected_signer_policy_epoch,
+            now: context.now
+        }
+    )
 }
 
 #[cfg(test)]

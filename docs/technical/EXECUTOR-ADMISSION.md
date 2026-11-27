@@ -34,7 +34,7 @@ Generation and content digest must both equal the plan's reported predecessor.
 
 `TrustAnchor.owner_uid` exists so tests can run unprivileged.
 The lab binary must fix it to 0 and compile its paths in.
-Errors are the stable codes in `ExecutorError::code`.
+Errors are the stable codes in `ExecutorError::code`, listed with their retry rule and operator action in [error codes](ERROR-CODES.md).
 No rejected value is echoed.
 
 ## Durable admission (W014b)

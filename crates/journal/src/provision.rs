@@ -7,7 +7,7 @@ use rustiron_contracts::{
     approval::{Hostname, Sha256Digest, SiteId},
 };
 
-use crate::{FixtureJournal, JournalError, storage};
+use crate::{Admitted, FixtureJournal, JournalError, storage};
 
 const MAX_PROVISIONS: i64 = 100;
 const MAX_RESOURCE: usize = 256;
@@ -194,22 +194,13 @@ impl<'a> Origin<'a> {
     }
 }
 
-/// New durable provision, or status of an exact earlier one.
-#[derive(Debug, Eq, PartialEq)]
-pub enum ProvisionResult {
-    /// Intent committed; nonce consumed.
-    New(Provision),
-    /// Status only; never permission to repeat any step.
-    Existing(Provision),
-}
-
 impl FixtureJournal {
     /// Records a new provision in one transaction, or returns exact status.
     pub fn record_provision(
         &mut self,
         intent: &ProvisionIntent,
         now: Timestamp,
-    ) -> Result<ProvisionResult, JournalError> {
+    ) -> Result<Admitted<Provision>, JournalError> {
         self.admit_provision(intent, Origin::Recipe, now)
     }
 
@@ -221,7 +212,7 @@ impl FixtureJournal {
         intent: &ProvisionIntent,
         origin: Origin<'_>,
         now: Timestamp,
-    ) -> Result<ProvisionResult, JournalError> {
+    ) -> Result<Admitted<Provision>, JournalError> {
         let import = origin.import();
         let signed = self.take_signed(&crate::signed::Expected {
             plan_digest: &intent.plan_digest,
@@ -250,7 +241,7 @@ impl FixtureJournal {
                 && app.as_ref() == expected_app
                 && fullstack.as_ref() == expected_fullstack
             {
-                Ok(ProvisionResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(JournalError::Conflict)
             };
@@ -360,7 +351,7 @@ impl FixtureJournal {
         crate::signed::insert(&transaction, &intent.operation_id, signed.as_ref())?;
         storage::set_clock(&transaction, now)?;
         transaction.commit().map_err(storage::unavailable)?;
-        Ok(ProvisionResult::New(Provision {
+        Ok(Admitted::New(Provision {
             intent: intent.clone(),
             state: ProvisionState::Running,
             steps: Vec::new(),
@@ -702,7 +693,7 @@ impl FixtureJournal {
         intent: &crate::Intent,
         site: &SiteId,
         now: Timestamp,
-    ) -> Result<crate::RecordResult, JournalError> {
+    ) -> Result<crate::Admitted<crate::Operation>, JournalError> {
         self.record_ejection(intent, site, None, now)
     }
 
@@ -715,7 +706,7 @@ impl FixtureJournal {
         site: &SiteId,
         hostname: &Hostname,
         now: Timestamp,
-    ) -> Result<crate::RecordResult, JournalError> {
+    ) -> Result<crate::Admitted<crate::Operation>, JournalError> {
         self.record_ejection(intent, site, Some(hostname), now)
     }
 
@@ -725,7 +716,7 @@ impl FixtureJournal {
         site: &SiteId,
         static_hostname: Option<&Hostname>,
         now: Timestamp,
-    ) -> Result<crate::RecordResult, JournalError> {
+    ) -> Result<crate::Admitted<crate::Operation>, JournalError> {
         if let Some(existing) = self.existing(intent)? {
             if self.ejection_site(&intent.operation_id)?.as_ref() != Some(site)
                 || self
@@ -735,7 +726,7 @@ impl FixtureJournal {
             {
                 return Err(JournalError::Conflict);
             }
-            return Ok(crate::RecordResult::Existing(existing));
+            return Ok(crate::Admitted::Existing(existing));
         }
         if !self
             .provision_for_site(site)?
@@ -978,9 +969,9 @@ impl FixtureJournal {
         site: &SiteId,
         recipe: &str,
         now: Timestamp,
-    ) -> Result<crate::RecordResult, JournalError> {
+    ) -> Result<crate::Admitted<crate::Operation>, JournalError> {
         if let Some(existing) = self.existing(intent)? {
-            return Ok(crate::RecordResult::Existing(existing));
+            return Ok(crate::Admitted::Existing(existing));
         }
         if ![PAGE_CACHE_RECIPE, CACHE_ON_RECIPE].contains(&recipe)
             || !self
@@ -1014,9 +1005,9 @@ impl FixtureJournal {
         site: &SiteId,
         recipe: &str,
         now: Timestamp,
-    ) -> Result<crate::RecordResult, JournalError> {
+    ) -> Result<crate::Admitted<crate::Operation>, JournalError> {
         if let Some(existing) = self.existing(intent)? {
-            return Ok(crate::RecordResult::Existing(existing));
+            return Ok(crate::Admitted::Existing(existing));
         }
         if !self
             .provision_for_site(site)?

@@ -603,7 +603,11 @@ fn describe_body(bytes: &[u8]) -> Option<Description> {
     }
     if let Ok(plan) = OlsPlan::decode(bytes) {
         let (generation, digest) = plan.expected();
-        let sites: Vec<_> = plan.site_ids().iter().map(|site| site.as_str()).collect();
+        let sites: Vec<_> = plan
+            .site_ids()
+            .iter()
+            .map(rustiron_contracts::approval::SiteId::as_str)
+            .collect();
         let mut lines = vec![
             ("serve sites", sites.join(", ")),
             ("replaces generation", generation.as_str().to_owned()),
@@ -711,7 +715,10 @@ fn describe_body(bytes: &[u8]) -> Option<Description> {
             ));
         }
         if let Some((generation, digest, sites)) = plan.generation() {
-            let sites: Vec<_> = sites.iter().map(|site| site.as_str()).collect();
+            let sites: Vec<_> = sites
+                .iter()
+                .map(rustiron_contracts::approval::SiteId::as_str)
+                .collect();
             lines.push(("live generation", generation.as_str().to_owned()));
             lines.push(("generation digest", digest.as_str().to_owned()));
             lines.push(("served sites", sites.join(", ")));

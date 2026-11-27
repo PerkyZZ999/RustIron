@@ -9,7 +9,6 @@ import {
   ArrowRight,
   Check,
   ChevronDown,
-  Copy,
   FileCode,
   Globe,
   RefreshCw,
@@ -17,7 +16,15 @@ import {
   Terminal,
   TriangleAlert,
 } from "lucide-react";
-import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  use,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 
 import {
   type AppRuntimeProfile,
@@ -30,8 +37,8 @@ import {
   type CredentialRotateTarget,
   INSPECT_AND_SIGN_STEPS,
 } from "./cli-commands";
-import { useData } from "./data";
-import { Crumbs, Glyph, Page, TableScroll } from "./ui";
+import { hostLabel, useData } from "./data";
+import { CopyButton, Crumbs, Glyph, Page, TableScroll } from "./ui";
 import { SeparateCustodyApplyPanel } from "./write-panel";
 
 type PlanAction = "config" | "backup" | "probe" | "provision" | "credential" | "app";
@@ -115,32 +122,28 @@ const DraftContext = createContext<DraftContextValue>({
 export function PlanDraftProvider({ children }: { children: ReactNode }) {
   const [draft, setDraft] = useState<PlanDraft>(loadDraft);
 
-  const patchDraft = (patch: Partial<PlanDraft>) => {
-    setDraft((prev) => {
-      const next = { ...prev, ...patch };
-      try {
-        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-      } catch {
-        // Keep in-memory state if sessionStorage is unavailable.
-      }
-      return next;
-    });
-  };
-
-  const resetDraft = () => {
-    setDraft(defaultDraft);
+  // W682: persist after the state commits; a state updater must stay pure.
+  useEffect(() => {
     try {
-      sessionStorage.removeItem(STORAGE_KEY);
+      if (draft === defaultDraft) sessionStorage.removeItem(STORAGE_KEY);
+      else sessionStorage.setItem(STORAGE_KEY, JSON.stringify(draft));
     } catch {
-      // Ignore storage errors.
+      // Keep in-memory state if sessionStorage is unavailable.
     }
-  };
+  }, [draft]);
 
-  return (
-    <DraftContext.Provider value={{ draft, patchDraft, resetDraft }}>
-      {children}
-    </DraftContext.Provider>
-  );
+  const patchDraft = useCallback((patch: Partial<PlanDraft>) => {
+    setDraft((prev) => ({ ...prev, ...patch }));
+  }, []);
+  const resetDraft = useCallback(() => setDraft(defaultDraft), []);
+  const value = useMemo(() => ({ draft, patchDraft, resetDraft }), [draft, patchDraft, resetDraft]);
+
+  return <DraftContext.Provider value={value}>{children}</DraftContext.Provider>;
+}
+
+/** W684: consumers read the draft through this hook, not the context object. */
+function usePlanDraft(): DraftContextValue {
+  return use(DraftContext);
 }
 
 type ComputedPlanMeta = {
@@ -449,26 +452,6 @@ function PlanSteps({ current }: { current: 1 | 2 | 3 }) {
         );
       })}
     </ol>
-  );
-}
-
-function CopyCommandButton({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return undefined;
-    const t = setTimeout(() => setCopied(false), 2000);
-    return () => clearTimeout(t);
-  }, [copied]);
-  return (
-    <button
-      type="button"
-      className="btn quiet sm"
-      aria-label={label}
-      onClick={() => void navigator.clipboard?.writeText(text).then(() => setCopied(true))}
-    >
-      <Glyph icon={copied ? Check : Copy} />
-      {copied ? "Copied" : "Copy"}
-    </button>
   );
 }
 
@@ -797,7 +780,7 @@ function ActionInputs({
 
 export function PlanNew() {
   const data = useData();
-  const { draft, patchDraft } = useContext(DraftContext);
+  const { draft, patchDraft } = usePlanDraft();
   const firstSite = data.sites[0];
   const resolvedSiteId = draft.siteId || firstSite?.id || "";
   const resolvedHostname =
@@ -805,7 +788,7 @@ export function PlanNew() {
     draft.hostname ||
     firstSite?.domain ||
     "";
-  const hostId = data.source.kind === "live" ? data.source.host.host_id : "lab-01";
+  const hostId = hostLabel(data.source);
   const meta = useMemo(
     () => buildPlanMeta(draft, resolvedSiteId, resolvedHostname, hostId, data.sites.length),
     [draft, resolvedSiteId, resolvedHostname, hostId, data.sites.length],
@@ -921,7 +904,7 @@ export function PlanNew() {
           <section className="panel">
             <div className="panel-head">
               <h2>CLI plan command</h2>
-              <CopyCommandButton text={meta.cliCommand} label="Copy plan create command" />
+              <CopyButton text={meta.cliCommand} label="Copy plan create command" />
             </div>
             <pre className="code signed-bytes">{meta.cliCommand}</pre>
           </section>
@@ -934,7 +917,7 @@ export function PlanNew() {
 export function PlanReview() {
   const data = useData();
   const navigate = useNavigate();
-  const { draft, resetDraft } = useContext(DraftContext);
+  const { draft, resetDraft } = usePlanDraft();
   const firstSite = data.sites[0];
   const resolvedSiteId = draft.siteId || firstSite?.id || "";
   const resolvedHostname =
@@ -942,7 +925,7 @@ export function PlanReview() {
     draft.hostname ||
     firstSite?.domain ||
     "";
-  const hostId = data.source.kind === "live" ? data.source.host.host_id : "lab-01";
+  const hostId = hostLabel(data.source);
   const meta = useMemo(
     () => buildPlanMeta(draft, resolvedSiteId, resolvedHostname, hostId, data.sites.length),
     [draft, resolvedSiteId, resolvedHostname, hostId, data.sites.length],
@@ -1038,7 +1021,7 @@ export function PlanReview() {
                 <Glyph icon={Terminal} />
                 <h2>Sign offline with your key</h2>
               </div>
-              <CopyCommandButton text={signCmd} label="Copy offline signing commands" />
+              <CopyButton text={signCmd} label="Copy offline signing commands" />
             </div>
             <p className="muted" style={{ marginBottom: 8 }}>
               Run on your workstation that holds the operator SSH key, then load or paste the

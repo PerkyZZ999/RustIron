@@ -290,18 +290,6 @@ pub(crate) enum CaddyMode {
     EdgeOverOls,
 }
 
-impl CaddyMode {
-    /// Converts to the durable journal `CaddyIngressMode`.
-    #[allow(dead_code)]
-    pub(crate) const fn to_journal(self) -> rustiron_journal::CaddyIngressMode {
-        match self {
-            Self::Only => rustiron_journal::CaddyIngressMode::CaddyOnly,
-            Self::MultiIp => rustiron_journal::CaddyIngressMode::CaddyMultiIp,
-            Self::EdgeOverOls => rustiron_journal::CaddyIngressMode::CaddyEdgeOverOls,
-        }
-    }
-}
-
 /// W657 (D-102, Decision A1): enrolled Caddy edge ingress policy.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -363,7 +351,6 @@ impl CaddyPolicy {
     }
 
     /// Every port Caddy binds directly (`http_address` and `https_address`).
-    #[allow(dead_code)]
     pub fn reserved_ports(&self) -> Result<[u16; 2], crate::ExecutorError> {
         let http = self
             .http_address
@@ -913,10 +900,6 @@ mod tests {
         assert!(!edge.valid(None));
         assert!(!edge.valid(Some(&ols_public)));
         assert_eq!(edge.reserved_ports().unwrap(), [80, 443]);
-        assert_eq!(
-            edge.mode.to_journal(),
-            rustiron_journal::CaddyIngressMode::CaddyEdgeOverOls
-        );
 
         let caddy_only = decode(serde_json::json!({
             "mode": "caddy_only",

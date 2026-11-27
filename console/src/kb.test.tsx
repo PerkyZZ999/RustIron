@@ -1,15 +1,10 @@
 // W649: Tests for the integrated RustIron Documentation & Knowledge Base.
+import { kbArticleTitle, kbArticleTitles, kbSearchTargets } from "./kb-index";
 import { afterEach, describe, expect, it } from "bun:test";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createMemoryHistory, createRouter, RouterProvider } from "@tanstack/react-router";
 
-import {
-  glossaryTerms,
-  kbArticles,
-  kbCategories,
-  kbSearchTargets,
-  operatorRunbooks,
-} from "./kb-data";
+import { glossaryTerms, kbArticles, kbCategories, operatorRunbooks } from "./kb-data";
 import { routeTree } from "./router";
 
 afterEach(cleanup);
@@ -32,8 +27,10 @@ describe("Integrated Documentation & Knowledge Base (W649)", () => {
       expect(serialized).not.toContain("portfolio.lab.test");
     }
     for (const rb of operatorRunbooks) {
-      expect(slugs.has(rb.guideSlug)).toBe(true);
+      expect(kbArticleTitle(rb.guideSlug)).toBeDefined();
     }
+    // W715: the title index and the articles name the same slugs, once each.
+    expect([...slugs].sort() as string[]).toEqual(Object.keys(kbArticleTitles).sort());
     expect(kbSearchTargets().length).toBe(kbArticles.length);
   });
 

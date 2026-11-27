@@ -124,7 +124,10 @@ fn the_generation_form_exposes_only_generation_fields() {
     assert_eq!(generation.as_str(), "rbc7e46957fb865b0");
     assert_eq!(digest.as_str(), "b".repeat(64));
     assert_eq!(
-        sites.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+        sites
+            .iter()
+            .map(rustiron_contracts::approval::SiteId::as_str)
+            .collect::<Vec<_>>(),
         ["blog1", "blog2"]
     );
     assert!(plan.site().is_none());

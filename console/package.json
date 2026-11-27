@@ -16,6 +16,7 @@
     "verify": "oxfmt --check && oxlint && bun check && fallow && bun test && bun scripts/build.ts",
     "check:browser": "bun e2e/check.ts",
     "dev:live": "RUSTIRON_OBSERVATION=.live/observation.json bun --hot src/server.ts",
+    "reset-second-factor": "bun scripts/reset-second-factor.ts",
     "lab:pull": "RUSTIRON_LAB_SSH=${RUSTIRON_LAB_SSH:-$HOME/.config/rustiron-lab/ssh.sh} bun scripts/lab-pull.ts .live/observation.json"
   },
   "dependencies": {
@@ -25,11 +26,12 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "evlog": "^2.37.1",
-    "lucide-animated": "^1.0.5",
     "lucide-react": "^1.80.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
-    "tailwind-merge": "^2.6.0"
+    "tailwind-merge": "^2.6.0",
+    "uqr": "0.1.3",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",

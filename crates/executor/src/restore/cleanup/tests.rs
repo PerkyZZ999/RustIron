@@ -1,5 +1,6 @@
 //! No SystemCleanup is instantiated: all administrative effects remain out of process.
 use super::*;
+use rustiron_journal::Admitted;
 use std::io::ErrorKind;
 
 #[derive(Default)]
@@ -479,8 +480,7 @@ fn unknown_cleanup_persists_blocks_and_only_verified_cleanup_releases() {
         approval::{Hostname, Sha256Digest, SiteId, SnapshotId},
     };
     use rustiron_journal::{
-        FixtureJournal, JournalError, ProbeIntent, ProbeResult, ProbeState, ProvisionIntent,
-        ProvisionStep,
+        FixtureJournal, JournalError, ProbeIntent, ProbeState, ProvisionIntent, ProvisionStep,
     };
     let id = |s: &str| Id::try_from(s.to_owned()).unwrap();
     let time = |n| Timestamp::try_from(n).unwrap();
@@ -574,6 +574,6 @@ fn unknown_cleanup_persists_blocks_and_only_verified_cleanup_releases() {
         journal
             .record_probe(&second, time(1005), &second.plan_digest)
             .unwrap(),
-        ProbeResult::New(_)
+        Admitted::New(_)
     ));
 }

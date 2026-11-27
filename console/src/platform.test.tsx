@@ -1,10 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { createMemoryHistory, createRouter, RouterProvider } from "@tanstack/react-router";
 
 import { allowedLoopbackHosts } from "./backend-server";
 import type { Machine, Observation } from "./live";
-import { allowedLogUnits, createHostLogsHandler, redactLogLine } from "./logs-backend";
+import {
+  allowedLogUnits,
+  clampLineCount,
+  createHostLogsHandler,
+  redactLogLine,
+} from "./logs-backend";
 import { liveDomains, liveFindings, liveSupportComponents } from "./platform-data";
 import { routeTree } from "./router";
 
@@ -29,7 +34,18 @@ test("apps page shows P27/P30 workloads and opens the slide-over inspector only 
   await act(() => router.navigate({ to: "/apps/$appId", params: { appId: "app_emdash" } }));
   expect(await screen.findByRole("heading", { level: 1, name: "emdash.lab.test" })).toBeTruthy();
   fireEvent.click(screen.getByRole("link", { name: "Configuration & secrets" }));
-  expect(screen.getAllByText(/0400 value hidden/).length).toBeGreaterThan(0);
+  expect((await screen.findAllByText(/0400 value hidden/)).length).toBeGreaterThan(0);
+  // W684: the tab is in the URL, so a reload or shared link opens the same tab.
+  expect(router.state.location.search).toEqual({ tab: "config" });
+  await act(() =>
+    router.navigate({
+      to: "/apps/$appId",
+      params: { appId: "app_emdash" },
+      search: { tab: "bogus" as never },
+    }),
+  );
+  const appTabs = within(screen.getByRole("navigation", { name: "App sections" }));
+  expect(appTabs.getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBe("page");
 });
 
 test("host diagnoses keeps open findings visible and collapses passed checks by default", async () => {
@@ -424,8 +440,9 @@ test("W630 Databases Manager and interactive Site Lifecycle Controls", async () 
   expect(screen.getAllByText(/rs_site_8KD2QW_wp/).length).toBeGreaterThan(0);
   expect(screen.queryByText(/site-credential-rotate/)).toBeNull();
   const manageBtns = screen.getAllByRole("button", { name: "Manage" });
-  expect(manageBtns[0]).toBeTruthy();
-  fireEvent.click(manageBtns[0]!);
+  const firstManage = manageBtns[0];
+  if (!firstManage) throw new Error("no Manage button");
+  fireEvent.click(firstManage);
   expect(screen.getAllByText(/site-credential-rotate/).length).toBeGreaterThan(0);
   fireEvent.click(screen.getByRole("button", { name: "Close database details" }));
   expect(screen.queryByText(/site-credential-rotate/)).toBeNull();
@@ -515,4 +532,16 @@ test("W632 Server Operations: Firewall rule builder, Cron jobs, Logs viewer & re
   await act(() => router.navigate({ to: "/host/logs" }));
   expect(await screen.findByRole("heading", { level: 1, name: "Server logs" })).toBeTruthy();
   expect(screen.getByLabelText("Service unit")).toBeTruthy();
+});
+
+test("W756 (QA-25): the log line count is clamped, not reset", () => {
+  expect(clampLineCount(null)).toBe(60);
+  expect(clampLineCount("")).toBe(60);
+  expect(clampLineCount("abc")).toBe(60);
+  expect(clampLineCount("12.5")).toBe(60);
+  expect(clampLineCount("5")).toBe(10);
+  expect(clampLineCount("-1")).toBe(10);
+  expect(clampLineCount("100")).toBe(100);
+  expect(clampLineCount("500")).toBe(200);
+  expect(clampLineCount("99999")).toBe(200);
 });

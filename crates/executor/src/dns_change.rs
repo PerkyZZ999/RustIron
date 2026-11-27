@@ -32,7 +32,7 @@ pub(crate) fn sets_in(zone: &ParsedZone, operations: &[SetOperation]) -> Vec<Opt
             zone.record_sets
                 .iter()
                 .find(|set| set.owner == operation.owner && set.kind == operation.kind)
-                .map(|set| set.canonical())
+                .map(rustiron_contracts::approval::RecordSet::canonical)
         })
         .collect()
 }

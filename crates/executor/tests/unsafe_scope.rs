@@ -22,14 +22,15 @@ fn rust_files(directory: &Path, found: &mut Vec<std::path::PathBuf>) {
 /// The keyword, split so this file does not match its own scan.
 const KEYWORD: &str = concat!("un", "safe");
 
-/// Code forms of the keyword and the lint exception.
+/// Code forms of the keyword and the lint exception. W672: the lint name
+/// alone, so `allow`/`expect` with a `reason`, or split over lines, still match.
 fn patterns() -> [String; 5] {
     [
         format!("{KEYWORD} {{"),
         format!("{KEYWORD} fn"),
         format!("{KEYWORD} impl"),
         format!("{KEYWORD} extern"),
-        format!("allow({KEYWORD}_code)"),
+        format!("{KEYWORD}_code"),
     ]
 }
 
@@ -80,5 +81,10 @@ fn the_scan_sees_a_planted_block_and_skips_comments() {
         1
     );
     assert_eq!(unsafe_lines(&format!("#![allow({KEYWORD}_code)]")).len(), 1);
+    assert_eq!(
+        unsafe_lines(&format!("#![expect({KEYWORD}_code, reason = \"x\")]")).len(),
+        1
+    );
+    assert_eq!(unsafe_lines(&format!("    {KEYWORD}_code,")).len(), 1);
     assert!(unsafe_lines(&format!("// {KEYWORD} {{ not code }}")).is_empty());
 }

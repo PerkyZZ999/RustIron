@@ -29,11 +29,9 @@ use rustiron_contracts::{
 use rustiron_executor::{
     AdmissionRequest, Executor, ExecutorError, Fault, TrustAnchor, admin_helper::AdminStep, ols,
 };
-use rustiron_journal::{
-    FixtureJournal, ProvisionIntent, ProvisionStep, RecordResult, RecordedState,
-};
 use serde_json::{Value, json};
 mod support;
+use rustiron_journal::{Admitted, FixtureJournal, ProvisionIntent, ProvisionStep, RecordedState};
 use support::{KEYGEN, hex, new_key, private_dir, private_file, sign};
 
 const INCLUDE: &str = "/etc/rustiron-ols";
@@ -138,7 +136,9 @@ impl Signed {
 
 impl Lab {
     fn new(name: &str) -> Self {
-        let serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        let serial = SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         require_fixture();
         let include = Path::new(INCLUDE).join("generations");
         fs::create_dir(&include).unwrap();
@@ -392,7 +392,7 @@ fn generation_of(operation: &rustiron_journal::Operation) -> (Id, Sha256Digest) 
 fn bootstrap(lab: &Lab, executor: &mut Executor) -> (Id, Sha256Digest) {
     lab.answer(&bootstrap_host());
     let signed = lab.signed(&ols::bootstrap_generation(), &["blog5"], "nonce_boot");
-    let RecordResult::New(operation) = executor.activate_ols(&signed.request("op_boot")).unwrap()
+    let Admitted::New(operation) = executor.activate_ols(&signed.request("op_boot")).unwrap()
     else {
         panic!("the bootstrap activation must be new");
     };
@@ -408,7 +408,7 @@ fn bootstrap(lab: &Lab, executor: &mut Executor) -> (Id, Sha256Digest) {
 fn next_activation_succeeds(lab: &Lab, executor: &mut Executor, predecessor: &(Id, Sha256Digest)) {
     lab.answer(&running_host());
     let signed = lab.signed(predecessor, &["blog5", "blog6"], "nonce_next");
-    let RecordResult::New(operation) = executor.activate_ols(&signed.request("op_next")).unwrap()
+    let Admitted::New(operation) = executor.activate_ols(&signed.request("op_next")).unwrap()
     else {
         panic!("the next activation must be new");
     };
@@ -428,7 +428,7 @@ fn blocks_new_work(lab: &Lab, executor: &mut Executor, signed: &Signed, operatio
     );
     assert!(matches!(
         executor.activate_ols(&signed.request(operation)),
-        Ok(RecordResult::Existing(_))
+        Ok(Admitted::Existing(_))
     ));
     assert!(
         lab.steps().is_empty(),
@@ -560,7 +560,7 @@ fn w380_a_crash_after_ols_serving_is_never_succeeded_and_restores_once_as_root()
     let row = after_restart(&lab, &executor);
     assert_eq!(row.state, RecordedState::Intent);
     assert!(row.effect_attempted && !row.compensation_attempted);
-    assert_eq!(current(), Some(second.clone()), "the target is current");
+    assert_eq!(current(), Some(second), "the target is current");
     blocks_new_work(&lab, &mut executor, &signed, "op_run");
     // `current` is the target, but nothing verified it: never `succeeded`.
     let settled = executor.reconcile(&id("op_run")).unwrap();
@@ -608,7 +608,7 @@ fn w380_a_crash_after_the_ols_restore_mark_never_restores_twice_as_root() {
         "the one restore was spent at the mark"
     );
     assert!(lab.steps().is_empty());
-    assert_eq!(current(), Some(second.clone()));
+    assert_eq!(current(), Some(second));
     lab.log("reconcile and compensate", settled.state);
     blocks_new_work(&lab, &mut executor, &signed, "op_run");
     // The operator restores the predecessor outside Rustiron. While the
@@ -750,8 +750,7 @@ fn w382_bootstrap_crashes_settle_by_reconcile_as_root() {
         // The same epoch: a new bootstrap activation is admitted and succeeds.
         lab.answer(&bootstrap_host());
         let again = lab.signed(&ols::bootstrap_generation(), &["blog5"], "nonce_again");
-        let RecordResult::New(operation) =
-            executor.activate_ols(&again.request("op_again")).unwrap()
+        let Admitted::New(operation) = executor.activate_ols(&again.request("op_again")).unwrap()
         else {
             panic!("{fault:?}: the new bootstrap activation must be new");
         };

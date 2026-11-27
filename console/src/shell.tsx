@@ -34,14 +34,15 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { RefreshCwIcon, type RefreshCwIconHandle } from "lucide-animated";
 import {
   createContext,
   type ReactNode,
   type RefObject,
-  useContext,
+  useCallback,
+  use,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -54,9 +55,11 @@ import { initConsoleLog, logInteraction, logPageView } from "@/lib/log";
 import { cn } from "@/lib/utils";
 import { StandaloneAuthGate } from "./accounts-pages";
 import { AuthProvider, useAuth } from "./auth-context";
-import { DataProvider, useData } from "./data";
+import { SecondFactorSetupGate } from "./second-factor-setup";
+import { DataProvider, hostLabel, useData } from "./data";
+import { ageText } from "./page-parts";
 import { searchTargets } from "./fixture";
-import { articleBySlug, kbSearchTargets } from "./kb-data";
+import { kbArticleTitle, kbSearchTargets } from "./kb-index";
 import { consoleSearchPages, liveAttention, liveSearchTargets } from "./live";
 import { PlanDraftProvider } from "./plan-workflow";
 import { PreferencesProvider } from "./prefs";
@@ -132,12 +135,60 @@ const segmentLabels: Record<string, string> = {
   help: "Docs & KB",
 };
 
-const RESOURCE_ID_RE = /^(?:[a-z]+_[A-Z0-9]+|(?:site|op|app|plan|snap|rcpt)_.*)$/;
+/**
+ * W753 (QA-22): the fixed words of the route paths in router.tsx. Only these are
+ * title-cased; any other segment is a value (a hostname, site ID, or slug) and
+ * shows as written. shell.test checks this list against the routes.
+ */
+export const ROUTE_WORDS = new Set([
+  "alerts",
+  "apps",
+  "artifacts",
+  "configuration",
+  "cron",
+  "databases",
+  "diagnoses",
+  "dns",
+  "domains",
+  "emdash",
+  "evidence",
+  "firewall",
+  "help",
+  "host",
+  "login",
+  "logs",
+  "mail",
+  "maintenance",
+  "metrics",
+  "migration",
+  "new",
+  "operations",
+  "plans",
+  "recovery",
+  "relay",
+  "review",
+  "schedules",
+  "services",
+  "settings",
+  "sites",
+  "states",
+  "store",
+  "updates",
+  "users",
+]);
 
-function formatSegment(segment: string): string {
-  if (RESOURCE_ID_RE.test(segment)) return segment;
-  const kb = articleBySlug(segment);
-  if (kb) return kb.title;
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+export function formatSegment(segment: string): string {
+  const kbTitle = kbArticleTitle(segment);
+  if (kbTitle) return kbTitle;
+  if (!ROUTE_WORDS.has(segment)) return decodeSegment(segment);
   return segmentLabels[segment] ?? segment.charAt(0).toUpperCase() + segment.slice(1);
 }
 
@@ -209,13 +260,6 @@ const darkQuery = "(prefers-color-scheme: dark)";
 
 export type ThemePreference = "system" | Mode;
 
-function ageText(observedAt: number) {
-  const seconds = Math.max(0, Math.round((Date.now() - observedAt) / 1000));
-  if (seconds < 60) return `${seconds} s ago`;
-  const minutes = Math.round(seconds / 60);
-  return minutes < 60 ? `${minutes} min ago` : `${Math.round(minutes / 60)} h ago`;
-}
-
 function SourceBadge() {
   const { source } = useData();
   if (source.kind === "loading") {
@@ -268,7 +312,7 @@ const ThemeContext = createContext<{
 
 /** Theme preference shared by the top bar toggle and the settings page. */
 export function useThemePreference() {
-  return useContext(ThemeContext);
+  return use(ThemeContext);
 }
 
 function userInitials(name: string): string {
@@ -298,7 +342,7 @@ function operatorCardInfo(
   user: { name: string; role: string } | null,
 ) {
   return {
-    host: source.kind === "live" ? source.host.host_id : "lab-01",
+    host: hostLabel(source),
     href: user ? "/users" : "/login",
     name: user ? user.name : "Operator",
     roleLabel: user ? user.role : "Local session",
@@ -360,10 +404,14 @@ function observationMeta(source: ReturnType<typeof useData>["source"]): {
   }
   if (source.kind === "unavailable") {
     return {
-      hostId: "lab-01",
+      hostId: hostLabel(source),
       statusLine: source.notEnrolled ? "Not enrolled" : "Unavailable",
       tone: "text-destructive",
     };
+  }
+  // W732 (QA-01): a loading source is the real host, not the sample.
+  if (source.kind === "loading") {
+    return { hostId: hostLabel(source), statusLine: "Checking…", tone: "text-muted-foreground" };
   }
   return { hostId: "lab-01", statusLine: "Fixture · 38 s ago", tone: "text-success" };
 }
@@ -398,6 +446,39 @@ function isUnitTestDom(): boolean {
   return typeof navigator !== "undefined" && /HappyDOM/i.test(navigator.userAgent);
 }
 
+/**
+ * The full screen shown instead of the Console, or null: the session check, the
+ * sign-in gate, or (W729) the second-factor setup of an Admin without one.
+ */
+function authGateScreen(
+  status: ReturnType<typeof useAuth>["status"],
+  resolved: boolean,
+  themeControl: ReactNode,
+): ReactNode | null {
+  // W648: Do not flash the Console sidebar/topbar while initial auth status resolves in a browser.
+  if (!resolved && !isUnitTestDom()) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background text-foreground">
+        <main id="main" className="flex flex-col items-center gap-3 text-center">
+          <BrandMark className="size-10" />
+          <h1 className="sr-only">Loading RustIron Console</h1>
+          <span className="text-sm text-muted-foreground" role="status">
+            Checking session…
+          </span>
+        </main>
+      </div>
+    );
+  }
+  // W648: Full-screen standalone auth gate — zero sidebar, topbar, search, or host data when signed out.
+  if (status?.auth_required && !status.session) {
+    return <StandaloneAuthGate themeControl={themeControl} />;
+  }
+  if (status?.session?.user.role === "admin" && !status.session.user.twoFactorEnabled) {
+    return <SecondFactorSetupGate themeControl={themeControl} />;
+  }
+  return null;
+}
+
 function AuthenticatedShell({
   path,
   mode,
@@ -416,11 +497,15 @@ function AuthenticatedShell({
   const searchId = useId();
   const menuRef = useRef<HTMLButtonElement>(null);
 
-  const locked = Boolean(status?.auth_required && !status.session);
-  const waitingForAuth = !resolved && !isUnitTestDom();
+  const gate = authGateScreen(
+    status,
+    resolved,
+    <ThemeToggle mode={mode} onChoose={setPreference} />,
+  );
+  const gated = gate !== null;
 
   useEffect(() => {
-    if (locked || waitingForAuth) return;
+    if (gated) return;
     function onKey(event: KeyboardEvent) {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
@@ -431,34 +516,14 @@ function AuthenticatedShell({
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [locked, waitingForAuth]);
+  }, [gated]);
 
   function closeNav() {
     setNavOpen(false);
     menuRef.current?.focus();
   }
 
-  // W648: Do not flash the Console sidebar/topbar while initial auth status resolves in a browser.
-  if (waitingForAuth) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-background text-foreground">
-        <main id="main" className="flex flex-col items-center gap-3 text-center">
-          <BrandMark className="size-10" />
-          <h1 className="sr-only">Loading RustIron Console</h1>
-          <span className="text-sm text-muted-foreground" role="status">
-            Checking session…
-          </span>
-        </main>
-      </div>
-    );
-  }
-
-  // W648: Full-screen standalone auth gate — zero sidebar, topbar, search, or host data when signed out.
-  if (locked) {
-    return (
-      <StandaloneAuthGate themeControl={<ThemeToggle mode={mode} onChoose={setPreference} />} />
-    );
-  }
+  if (gate) return gate;
 
   const sessionKey = status?.session?.sessionId ?? "open";
 
@@ -707,7 +772,6 @@ function NotificationsButton() {
 
 function TopbarRefreshButton() {
   const { refresh, refreshing } = useData();
-  const iconRef = useRef<RefreshCwIconHandle>(null);
 
   return (
     <button
@@ -718,19 +782,21 @@ function TopbarRefreshButton() {
       type="button"
       aria-label="Refresh host data"
       title="Refresh host data"
-      onClick={() => {
-        iconRef.current?.startAnimation();
+      onClick={async () => {
         logInteraction("host_refresh");
-        void refresh().then(() => {
-          toastManager.add({
-            id: "host-refresh",
-            type: "success",
-            title: "Host data refreshed",
-          });
-        });
+        const fresh = await refresh();
+        // W682: say so when the refresh did not reach the host instead of claiming success.
+        toastManager.add(
+          fresh
+            ? { id: "host-refresh", type: "success", title: "Host data refreshed" }
+            : { id: "host-refresh", type: "warning", title: "Host data unavailable" },
+        );
       }}
     >
-      <RefreshCwIcon ref={iconRef} size={16} aria-hidden="true" />
+      <RefreshCw
+        aria-hidden="true"
+        className={cn("size-4", refreshing && "animate-spin motion-reduce:animate-none")}
+      />
     </button>
   );
 }
@@ -967,7 +1033,7 @@ function useThemeState() {
     return () => media.removeEventListener("change", onChange);
   }, []);
 
-  function setPreference(next: ThemePreference) {
+  const setPreference = useCallback((next: ThemePreference) => {
     setPreferenceState(next);
     try {
       if (next === "system") localStorage.removeItem("ri-theme");
@@ -975,7 +1041,7 @@ function useThemeState() {
     } catch {
       // The choice still applies for this visit without storage.
     }
-  }
+  }, []);
 
   return { preference, mode, setPreference };
 }
@@ -983,6 +1049,10 @@ function useThemeState() {
 export function Shell({ children }: { children: ReactNode }) {
   const path = useRouterState({ select: (state) => state.location.pathname });
   const { preference, mode, setPreference } = useThemeState();
+  const themeValue = useMemo(
+    () => ({ preference, mode, setPreference }),
+    [preference, mode, setPreference],
+  );
 
   useEffect(() => {
     initConsoleLog();
@@ -994,7 +1064,7 @@ export function Shell({ children }: { children: ReactNode }) {
   }, [path]);
 
   return (
-    <ThemeContext.Provider value={{ preference, mode, setPreference }}>
+    <ThemeContext.Provider value={themeValue}>
       <PreferencesProvider>
         <ToastProvider>
           <AuthProvider>

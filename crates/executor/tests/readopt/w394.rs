@@ -11,6 +11,7 @@ use super::w377::{
     JOURNAL, MARK, current, raise_mark, refused, replay_state, submit, write_policy,
 };
 use super::*;
+use rustiron_journal::Admitted;
 
 #[test]
 fn w394_readopt_signer_and_scope_abuse_is_refused_before_any_record() {
@@ -65,7 +66,7 @@ fn w394_readopt_signer_and_scope_abuse_is_refused_before_any_record() {
         "blog2", 3002, 202,
     ))));
     let valid = lab.site("blog2", "w394b", |_| {});
-    let ReadoptResult::New(row) = executor.readopt(&valid.request(operation)).unwrap() else {
+    let Admitted::New(row) = executor.readopt(&valid.request(operation)).unwrap() else {
         panic!("new re-adoption expected");
     };
     assert_eq!(row.state, ReadoptState::Adopted);
@@ -112,7 +113,7 @@ fn w394_a_truncated_or_linked_journal_is_refused_never_reinitialized() {
         executor
             .readopt(&lab.site("blog1", "w394l", |_| {}).request("op_w394l"))
             .unwrap(),
-        ReadoptResult::Existing(row) if row.state == ReadoptState::Adopted
+        Admitted::Existing(row) if row.state == ReadoptState::Adopted
     ));
 }
 

@@ -2,7 +2,7 @@
 //! renderer, validator, atomic generation publisher, and reload/rollback engine.
 //!
 //! Every byte of a Caddy generation (`Caddyfile` + per-site `<account>.caddy`)
-//! is rendered strictly from enrolled [`CaddyPolicy`](crate::policy::CaddyPolicy)
+//! is rendered strictly from enrolled `CaddyPolicy`
 //! and trusted journal records; no raw config text ever comes from a request.
 //!
 //! Security invariants enforced on every render & activation:
@@ -25,10 +25,10 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
-    io::{Read, Write},
+    io::Read,
     net::{IpAddr, SocketAddr},
     os::fd::OwnedFd,
-    path::{Path, PathBuf},
+    path::Path,
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
@@ -40,10 +40,14 @@ use rustiron_contracts::{
     },
 };
 use rustiron_journal::{AppFacts, AppFullstackSpec, AppSlot, CaddyIngressMode};
-use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
+use rustix::fs::{self, FileType, Mode, OFlags};
 use sha2::{Digest, Sha256};
 
-use crate::{ExecutorError, files, ols, provision};
+use crate::{
+    ExecutorError, files,
+    generation::{self, Staging},
+    ols, provision,
+};
 
 /// The Rustiron-owned Caddy configuration root (`generations/` and `current`).
 pub const CONFIG_DIR: &str = crate::layout::CADDY_CONFIG_DIR;
@@ -60,11 +64,9 @@ const SITES: &str = crate::layout::SITES_ROOT;
 const MAX_FILE: usize = 256 * 1024;
 const MAX_BINARY_BYTES: u64 = 128 * 1024 * 1024;
 const VALIDATE_TIMEOUT: Duration = Duration::from_secs(30);
-const STAGING_MARK: &str = ".staging-";
-const QUARANTINE_MARK: &str = ".quarantine-";
 
 /// Rendered Caddy generation: file name (`Caddyfile`, `<account>.caddy`) -> UTF-8 bytes.
-pub type CaddyGeneration = BTreeMap<String, Vec<u8>>;
+pub type CaddyGeneration = crate::generation::Files;
 
 /// Enrolled bind configuration passed into the deterministic renderer.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -593,6 +595,14 @@ pub fn digest(generation: &CaddyGeneration) -> Sha256Digest {
 }
 
 /// Content-addressed generation ID (`c` + first 16 hex chars of [`digest`]).
+///
+/// # Panics
+///
+/// Never: the ID is `c` plus 16 lowercase hex characters.
+#[expect(
+    clippy::expect_used,
+    reason = "`c` plus 16 lowercase hex characters is always a valid Id"
+)]
 pub fn generation_id(digest: &Sha256Digest) -> Id {
     let id = format!("c{}", &digest.as_str()[..16]);
     Id::try_from(id).expect("fixed 17-byte ASCII caddy generation identifier")
@@ -745,8 +755,9 @@ pub struct ActivationHooks<'a> {
 }
 
 /// Crash-safely stages a rendered generation into `<config_dir>/generations/<id>`
-/// (write temp -> fsync -> read-back verify -> optional validate -> atomic `RENAME_NOREPLACE`),
-/// quarantining any differing pre-existing folder under `<id>`.
+/// through the shared `generation` staging (W699), then runs the
+/// optional `caddy validate` on the staged `Caddyfile` before the rename. A
+/// differing folder under `<id>` is quarantined, never deleted.
 pub fn stage_and_validate_owned(
     config_root: &Path,
     config_dir: &OwnedFd,
@@ -756,133 +767,32 @@ pub fn stage_and_validate_owned(
     owner: u32,
     validator: Option<CaddyfileValidator<'_>>,
 ) -> Result<(), ExecutorError> {
-    let generations = files::open_child_directory(config_dir, "generations", owner)?;
-    match fs::statat(&generations, id.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
-        Ok(stat) => {
-            if FileType::from_raw_mode(stat.st_mode) != FileType::Directory
-                || stat.st_uid != owner
-                || stat.st_mode & 0o022 != 0
-            {
-                return Err(ExecutorError::Collision);
+    let staging = generation::prepare(
+        config_dir,
+        id,
+        generation,
+        operation,
+        owner,
+        read_generation_dir,
+    )?;
+    if let Some(validate) = validator {
+        let folder = match &staging {
+            Staging::Reused => id.as_str(),
+            Staging::Ready { temporary, .. } => temporary.as_str(),
+        };
+        let caddyfile = config_root
+            .join("generations")
+            .join(folder)
+            .join("Caddyfile");
+        if let Err(error) = validate(&caddyfile) {
+            if let Staging::Ready { temporary, .. } = &staging {
+                // A rejected render never gets the id; its folder is ours to remove.
+                let _ = std::fs::remove_dir_all(config_root.join("generations").join(temporary));
             }
-            let existing_dir = files::open_child_directory(&generations, id.as_str(), owner)
-                .map_err(|_| ExecutorError::Collision)?;
-            if read_generation_dir(&existing_dir, owner).ok().as_ref() == Some(generation) {
-                if let Some(validate) = validator {
-                    let caddyfile = config_root
-                        .join("generations")
-                        .join(id.as_str())
-                        .join("Caddyfile");
-                    validate(&caddyfile)?;
-                }
-                return Ok(());
-            }
-            let quarantine = format!("{}{QUARANTINE_MARK}{}", id.as_str(), operation.as_str());
-            fs::renameat_with(
-                &generations,
-                id.as_str(),
-                &generations,
-                quarantine.as_str(),
-                fs::RenameFlags::NOREPLACE,
-            )
-            .map_err(|_| ExecutorError::Collision)?;
-            fs::fsync(&generations).map_err(|_| ExecutorError::StepFailed)?;
+            return Err(error);
         }
-        Err(rustix::io::Errno::NOENT) => {}
-        Err(_) => return Err(ExecutorError::StepFailed),
     }
-
-    let temporary = format!("{}{STAGING_MARK}{}", id.as_str(), ols::stage::random_hex()?);
-    let temp_path = config_root.join("generations").join(&temporary);
-    let write_res = (|| -> Result<(u64, u64), ExecutorError> {
-        fs::mkdirat(&generations, &temporary, Mode::from_raw_mode(0o755))
-            .map_err(|_| ExecutorError::StepFailed)?;
-        let dir = files::open_child_directory(&generations, &temporary, owner)?;
-        fs::fchmod(&dir, Mode::from_raw_mode(0o755)).map_err(|_| ExecutorError::StepFailed)?;
-        for (name, bytes) in generation {
-            let fd = fs::openat(
-                &dir,
-                name.as_str(),
-                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::from_raw_mode(0o644),
-            )
-            .map_err(|_| ExecutorError::StepFailed)?;
-            fs::fchmod(&fd, Mode::from_raw_mode(0o644)).map_err(|_| ExecutorError::StepFailed)?;
-            let mut file = File::from(fd);
-            file.write_all(bytes)
-                .and_then(|()| file.sync_all())
-                .map_err(|_| ExecutorError::StepFailed)?;
-        }
-        fs::fsync(&dir).map_err(|_| ExecutorError::StepFailed)?;
-        if read_generation_dir(&dir, owner)? != *generation {
-            return Err(ExecutorError::StepFailed);
-        }
-        if let Some(validate) = validator {
-            validate(&temp_path.join("Caddyfile"))?;
-        }
-        let stat = fs::fstat(&dir).map_err(|_| ExecutorError::StepFailed)?;
-        Ok((stat.st_dev, stat.st_ino))
-    })();
-
-    let identity = match write_res {
-        Ok(id_pair) => id_pair,
-        Err(err) => {
-            let _ = std::fs::remove_dir_all(&temp_path);
-            return Err(err);
-        }
-    };
-
-    let stat_before = fs::statat(&generations, &temporary, AtFlags::SYMLINK_NOFOLLOW)
-        .map_err(|_| ExecutorError::Collision)?;
-    if (stat_before.st_dev, stat_before.st_ino) != identity {
-        return Err(ExecutorError::Collision);
-    }
-    fs::renameat_with(
-        &generations,
-        &temporary,
-        &generations,
-        id.as_str(),
-        fs::RenameFlags::NOREPLACE,
-    )
-    .map_err(|err| {
-        if err == rustix::io::Errno::EXIST {
-            ExecutorError::Collision
-        } else {
-            ExecutorError::StepFailed
-        }
-    })?;
-    fs::fsync(&generations).map_err(|_| ExecutorError::StepFailed)?;
-    let stat_after = fs::statat(&generations, id.as_str(), AtFlags::SYMLINK_NOFOLLOW)
-        .map_err(|_| ExecutorError::Collision)?;
-    if (stat_after.st_dev, stat_after.st_ino) != identity {
-        return Err(ExecutorError::Collision);
-    }
-    Ok(())
-}
-
-/// Atomically swaps `<config_dir>/current` -> `generations/<id>` via a sibling
-/// temporary symlink + `renameat` + `fsync`.
-pub fn switch_current(config_dir: &OwnedFd, id: &Id) -> Result<(), ExecutorError> {
-    let target = format!("generations/{}", id.as_str());
-    let tmp_link = format!("current.next-{}", ols::stage::random_hex()?);
-    fs::symlinkat(target.as_str(), config_dir, tmp_link.as_str())
-        .map_err(|_| ExecutorError::StepFailed)?;
-    if fs::renameat(config_dir, tmp_link.as_str(), config_dir, "current").is_err() {
-        let _ = fs::unlinkat(config_dir, tmp_link.as_str(), AtFlags::empty());
-        return Err(ExecutorError::StepFailed);
-    }
-    fs::fsync(config_dir).map_err(|_| ExecutorError::StepFailed)
-}
-
-/// Removes `<config_dir>/current` (used only when rolling back a bootstrap activation
-/// where no previous generation existed).
-pub fn clear_current(config_dir: &OwnedFd) -> Result<(), ExecutorError> {
-    match fs::unlinkat(config_dir, "current", AtFlags::empty()) {
-        Ok(()) | Err(rustix::io::Errno::NOENT) => {
-            fs::fsync(config_dir).map_err(|_| ExecutorError::StepFailed)
-        }
-        Err(_) => Err(ExecutorError::StepFailed),
-    }
+    generation::publish(config_dir, id, staging, owner).map(|_| ())
 }
 
 /// Applies a validated generation with atomic symlink swap, reload (or bootstrap
@@ -906,16 +816,20 @@ pub fn activate_with_rollback(
         owner,
         hooks.validator,
     )?;
-    switch_current(config_dir, target_id)?;
+    generation::switch(config_dir, target_id)?;
     let is_bootstrap = previous.is_none();
     if let Err(err) = (hooks.reload_and_probe)(is_bootstrap) {
-        if let Some(prev_id) = &previous {
-            let _ = switch_current(config_dir, prev_id);
-            let _ = (hooks.reload_and_probe)(false);
+        // W674: a failed restore must not read as a clean rollback.
+        let restored = match &previous {
+            Some(prev_id) => generation::switch(config_dir, prev_id)
+                .and_then(|()| (hooks.reload_and_probe)(false)),
+            None => generation::clear_current(config_dir),
+        };
+        return Err(if restored.is_ok() {
+            err
         } else {
-            let _ = clear_current(config_dir);
-        }
-        return Err(err);
+            ExecutorError::RollbackFailed
+        });
     }
     Ok(previous)
 }
@@ -958,12 +872,6 @@ pub fn activate_live(
         &hooks,
     )?;
     Ok((gen_id, gen_digest, previous))
-}
-
-/// Resolves the active path of `Caddyfile` inside `CONFIG_DIR/current/Caddyfile`.
-#[allow(dead_code)]
-pub(crate) fn current_caddyfile_path() -> PathBuf {
-    Path::new(CONFIG_DIR).join("current").join("Caddyfile")
 }
 
 /// Converts an enrolled [`CaddyPolicy`](crate::policy::CaddyPolicy) into a
@@ -1459,7 +1367,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "rustiron-caddy-stage-{}-{}",
             std::process::id(),
-            ols::stage::random_hex().unwrap()
+            generation::random_hex().unwrap()
         ));
         std::fs::create_dir_all(root.join("generations")).unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1555,6 +1463,23 @@ mod tests {
         .unwrap_err();
         assert_eq!(err, ExecutorError::ProbeFailed);
         assert_eq!(reload_calls.get(), 2);
+
+        // 3b. W674: when the restore reload also fails, the result is
+        // RollbackFailed, never the original error that reads as rolled back.
+        let err = activate_with_rollback(
+            &root,
+            &dir_fd,
+            &id2,
+            &gen2,
+            &op2,
+            owner,
+            &ActivationHooks {
+                validator: Some(&|_path| Ok(())),
+                reload_and_probe: &|_boot| Err(ExecutorError::ProbeFailed),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, ExecutorError::RollbackFailed);
         assert_eq!(
             observe_current_owned(&dir_fd, owner).unwrap(),
             Some((id1, d1))
@@ -1568,7 +1493,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "rustiron-caddy-bin-{}-{}",
             std::process::id(),
-            ols::stage::random_hex().unwrap()
+            generation::random_hex().unwrap()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let bin = root.join("caddy");
@@ -1597,6 +1522,50 @@ mod tests {
             ExecutorError::Unavailable
         );
 
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// W699: Caddy shares the OLS staging rules. A folder under the id with
+    /// other files is moved aside (never trusted, never deleted) and staged again.
+    #[test]
+    fn a_differing_folder_under_the_id_is_quarantined_not_trusted() {
+        let root = std::env::temp_dir().join(format!(
+            "rustiron-caddy-quarantine-{}-{}",
+            std::process::id(),
+            generation::random_hex().unwrap()
+        ));
+        let planted = |id: &Id| root.join("generations").join(id.as_str());
+        let cfg = caddy_only_config();
+        let render_1 = render(&cfg, &[static_spa_site()]).unwrap();
+        let id = generation_id(&digest(&render_1));
+        std::fs::create_dir_all(planted(&id)).unwrap();
+        for dir in [root.clone(), root.join("generations"), planted(&id)] {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(planted(&id).join("Caddyfile"), b"partial").unwrap();
+        let owner = rustix::process::getuid().as_raw();
+        let dir_fd = files::open_traversable_directory(&root, owner).unwrap();
+        let operation = Id::try_from("op_caddy_q".to_owned()).unwrap();
+
+        stage_and_validate_owned(&root, &dir_fd, &id, &render_1, &operation, owner, None).unwrap();
+
+        let generations = files::open_child_directory(&dir_fd, "generations", owner).unwrap();
+        assert_eq!(
+            read_generation_dir(
+                &files::open_child_directory(&generations, id.as_str(), owner).unwrap(),
+                owner
+            )
+            .unwrap(),
+            render_1
+        );
+        assert_eq!(
+            generation::leftovers(&dir_fd, owner).unwrap(),
+            vec![format!(
+                "{}{}op_caddy_q",
+                id.as_str(),
+                generation::QUARANTINE_MARK
+            )]
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

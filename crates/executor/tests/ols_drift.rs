@@ -377,13 +377,13 @@ fn an_unjournaled_generation_is_refused_before_intent() {
         None,
         "with nothing established yet, a content-addressed generation passes"
     );
-    let forged = (generation_id(&journaled), planted.clone());
+    let forged = (generation_id(&journaled), planted);
     assert_eq!(
         generation_refusal(&forged, Some(&established)),
         Some((false, Some(false))),
         "bytes that no longer hash to the id"
     );
-    let adopted = (Id::try_from("g1".to_owned()).unwrap(), journaled.clone());
+    let adopted = (Id::try_from("g1".to_owned()).unwrap(), journaled);
     assert_eq!(generation_refusal(&adopted, Some(&adopted)), None);
     assert_eq!(
         generation_refusal(&adopted, None),

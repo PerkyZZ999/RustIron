@@ -134,10 +134,22 @@ def load_record(target, owner=0):
 # D-072 (W486): the one added file whose standard folder the updater may
 # create. Every other added file needs its folder to exist (D-062).
 CREATABLE_FOLDERS = {preflight.JOURNALD_DROPIN: "etc/systemd/journald.conf.d"}
+# W734 (QA-03): folders inside these product trees belong to the product, so a
+# release may add one (for example usr/share/rustiron/postgres in W658).
+PRODUCT_TREES = ("usr/share/rustiron/", "usr/libexec/rustiron/")
+
+
+def folder_to_create(name):
+    """The standard folder that an added file may need, or None."""
+    folder = CREATABLE_FOLDERS.get(name)
+    if folder is not None:
+        return folder
+    parent = str(Path(name).parent)
+    return parent if any(parent.startswith(tree) for tree in PRODUCT_TREES) else None
 
 
 def creatable_folder(target, name):
-    folder = CREATABLE_FOLDERS.get(name)
+    folder = folder_to_create(name)
     return (folder is not None and preflight.metadata(target / folder) is None
             and preflight.metadata((target / folder).parent) is not None)
 
@@ -147,7 +159,9 @@ def compatibility(record, digests, target=None):
 
     D-062 (W467): a release may add and remove payload files. An added file's
     destination must not exist (anything there is unexplained) and its folder
-    must exist; a shipped SELinux module may not be removed.
+    must exist, unless the update may create it (D-072, W734: a standard folder
+    or a new folder inside a product tree); a shipped SELinux module may not be
+    removed.
     """
     problems = []
     recorded = record["payload"]
@@ -457,7 +471,7 @@ def make_folders(target, created, owner=0, report=print):
     """D-072: create the missing standard folder of an added file, root 0755."""
     made = []
     for name in created:
-        folder = CREATABLE_FOLDERS.get(name)
+        folder = folder_to_create(name)
         if folder is not None and preflight.metadata(target / folder) is None:
             os.mkdir(target / folder, 0o755)
             os.chown(target / folder, owner, owner)
@@ -468,9 +482,36 @@ def make_folders(target, created, owner=0, report=print):
     return made
 
 
+def make_state_dirs(target, owner=0, report=print):
+    """W735 (QA-04): create the install-time state folders an older host lacks.
+
+    A release may add one that a unit needs (W657: etc/rustiron-caddy in the
+    executor's ReadWritePaths); without it the unit fails at its namespace
+    step. Sorted order makes a parent before its child. The sites mount is
+    never created here.
+    """
+    made = []
+    for name, mode in sorted(installer.STATE_DIRS.items()):
+        path = target / name
+        if name == preflight.SITES_ROOT or preflight.metadata(path) is not None:
+            continue
+        if preflight.metadata(path.parent) is None:
+            continue
+        os.mkdir(path, 0o700)
+        os.chown(path, owner, owner)
+        os.chmod(path, mode)
+        fsync_directory(path.parent)
+        report(f"ADDED /{name}/")
+        made.append(name)
+    return made
+
+
 def remove_folders(target, folders, report=print):
-    """D-072: a rollback removes the folders its update created, when empty."""
-    for folder in folders:
+    """D-072: a rollback removes the folders its update created, when empty.
+
+    Deepest first, so a created parent goes after its created child (W735).
+    """
+    for folder in sorted(folders, reverse=True):
         try:
             os.rmdir(target / folder)
         except FileNotFoundError:
@@ -511,7 +552,9 @@ def execute(target, names, record_content, final_record, source_chunks, digests,
         raise Refused([f"operation unit active after the stop: {unit}" for unit in busy])
     try:
         apply_files(target, names, source_chunks, digests, owner)
-        folders = make_folders(target, created, owner)
+        payload_folders = make_folders(target, created, owner)
+        state_folders = make_state_dirs(target, owner)
+        folders = [*payload_folders, *state_folders]
         manifest["created_folders"] = folders
         apply_files(target, created, source_chunks, digests, owner, label="ADDED")
         unload_removed_modules(dropped)
@@ -520,9 +563,14 @@ def execute(target, names, record_content, final_record, source_chunks, digests,
         finish_host(target, [*folders, *names, *created])
         content = final_record(str(folder.relative_to(target)))
         if folders:
-            # D-072: the uninstaller removes the folders this update created.
+            # D-072: the uninstaller removes the folders this update created. A
+            # created state folder is recorded as one (W735), as the installer does.
             updated = json.loads(content)
-            updated["created_directories"] = sorted({*updated.get("created_directories", []), *folders})
+            updated["created_directories"] = sorted(
+                {*updated.get("created_directories", []), *payload_folders})
+            if state_folders:
+                updated["state_directories"] = sorted(
+                    {*updated.get("state_directories", []), *state_folders})
             content = (json.dumps(updated, indent=1, sort_keys=True) + "\n").encode()
         write_record(target, content, owner)
         manifest.update(state="complete", record_after_sha256=hashlib.sha256(content).hexdigest())

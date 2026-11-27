@@ -9,6 +9,8 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{CanonicalObject, ProtocolError, codec::validate_canonical_json};
 
+#[macro_use]
+mod header;
 mod app;
 mod capture;
 mod certificate;

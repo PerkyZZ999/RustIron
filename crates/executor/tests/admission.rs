@@ -21,9 +21,9 @@ use rustiron_contracts::{
 use rustiron_executor::{
     AdmissionRequest, Executor, ExecutorError, Fault, TrustAnchor, admit, serve,
 };
-use rustiron_journal::{ProvisionState, ProvisionStep, RecordResult, RecordedState, StepState};
 use serde_json::{Value, json};
 mod support;
+use rustiron_journal::{Admitted, ProvisionState, ProvisionStep, RecordedState, StepState};
 use support::{KEYGEN, hex, new_key, private_dir, private_file, sign};
 
 const PLAN: &str = include_str!("../../contracts/tests/fixtures/fixture-plan.json");
@@ -57,7 +57,7 @@ impl Lab {
     fn new(name: &str) -> Self {
         let serial = SERIAL
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = std::env::temp_dir().join(format!("ri-executor-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         private_dir(&root);
@@ -230,6 +230,18 @@ fn signature_failures_deny() {
     assert_eq!(fs::read_dir(&lab.anchor.scratch_dir).unwrap().count(), 0);
 }
 
+/// W705 (mutation campaign): a signature at the 16 KiB limit reaches the
+/// verifier; one byte more is refused as malformed before it.
+#[test]
+fn a_signature_over_the_byte_limit_is_refused_before_the_verifier() {
+    const MAX_SIGNATURE_BYTES: usize = 16 * 1024;
+    let mut lab = Lab::new("sig-size");
+    lab.signature = vec![b'A'; MAX_SIGNATURE_BYTES];
+    assert_eq!(lab.admit(), Err(ExecutorError::SignatureDenied));
+    lab.signature = vec![b'A'; MAX_SIGNATURE_BYTES + 1];
+    assert_eq!(lab.admit(), Err(ExecutorError::InvalidRequest));
+}
+
 #[test]
 fn time_must_be_known_and_inside_grant_window() {
     let lab = Lab::new("time");
@@ -371,13 +383,13 @@ fn anchor(lab: &Lab) -> TrustAnchor {
 fn submit_consumes_nonce_once_and_repeats_are_status_only() {
     let lab = Lab::new("durable");
     let mut executor = Executor::initialize(anchor(&lab)).unwrap();
-    let RecordResult::New(operation) = executor.submit(&lab.request()).unwrap() else {
+    let Admitted::New(operation) = executor.submit(&lab.request()).unwrap() else {
         panic!("first submission must be new");
     };
     assert_eq!(operation.state, RecordedState::Intent);
     assert!(matches!(
         executor.submit(&lab.request()).unwrap(),
-        RecordResult::Existing(_)
+        Admitted::Existing(_)
     ));
     let mut reused = lab.request();
     reused.operation_id = id("operation_2");
@@ -417,7 +429,7 @@ fn denied_admission_records_nothing() {
     lab.resign("key");
     assert!(matches!(
         executor.submit(&lab.request()).unwrap(),
-        RecordResult::New(_)
+        Admitted::New(_)
     ));
 }
 
@@ -505,7 +517,7 @@ fn root_executor_records_while_ordinary_journal_refuses_root() {
     let mut executor = Executor::initialize(anchor(&lab)).unwrap();
     assert!(matches!(
         executor.submit(&lab.request()).unwrap(),
-        RecordResult::New(_)
+        Admitted::New(_)
     ));
     let operation = executor
         .execute(&id("operation_1"), lab.request().now)
@@ -1383,7 +1395,7 @@ fn provision_of_a_consumed_site_is_a_changed_precondition_not_a_replay() {
     assert_eq!(executor.provision_status(&id("site_op_2")).unwrap(), None);
     assert!(matches!(
         executor.provision(&site_admission(&lab, &first)),
-        Ok(rustiron_journal::ProvisionResult::Existing(_))
+        Ok(rustiron_journal::Admitted::Existing(_))
     ));
     let mut other_op = site_admission(&lab, &first);
     other_op.operation_id = id("site_op_3");
@@ -1529,7 +1541,7 @@ fn unprivileged_provision_fails_at_the_first_step_and_is_quarantined() {
     assert_eq!(stored.state, rustiron_journal::ProvisionState::Quarantined);
     assert_eq!(stored.steps.len(), 1, "nothing after the failed step ran");
     assert_eq!(stored.steps[0].state, rustiron_journal::StepState::Failed);
-    let rustiron_journal::ProvisionResult::Existing(again) =
+    let rustiron_journal::Admitted::Existing(again) =
         executor.provision(&site_admission(&lab, &parts)).unwrap()
     else {
         panic!("an exact repeat must be status only");
@@ -1584,7 +1596,7 @@ fn a_crash_between_the_journal_commit_and_the_mark_update_is_accepted() {
     let zero = mark_text(&lab);
     assert!(matches!(
         executor.submit(&lab.request()).unwrap(),
-        RecordResult::New(_)
+        Admitted::New(_)
     ));
     drop(executor);
     // The journal committed the admission; the mark still says 0.
@@ -1991,10 +2003,7 @@ fn power_loss_at_any_point_never_replays_or_misreports() {
                 assert_eq!(link, want, "cut {cut}: {:?}", operation.state);
                 // The consumed grant is never admitted as new again.
                 assert!(
-                    matches!(
-                        executor.submit(&lab.request()),
-                        Ok(RecordResult::Existing(_))
-                    ),
+                    matches!(executor.submit(&lab.request()), Ok(Admitted::Existing(_))),
                     "cut {cut}: replay admitted"
                 );
                 format!("{:?}", operation.state)
@@ -2217,7 +2226,7 @@ fn w380_the_fixture_verb_under_a_re_enrolled_epoch_is_an_identity_mismatch() {
     lab.write_policy(json!({}));
     assert!(matches!(
         executor.submit(&lab.request()),
-        Ok(RecordResult::New(_))
+        Ok(Admitted::New(_))
     ));
 }
 

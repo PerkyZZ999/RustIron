@@ -18,7 +18,9 @@ use rustiron_contracts::{
     approval::{Hostname, RestoreScope, Sha256Digest, SiteId, SnapshotId},
 };
 
-use crate::{FixtureJournal, JournalError, ProvisionState, StepState, provision, storage};
+use crate::{
+    Admitted, FixtureJournal, JournalError, ProvisionState, StepState, provision, storage,
+};
 
 /// D-089: the safety capture finished at most this long before the intent.
 pub const RESTORE_SAFETY_MAX_AGE_SECONDS: u64 = 24 * 3600;
@@ -232,15 +234,6 @@ impl SiteRestore {
             RestoreFrom::Safety => &self.safety_capture_operation_id,
         }
     }
-}
-
-/// A new or an exactly repeated restore.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RestoreResult {
-    /// Recorded now, in `intent`.
-    New(SiteRestore),
-    /// The same request was recorded before; its stored state.
-    Existing(SiteRestore),
 }
 
 const COLUMNS: &str = "operation_id, site_id, scope, capture_operation_id, snapshot_id, manifest_sha256, safety_capture_operation_id, idempotency_key, grant_id, nonce, plan_digest, grant_digest, expires_at, state";
@@ -632,7 +625,7 @@ impl FixtureJournal {
         &mut self,
         intent: &RestoreIntent,
         now: Timestamp,
-    ) -> Result<RestoreResult, JournalError> {
+    ) -> Result<Admitted<SiteRestore>, JournalError> {
         let signed = self.take_signed(&crate::signed::Expected {
             plan_digest: &intent.plan_digest,
             grant_digest: &intent.grant_digest,
@@ -646,7 +639,7 @@ impl FixtureJournal {
             .map_err(storage::unavailable)?;
         if let Some((exact, existing)) = stored(&transaction, intent)? {
             return if exact {
-                Ok(RestoreResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(JournalError::Conflict)
             };
@@ -699,7 +692,7 @@ impl FixtureJournal {
         storage::set_clock(&transaction, now)?;
         let recorded = reload(&transaction, &intent.operation_id)?;
         transaction.commit().map_err(storage::unavailable)?;
-        Ok(RestoreResult::New(recorded))
+        Ok(Admitted::New(recorded))
     }
 
     /// Commits a step's intent before its effect. The restore and its

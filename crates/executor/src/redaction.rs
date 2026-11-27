@@ -136,6 +136,7 @@ mod tests {
             ReadoptMismatch,
             WindowClosed,
             RunMismatch,
+            RollbackFailed,
         ] {
             // A new variant must be added here: fails to compile otherwise.
             match error {
@@ -145,8 +146,8 @@ mod tests {
                 | IdentityMismatch | NotAdmitted | CompensationDenied | Collision | StepFailed
                 | Drift | ArtifactUnavailable | ProbeFailed | JournalRollback
                 | HelperUnreachable | RetentionUnverified | GenerationCurrent
-                | QuotaUnavailable | NotEnrolled | ReadoptMismatch | WindowClosed | RunMismatch => {
-                }
+                | QuotaUnavailable | NotEnrolled | ReadoptMismatch | WindowClosed | RunMismatch
+                | RollbackFailed => {}
             }
             let reply = serde_json::to_string(&crate::serve::error_reply(None, error)).unwrap();
             assert!(secret_shapes(error.code()).is_empty());

@@ -14,7 +14,7 @@ use rustiron_contracts::{
     approval::{Hostname, ReadoptForm, ReadoptPlan, Sha256Digest, SiteId},
 };
 
-use crate::{FixtureJournal, JournalError, storage};
+use crate::{Admitted, FixtureJournal, JournalError, storage};
 
 const MAX_READOPTIONS: i64 = 100;
 const MAX_FACTS: usize = 4096;
@@ -86,15 +86,6 @@ pub struct Readoption {
     pub facts: Option<String>,
     /// For `refused`: the stable code and the first failed rule.
     pub refusal: Option<(String, String)>,
-}
-
-/// New durable re-adoption, or status of an exact earlier one.
-#[derive(Debug, Eq, PartialEq)]
-pub enum ReadoptResult {
-    /// Intent committed; nonce consumed.
-    New(Readoption),
-    /// Status only; never permission to observe or record again.
-    Existing(Readoption),
 }
 
 /// The allocations an adopted site holds, as the executor observed them.
@@ -292,7 +283,7 @@ impl FixtureJournal {
         &mut self,
         intent: &ReadoptionIntent,
         now: Timestamp,
-    ) -> Result<ReadoptResult, JournalError> {
+    ) -> Result<Admitted<Readoption>, JournalError> {
         let signed = self.take_signed(&crate::signed::Expected {
             plan_digest: &intent.plan_digest,
             grant_digest: &intent.grant_digest,
@@ -314,7 +305,7 @@ impl FixtureJournal {
             intent.idempotency_key.as_str(),
         )? {
             return if existing.intent == *intent {
-                Ok(ReadoptResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(JournalError::Conflict)
             };
@@ -376,7 +367,7 @@ impl FixtureJournal {
         crate::signed::insert(&transaction, &intent.operation_id, signed.as_ref())?;
         storage::set_clock(&transaction, now)?;
         transaction.commit().map_err(storage::unavailable)?;
-        Ok(ReadoptResult::New(Readoption {
+        Ok(Admitted::New(Readoption {
             intent: intent.clone(),
             state: ReadoptState::Verifying,
             facts: None,

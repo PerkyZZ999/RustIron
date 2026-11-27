@@ -277,16 +277,30 @@ def render_ols_listener_dropin(public_ipv4: str) -> str:
     )
 
 
+CONSOLE_OBSERVE_SCRIPT = Path(__file__).resolve().parent / "console" / "rustiron-console-observe"
+CONSOLE_OBSERVE_TARGET = "usr/local/libexec/rustiron-console/rustiron-console-observe"
+CONSOLE_OBSERVATION = "/var/lib/rustiron-console/observe/observation.json"
+
+
 def render_console_unit(working_dir: str = "/opt/rustiron/console") -> str:
-    """Hardened systemd unit for the D-090 loopback Console Admin Panel."""
+    """Hardened systemd unit for the D-090 loopback Console Admin Panel.
+
+    W733 (QA-02): the coordinator accepts only peers with its own UID (a 0700
+    folder, a 0600 socket, and a kernel peer check on both ends), as its other
+    clients do. So the Console runs as rustiron-coordinator. User= also loads
+    that user's rustiron-requesters membership, so the Console can reach the
+    executor socket too (W758); the executor still verifies a signed grant.
+    StateDirectory keeps its databases and moves an older rustiron-build
+    folder to the new owner.
+    """
     return (
         "[Unit]\n"
         "Description=Rustiron Console Admin Panel (loopback only, D-090 hardened)\n"
         "After=network.target rustiron-coordinator.service\n\n"
         "[Service]\n"
         "Type=simple\n"
-        "User=rustiron-build\n"
-        "Group=rustiron-build\n"
+        "User=rustiron-coordinator\n"
+        "Group=rustiron-coordinator\n"
         "SupplementaryGroups=systemd-journal\n"
         f"WorkingDirectory={working_dir}\n"
         "EnvironmentFile=/etc/rustiron-console/env\n"
@@ -303,9 +317,40 @@ def render_console_unit(working_dir: str = "/opt/rustiron/console") -> str:
         "LockPersonality=yes\n"
         "RestrictRealtime=yes\n"
         "RestrictSUIDSGID=yes\n"
-        "ReadWritePaths=/var/lib/rustiron-console\n\n"
+        "StateDirectory=rustiron-console\n"
+        "StateDirectoryMode=0700\n\n"
         "[Install]\n"
         "WantedBy=multi-user.target\n"
+    )
+
+
+def render_console_observe_unit() -> str:
+    """W733 (QA-02): one Console observation, read by root, merged unprivileged."""
+    return (
+        "[Unit]\n"
+        "Description=Rustiron Console observation feed (journal + host status)\n"
+        "After=rustiron-executor.service\n"
+        "ConditionPathExists=/var/lib/rustiron/executor/fixture-journal.sqlite\n\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        f"ExecStart=/{CONSOLE_OBSERVE_TARGET} {CONSOLE_OBSERVATION}\n"
+        "Nice=10\n"
+        "UMask=0077\n"
+        "PrivateTmp=yes\n"
+    )
+
+
+def render_console_observe_timer() -> str:
+    """W733 (QA-02): refreshes the observation faster than the Console's 60 s staleness."""
+    return (
+        "[Unit]\n"
+        "Description=Refresh the Rustiron Console observation every 30 s\n\n"
+        "[Timer]\n"
+        "OnBootSec=30s\n"
+        "OnUnitActiveSec=30s\n"
+        "AccuracySec=5s\n\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"
     )
 
 
@@ -317,6 +362,7 @@ def render_console_env(cfg: WizardConfig, setup_token: str) -> str:
         "RUSTIRON_CONSOLE_AUTH_REQUIRED=1",
         f"RUSTIRON_CONSOLE_PORT={cfg.console_port}",
         "RUSTIRON_COORDINATOR_SOCKET=/run/rustiron-coordinator/control.sock",
+        f"RUSTIRON_OBSERVATION={CONSOLE_OBSERVATION}",
         "RUSTIRON_CONSOLE_AUTH_DB=/var/lib/rustiron-console/auth.sqlite",
         "RUSTIRON_CONSOLE_MAIL_DB=/var/lib/rustiron-console/mail.sqlite",
         f"RUSTIRON_CONSOLE_SETUP_TOKEN={setup_token}",
@@ -549,6 +595,7 @@ def build_plan(cfg: WizardConfig, host_facts: dict) -> dict:
             ],
             "commands": [
                 "systemctl daemon-reload && systemctl enable --now rustiron-console.service",
+                "systemctl enable --now rustiron-console-observe.timer",
             ],
         }
         if cfg.console_domain:
@@ -624,6 +671,16 @@ def apply_host_prep(
         write_restricted(unit_path, render_console_unit(), 0o644)
         written.append(str(unit_path))
         report(f"WROTE {unit_path} (0644)")
+        observe_files = (
+            (CONSOLE_OBSERVE_TARGET, CONSOLE_OBSERVE_SCRIPT.read_text(encoding="utf-8"), 0o755),
+            ("etc/systemd/system/rustiron-console-observe.service", render_console_observe_unit(), 0o644),
+            ("etc/systemd/system/rustiron-console-observe.timer", render_console_observe_timer(), 0o644),
+        )
+        for relative, text, mode in observe_files:
+            target = root / relative
+            write_restricted(target, text, mode)
+            written.append(str(target))
+            report(f"WROTE {target} ({mode:04o})")
 
     if facts["selinux_reboot_needed"]:
         selinux_cfg = root / "etc/selinux/config"

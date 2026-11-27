@@ -706,7 +706,7 @@ fn launch_arguments(
     launch_arguments_for(layout, level, Some(destination), phase, unit, command)
 }
 
-/// As [`launch_arguments`]; without a destination only the dump and marker
+/// As `launch_arguments` (test builds); without a destination only the dump and marker
 /// phases launch (W356 product dump units).
 fn launch_arguments_for(
     layout: &SiteLayout,

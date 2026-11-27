@@ -310,18 +310,15 @@ pub fn run(
     include: Result<OwnedFd, ExecutorError>,
     predecessor_stored: impl FnOnce(&OwnedFd, &(Id, Sha256Digest)) -> bool,
 ) -> GuardReport {
-    let include = match include {
-        Ok(include) => include,
-        Err(_) => {
-            return GuardReport {
-                decision: decide(&journal, &LinkFinding::Unreadable, false),
-                journal,
-                before: LinkFinding::Unreadable,
-                error: None,
-                after: None,
-                restored: None,
-            };
-        }
+    let Ok(include) = include else {
+        return GuardReport {
+            decision: decide(&journal, &LinkFinding::Unreadable, false),
+            journal,
+            before: LinkFinding::Unreadable,
+            error: None,
+            after: None,
+            restored: None,
+        };
     };
     let before = LinkFinding::observe(&include);
     let stored = match &journal {
@@ -353,7 +350,7 @@ pub fn run(
     }
     let error = apply(&include, &decision, activation)
         .err()
-        .map(|e| e.code());
+        .map(crate::ExecutorError::code);
     let after = LinkFinding::observe(&include);
     let restored = restored(&decision, activation, &after);
     GuardReport {
@@ -495,7 +492,7 @@ mod tests {
             before: LinkFinding::Names(pending.target.clone()),
             decision: GuardDecision::RestorePredecessor,
             error: None,
-            after: Some(LinkFinding::Names(pending.predecessor.clone())),
+            after: Some(LinkFinding::Names(pending.predecessor)),
             restored: Some(true),
         };
         let json = report.json();

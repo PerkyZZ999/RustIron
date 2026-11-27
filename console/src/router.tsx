@@ -2,52 +2,93 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  lazyRouteComponent,
+  Link,
   Outlet,
   RouterProvider,
 } from "@tanstack/react-router";
+import { SearchX } from "lucide-react";
 
-import { LoginPage, UsersPage } from "./accounts-pages";
-import { DatabasesPage } from "./databases-and-site-ops";
-import { AddDomainPage, CreateWebsitePage } from "./hosting-wizards";
-import { KnowledgeBaseArticlePage, KnowledgeBaseHomePage } from "./kb-pages";
-import { EmailManagementPage } from "./mail-pages";
-import { HostAlertsPage, HostFirewallPage, SiteMaintenancePage } from "./ops-views";
-import {
-  ArtifactPage,
-  HostMetrics,
-  HostServices,
-  OperationDetail,
-  OperationsPage,
-  Overview,
-  PlanDetail,
-  ReceiptPage,
-  RecoveryPage,
-  SettingsPage,
-  SiteConfiguration,
-  SiteOperations,
-  SiteOverview,
-  SiteRecovery,
-  SitesPage,
-  StatesPage,
-} from "./pages";
-import { PlanNew, PlanReview } from "./plan-workflow";
-import {
-  AppDetailPage,
-  AppsPage,
-  DomainsPage,
-  HostDiagnosesPage,
-  HostUpdatesPage,
-  MigrationPage,
-} from "./platform-pages";
-import {
-  DomainDetailPage,
-  DomainDnsPage,
-  EmDashMigrationDetailPage,
-  RecoverySchedulesPage,
-  RecoveryStorePage,
-} from "./platform-subviews";
-import { HostCronPage, HostLogsPage } from "./server-ops-pages";
+import { type AppTab, APP_TABS } from "./app-tabs";
 import { Shell } from "./shell";
+import { EmptyState, Page } from "./ui";
+
+// W707 (follow-up 32): each page module loads with its first route, so the
+// first load holds only the shell and the page it opens.
+const loadAccountsPages = () => import("./accounts-pages");
+const LoginPage = lazyRouteComponent(loadAccountsPages, "LoginPage");
+const UsersPage = lazyRouteComponent(loadAccountsPages, "UsersPage");
+
+const loadDatabasesAndSiteOps = () => import("./databases-and-site-ops");
+const DatabasesPage = lazyRouteComponent(loadDatabasesAndSiteOps, "DatabasesPage");
+
+const loadHostingWizards = () => import("./hosting-wizards");
+const AddDomainPage = lazyRouteComponent(loadHostingWizards, "AddDomainPage");
+const CreateWebsitePage = lazyRouteComponent(loadHostingWizards, "CreateWebsitePage");
+
+const loadKbPages = () => import("./kb-pages");
+const KnowledgeBaseArticlePage = lazyRouteComponent(loadKbPages, "KnowledgeBaseArticlePage");
+const KnowledgeBaseHomePage = lazyRouteComponent(loadKbPages, "KnowledgeBaseHomePage");
+
+const loadMailPages = () => import("./mail-pages");
+const EmailManagementPage = lazyRouteComponent(loadMailPages, "EmailManagementPage");
+
+const loadOpsViews = () => import("./ops-views");
+const HostAlertsPage = lazyRouteComponent(loadOpsViews, "HostAlertsPage");
+const HostFirewallPage = lazyRouteComponent(loadOpsViews, "HostFirewallPage");
+const SiteMaintenancePage = lazyRouteComponent(loadOpsViews, "SiteMaintenancePage");
+
+const loadHostPages = () => import("./host-pages");
+const HostMetrics = lazyRouteComponent(loadHostPages, "HostMetrics");
+const HostServices = lazyRouteComponent(loadHostPages, "HostServices");
+const Overview = lazyRouteComponent(loadHostPages, "Overview");
+
+const loadSitePages = () => import("./site-pages");
+const SiteConfiguration = lazyRouteComponent(loadSitePages, "SiteConfiguration");
+const SiteOperations = lazyRouteComponent(loadSitePages, "SiteOperations");
+const SiteOverview = lazyRouteComponent(loadSitePages, "SiteOverview");
+const SiteRecovery = lazyRouteComponent(loadSitePages, "SiteRecovery");
+const SitesPage = lazyRouteComponent(loadSitePages, "SitesPage");
+
+const loadOperationPages = () => import("./operation-pages");
+const OperationDetail = lazyRouteComponent(loadOperationPages, "OperationDetail");
+const OperationsPage = lazyRouteComponent(loadOperationPages, "OperationsPage");
+const PlanDetail = lazyRouteComponent(loadOperationPages, "PlanDetail");
+
+const loadRecoveryPages = () => import("./recovery-pages");
+const ArtifactPage = lazyRouteComponent(loadRecoveryPages, "ArtifactPage");
+const ReceiptPage = lazyRouteComponent(loadRecoveryPages, "ReceiptPage");
+const RecoveryPage = lazyRouteComponent(loadRecoveryPages, "RecoveryPage");
+
+const loadSettingsPages = () => import("./settings-pages");
+const SettingsPage = lazyRouteComponent(loadSettingsPages, "SettingsPage");
+const StatesPage = lazyRouteComponent(loadSettingsPages, "StatesPage");
+
+const loadPlanWorkflow = () => import("./plan-workflow");
+const PlanNew = lazyRouteComponent(loadPlanWorkflow, "PlanNew");
+const PlanReview = lazyRouteComponent(loadPlanWorkflow, "PlanReview");
+
+const loadPlatformPages = () => import("./platform-pages");
+const AppDetailPage = lazyRouteComponent(loadPlatformPages, "AppDetailPage");
+const AppsPage = lazyRouteComponent(loadPlatformPages, "AppsPage");
+const DomainsPage = lazyRouteComponent(loadPlatformPages, "DomainsPage");
+const HostDiagnosesPage = lazyRouteComponent(loadPlatformPages, "HostDiagnosesPage");
+const HostUpdatesPage = lazyRouteComponent(loadPlatformPages, "HostUpdatesPage");
+const MigrationPage = lazyRouteComponent(loadPlatformPages, "MigrationPage");
+
+const loadPlatformSubviews = () => import("./platform-subviews");
+const DomainDetailPage = lazyRouteComponent(loadPlatformSubviews, "DomainDetailPage");
+const DomainDnsPage = lazyRouteComponent(loadPlatformSubviews, "DomainDnsPage");
+const EmDashMigrationDetailPage = lazyRouteComponent(
+  loadPlatformSubviews,
+  "EmDashMigrationDetailPage",
+);
+const RecoverySchedulesPage = lazyRouteComponent(loadPlatformSubviews, "RecoverySchedulesPage");
+const RecoveryStorePage = lazyRouteComponent(loadPlatformSubviews, "RecoveryStorePage");
+
+const loadServerOpsPages = () => import("./server-ops-pages");
+const HostCronPage = lazyRouteComponent(loadServerOpsPages, "HostCronPage");
+const HostLogsPage = lazyRouteComponent(loadServerOpsPages, "HostLogsPage");
 
 const rootRoute = createRootRoute({
   component: () => (
@@ -55,6 +96,7 @@ const rootRoute = createRootRoute({
       <Outlet />
     </Shell>
   ),
+  notFoundComponent: NotFoundPage,
 });
 
 const indexRoute = createRoute({
@@ -138,9 +180,14 @@ const databasesRoute = createRoute({
 const appDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/apps/$appId",
+  validateSearch: (search: Record<string, unknown>): { tab?: AppTab } => {
+    const tab = APP_TABS.find((key) => key === search.tab);
+    return tab ? { tab } : {};
+  },
   component: function AppDetailRoute() {
     const { appId } = appDetailRoute.useParams();
-    return <AppDetailPage appId={appId} />;
+    const { tab = "overview" } = appDetailRoute.useSearch();
+    return <AppDetailPage appId={appId} tab={tab} />;
   },
 });
 
@@ -405,7 +452,64 @@ const routeTree = rootRoute.addChildren([
 
 export { routeTree };
 
-const router = createRouter({ routeTree });
+function pathDepth(pathname: string): number {
+  return pathname.split("/").filter(Boolean).length;
+}
+
+function reducedMotion(): boolean {
+  return (
+    document.documentElement.dataset.motion === "reduce" ||
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true
+  );
+}
+
+/**
+ * W695 (v0.2 pass 18): the route transition type. Going deeper slides forward,
+ * going up slides back, and a same-depth move only fades; a search-only change
+ * (such as the app tabs) and reduced motion get no transition.
+ */
+export function routeTransitionTypes(change: {
+  fromLocation?: { pathname: string };
+  toLocation: { pathname: string };
+  pathChanged: boolean;
+}): string[] | false {
+  if (!change.pathChanged || reducedMotion()) return false;
+  const from = change.fromLocation ? pathDepth(change.fromLocation.pathname) : 0;
+  const to = pathDepth(change.toLocation.pathname);
+  if (to > from) return ["nav-forward"];
+  if (to < from) return ["nav-back"];
+  return ["nav-lateral"];
+}
+
+/** W718: an address no route matches, inside the shell, with a way back. */
+function NotFoundPage() {
+  return (
+    <Page live>
+      <div className="page-head">
+        <div>
+          <h1>Page not found</h1>
+        </div>
+      </div>
+      <EmptyState
+        icon={SearchX}
+        title="No Console page has this address"
+        description="The link may be mistyped, or the page may have moved. The sidebar and the search palette list every page."
+        action={
+          <Link to="/" className="btn sm">
+            Go to Host overview
+          </Link>
+        }
+      />
+    </Page>
+  );
+}
+
+const router = createRouter({
+  routeTree,
+  // W707: a page's module starts loading when a link to it is hovered or focused.
+  defaultPreload: "intent",
+  defaultViewTransition: { types: routeTransitionTypes },
+});
 
 declare module "@tanstack/react-router" {
   interface Register {

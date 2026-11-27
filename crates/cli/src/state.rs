@@ -22,9 +22,8 @@ pub(crate) fn export(directory: &Path, output: Output) -> ExitCode {
         Ok(snapshot) => snapshot,
         Err(error) => return fail(error),
     };
-    let bytes = match encode_inventory_snapshot(&snapshot) {
-        Ok(bytes) => bytes,
-        Err(_) => return fail(ErrorCode::DependencyUnavailable),
+    let Ok(bytes) = encode_inventory_snapshot(&snapshot) else {
+        return fail(ErrorCode::DependencyUnavailable);
     };
     let rendered = match output {
         Output::Json => {

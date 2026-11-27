@@ -35,7 +35,12 @@ deps:
 features: native
     python3 scripts/check_features.py
 
-doctor: fmt clippy test deps features
+# W673 (rust-skills doc-intra-links): rustdoc, including private items, has no
+# broken or private links.
+docs: native
+    RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps --workspace --document-private-items
+
+doctor: fmt clippy test deps features docs
     @echo "Rust-Toolchain: PASS"
 
 features-deep: native
@@ -48,7 +53,7 @@ coverage:
     cargo llvm-cov --lcov --output-path target/rust-toolchain/lcov.info nextest --workspace --all-features
 
 toolchain-help:
-    @echo "Rust-Toolchain: rust-tc check | quick | doctor | deep | coverage | fuzz-check | fuzz"
+    @echo "Rust-Toolchain: rust-tc check | quick | doctor | docs | deep | coverage | fuzz-check | fuzz"
 
 # Maintained, real parser targets; deeper campaigns remain opt-in.
 fuzz:

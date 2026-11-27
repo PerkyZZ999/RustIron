@@ -6,9 +6,8 @@ use rustiron_contracts::{
     migration::PhpVersion,
 };
 use rustiron_journal::{
-    CertificateIntent, CertificateResult, FixtureJournal, ImportFacts, ImportStep, JournalError,
-    ProvisionIntent, ProvisionResult, ProvisionState, ProvisionStep, RecordResult, ScrubIntent,
-    ScrubOrigin, ScrubResult, StepState,
+    Admitted, CertificateIntent, FixtureJournal, ImportFacts, ImportStep, JournalError,
+    ProvisionIntent, ProvisionState, ProvisionStep, ScrubIntent, ScrubOrigin, StepState,
 };
 use std::{
     fs,
@@ -153,7 +152,7 @@ fn an_import_is_recorded_with_its_facts_and_replays_as_status() {
     let one = site(1);
     assert!(matches!(
         ledger.record_import(&one, &facts(), time(1000)).unwrap(),
-        ProvisionResult::New(provision) if provision.state == ProvisionState::Running
+        Admitted::New(provision) if provision.state == ProvisionState::Running
     ));
     let import = ledger.import_status(&one.operation_id).unwrap().unwrap();
     assert_eq!(import.facts, facts());
@@ -161,7 +160,7 @@ fn an_import_is_recorded_with_its_facts_and_replays_as_status() {
     assert!(import.scrubs.is_empty());
     assert!(matches!(
         ledger.record_import(&one, &facts(), time(1001)).unwrap(),
-        ProvisionResult::Existing(_)
+        Admitted::Existing(_)
     ));
     let mut other = facts();
     other.dump_bytes += 1;
@@ -341,7 +340,7 @@ fn a_v20_journal_migrates_to_v21_and_keeps_its_provisions() {
         ledger
             .record_import(&site(2), &facts(), time(1001))
             .unwrap(),
-        ProvisionResult::New(_)
+        Admitted::New(_)
     ));
     drop(ledger);
     assert!(state.open().is_ok());
@@ -584,7 +583,7 @@ fn a_signed_scrub_of_an_ended_import_is_admitted_once_and_replays() {
         .unwrap();
     let before = ledger.admission_count().unwrap();
     let scrub = scrub_of(&one, 1);
-    let ScrubResult::New(recorded) = ledger.record_scrub(&scrub, time(1100)).unwrap() else {
+    let Admitted::New(recorded) = ledger.record_scrub(&scrub, time(1100)).unwrap() else {
         panic!("not new");
     };
     assert_eq!(
@@ -594,7 +593,7 @@ fn a_signed_scrub_of_an_ended_import_is_admitted_once_and_replays() {
     assert_eq!(ledger.admission_count().unwrap(), before + 1);
     assert!(matches!(
         ledger.record_scrub(&scrub, time(1101)).unwrap(),
-        ScrubResult::Existing(_)
+        Admitted::Existing(_)
     ));
     let mut other = scrub.clone();
     other.plan_digest = digest('9');
@@ -625,7 +624,7 @@ fn a_signed_scrub_of_an_ended_import_is_admitted_once_and_replays() {
     // A later signed scrub of the same import may run again.
     assert!(matches!(
         ledger.record_scrub(&scrub_of(&one, 3), time(1104)).unwrap(),
-        ScrubResult::New(_)
+        Admitted::New(_)
     ));
     let (stored, import_op) = ledger
         .signed_scrub_status(&scrub.operation_id)
@@ -861,7 +860,7 @@ fn static_ejection_requires_the_exact_completed_single_name_import() {
         ledger
             .record_static_ejection_intent(&ejection, &single.site_id, &single.hostname, time(1001))
             .unwrap(),
-        RecordResult::New(_)
+        Admitted::New(_)
     ));
     drop(ledger);
 
@@ -877,7 +876,7 @@ fn static_ejection_requires_the_exact_completed_single_name_import() {
         ledger
             .record_static_ejection_intent(&ejection, &single.site_id, &single.hostname, time(1001))
             .unwrap(),
-        RecordResult::Existing(_)
+        Admitted::Existing(_)
     ));
     assert_eq!(
         ledger.record_ejection_intent(&ejection, &single.site_id, time(1001)),
@@ -947,7 +946,7 @@ fn v41_migration_keeps_the_existing_ejection_and_admission_count() {
         ledger
             .record_ejection_intent(&ejection, &wordpress.site_id, time(1001))
             .unwrap(),
-        RecordResult::Existing(_)
+        Admitted::Existing(_)
     ));
 }
 
@@ -1160,7 +1159,7 @@ fn a_v27_static_alias_keeps_its_exact_certificate_scope_through_renewal() {
     let mut ledger = state.open().unwrap();
     assert!(matches!(
         ledger.record_certificate(&intent, time(1102)),
-        Ok(CertificateResult::Existing(_))
+        Ok(Admitted::Existing(_))
     ));
     let due = ledger.due_renewals(time(1103)).unwrap();
     assert_eq!(due.len(), 1);

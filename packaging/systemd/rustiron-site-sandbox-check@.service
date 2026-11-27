@@ -4,3 +4,29 @@ Description=Rustiron sandbox re-check for site %i
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/rustiron/check-site-sandbox %i --running
+# W678: the check reads unit and policy state, takes semodule's read lock
+# under /var/lib/selinux, and may stop the site's PHP units through PID 1.
+# It needs no network and no devices. The label scan below the site root
+# runs as the site account through `setpriv --reuid/--regid`, so only
+# CAP_SETUID and CAP_SETGID are kept; root never walks tenant content.
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+UMask=0077

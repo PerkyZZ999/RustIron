@@ -129,7 +129,9 @@ impl Signed {
 
 impl Lab {
     fn new(name: &str) -> Self {
-        let serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        let serial = SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = std::env::temp_dir().join(format!("ri-w377-ols-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         private_dir(&root);
@@ -436,7 +438,7 @@ fn admission_abuse_is_refused_before_any_row(form: Form) {
     let before = lab.replay_state();
     assert!(matches!(
         executor.activate_ols(&admitted.request("op_w377_admitted")),
-        Ok(rustiron_journal::RecordResult::Existing(operation))
+        Ok(rustiron_journal::Admitted::Existing(operation))
             if operation.state == RecordedState::Succeeded
     ));
     assert!(lab.replay_state() == before, "an exact replay wrote state");

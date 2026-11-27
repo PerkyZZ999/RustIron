@@ -2,8 +2,7 @@
 //! Real SQLite; no host effects.
 use rustiron_contracts::approval::{Hostname, SiteId};
 use rustiron_journal::{
-    FixtureJournal, JournalError, ProvisionIntent, ProvisionStep, RetireIntent, RetireResult,
-    StepState,
+    Admitted, FixtureJournal, JournalError, ProvisionIntent, ProvisionStep, RetireIntent, StepState,
 };
 use std::{
     fs,
@@ -109,14 +108,14 @@ fn a_quarantined_provision_takes_one_retirement_that_replays_exactly() {
     let failed = quarantined(&mut ledger, "blog1");
     let before = ledger.admission_count().unwrap();
     let intent = retire(1, &failed);
-    let RetireResult::New(row) = ledger.record_retirement(&intent, time(1000)).unwrap() else {
+    let Admitted::New(row) = ledger.record_retirement(&intent, time(1000)).unwrap() else {
         panic!("expected a new retirement");
     };
     assert_eq!(row.state, StepState::Intent);
     assert_eq!(ledger.admission_count().unwrap(), before + 1);
     assert!(matches!(
         ledger.record_retirement(&intent, time(1001)),
-        Ok(RetireResult::Existing(_))
+        Ok(Admitted::Existing(_))
     ));
     // The same key with another provision is a conflict; a second
     // retirement of the provision reserves nothing.

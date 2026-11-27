@@ -11,7 +11,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{CanonicalObject, Id, Text, Timestamp};
 
-use super::{ApprovalError, CaptureRecipe, Sha256Digest, SiteId, product_backup::LAB_DESTINATION};
+use super::{
+    ApprovalError, CaptureRecipe, Sha256Digest, SiteId, header::Enrolled,
+    product_backup::LAB_DESTINATION,
+};
 
 const VERSION: u16 = 3;
 /// Shortest signed period between window openings (lab proofs).
@@ -147,6 +150,14 @@ pub struct StandingRun {
 
 /// Derives the run identity of `site` in `window` for the grant whose
 /// canonical bytes have SHA-256 `grant_sha256`.
+///
+/// # Panics
+///
+/// Never: each derived ID is a fixed ASCII prefix plus 32 hex characters.
+#[expect(
+    clippy::expect_used,
+    reason = "a 3-byte ASCII prefix plus 32 lowercase hex characters is always a valid Id"
+)]
 pub fn standing_run(grant_sha256: &Sha256Digest, site: &SiteId, window: u64) -> StandingRun {
     let mut hasher = Sha256::new();
     for part in [
@@ -429,29 +440,23 @@ pub fn check_standing_capture_binding(
 ) -> Result<(), ApprovalError> {
     let p = &plan.record;
     let g = &grant.record;
-    if g.plan_digest != plan.digest()
-        || g.plan_id != p.plan_id
-        || g.host_id != p.host_id
-        || g.host_epoch != p.host_epoch
-        || g.profile_digest != p.profile_digest
-        || g.requester != p.requester
-        || g.site_ids != p.site_ids
+    if g.site_ids != p.site_ids
         || g.destinations != std::slice::from_ref(&p.destination_id)
         || g.schedule() != p.schedule()
-        || &p.host_id != context.host_id
-        || &p.host_epoch != context.host_epoch
-        || &p.profile_digest != context.profile_digest
-        || &p.requester != context.requester
-        || &g.issuer != context.issuer
-        || &g.signer_policy_epoch != context.signer_policy_epoch
-        || g.valid_from.get() < p.valid_from.get()
-        || g.expires_at.get() > p.expires_at.get()
     {
         return Err(ApprovalError::BindingMismatch);
     }
-    let now = context.now.ok_or(ApprovalError::ClockUncertain)?;
-    if now.get() < g.valid_from.get() || now.get() >= g.expires_at.get() {
-        return Err(ApprovalError::OutsideValidity);
-    }
-    Ok(())
+    check_signed_header!(
+        plan,
+        grant,
+        Enrolled {
+            host_id: context.host_id,
+            host_epoch: context.host_epoch,
+            profile_digest: context.profile_digest,
+            requester: context.requester,
+            issuer: context.issuer,
+            signer_policy_epoch: context.signer_policy_epoch,
+            now: context.now
+        }
+    )
 }

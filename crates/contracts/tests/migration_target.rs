@@ -83,11 +83,21 @@ fn derives_profile_and_state_including_aliases_adopted_deleted_and_host_accounts
             .contains(&PhpExtension::try_from("intl".to_owned()).unwrap())
     );
 
-    let site_ids: Vec<&str> = target.state.site_ids.iter().map(|s| s.as_str()).collect();
+    let site_ids: Vec<&str> = target
+        .state
+        .site_ids
+        .iter()
+        .map(rustiron_contracts::approval::SiteId::as_str)
+        .collect();
     // Deleted site ID stays reserved in the journal (D-085).
     assert_eq!(site_ids, vec!["blog1", "docs1", "gone1"]);
 
-    let hostnames: Vec<&str> = target.state.hostnames.iter().map(|h| h.as_str()).collect();
+    let hostnames: Vec<&str> = target
+        .state
+        .hostnames
+        .iter()
+        .map(rustiron_contracts::approval::Hostname::as_str)
+        .collect();
     assert_eq!(
         hostnames,
         vec![
@@ -99,13 +109,23 @@ fn derives_profile_and_state_including_aliases_adopted_deleted_and_host_accounts
         ]
     );
 
-    let accounts: Vec<&str> = target.state.accounts.iter().map(|a| a.as_str()).collect();
+    let accounts: Vec<&str> = target
+        .state
+        .accounts
+        .iter()
+        .map(rustiron_contracts::Text::as_str)
+        .collect();
     assert_eq!(
         accounts,
         vec!["rs_blog1", "rs_docs1", "rs_orphan", "rs_svc_only"]
     );
 
-    let databases: Vec<&str> = target.state.databases.iter().map(|d| d.as_str()).collect();
+    let databases: Vec<&str> = target
+        .state
+        .databases
+        .iter()
+        .map(rustiron_contracts::Text::as_str)
+        .collect();
     // Deleted site's database was removed; non-deleted sites stay reserved.
     assert_eq!(databases, vec!["rs_blog1", "rs_docs1"]);
 }

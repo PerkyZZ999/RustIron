@@ -106,7 +106,7 @@ fn a_signed_deletion_is_checked_against_the_journal_and_records_nothing() {
         let signature = fixture.sign(grant.as_bytes());
         (bytes, grant, signature)
     };
-    let mut exact = plan.clone();
+    let mut exact = plan;
     exact["site_id"] = json!("blog9");
     exact["hostname"] = json!("blog9.example.test");
     exact["capture_operation_id"] = json!("op_capture1");

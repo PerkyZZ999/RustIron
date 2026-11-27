@@ -16,8 +16,8 @@ use rustiron_contracts::{
 };
 
 use crate::{
-    FixtureJournal, JournalError, ProvisionIntent, ProvisionResult, ProvisionState, ProvisionStep,
-    StepState, provision, storage,
+    Admitted, FixtureJournal, JournalError, Provision, ProvisionIntent, ProvisionState,
+    ProvisionStep, StepState, provision, storage,
 };
 
 /// The signed dry-run facts of one import.
@@ -168,15 +168,6 @@ pub struct ScrubIntent {
     pub archive_sha256: Sha256Digest,
     /// Normal grant deadline.
     pub expires_at: Timestamp,
-}
-
-/// A new or an exactly repeated signed scrub.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ScrubResult {
-    /// Recorded now, in `intent`.
-    New(ImportScrub),
-    /// The same request was recorded before; its stored state.
-    Existing(ImportScrub),
 }
 
 const SCRUB_COLUMNS: &str = "operation_id, import_operation_id, idempotency_key, grant_id, nonce, plan_digest, grant_digest, expires_at, state";
@@ -523,7 +514,7 @@ impl FixtureJournal {
         intent: &ProvisionIntent,
         facts: &ImportFacts,
         now: Timestamp,
-    ) -> Result<ProvisionResult, JournalError> {
+    ) -> Result<Admitted<Provision>, JournalError> {
         self.admit_provision(intent, provision::Origin::Import(facts), now)
     }
 
@@ -699,7 +690,7 @@ impl FixtureJournal {
         &mut self,
         intent: &ScrubIntent,
         now: Timestamp,
-    ) -> Result<ScrubResult, JournalError> {
+    ) -> Result<Admitted<ImportScrub>, JournalError> {
         let signed = self.take_signed(&crate::signed::Expected {
             plan_digest: &intent.plan_digest,
             grant_digest: &intent.grant_digest,
@@ -713,7 +704,7 @@ impl FixtureJournal {
             .map_err(storage::unavailable)?;
         if let Some((stored, scrub)) = signed_scrub(&transaction, intent)? {
             return if stored {
-                Ok(ScrubResult::Existing(scrub))
+                Ok(Admitted::Existing(scrub))
             } else {
                 Err(JournalError::Conflict)
             };
@@ -768,7 +759,7 @@ impl FixtureJournal {
         crate::signed::insert(&transaction, &intent.operation_id, signed.as_ref())?;
         storage::set_clock(&transaction, now)?;
         transaction.commit().map_err(storage::unavailable)?;
-        Ok(ScrubResult::New(ImportScrub {
+        Ok(Admitted::New(ImportScrub {
             operation_id: intent.operation_id.clone(),
             origin: ScrubOrigin::Signed,
             state: StepState::Intent,

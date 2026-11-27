@@ -107,7 +107,7 @@ fn a_signed_quota_change_is_checked_before_intent_and_records_nothing() {
         let signature = fixture.sign(grant.as_bytes());
         (bytes, grant, signature)
     };
-    let mut exact = plan.clone();
+    let mut exact = plan;
     exact["site_id"] = json!("blog9");
     let mut unknown = exact.clone();
     unknown["site_id"] = json!("blog8");

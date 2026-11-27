@@ -12,7 +12,7 @@ use rustiron_contracts::{
     approval::{Sha256Digest, SiteId},
 };
 
-use crate::{FixtureJournal, JournalError, StepState, provision, storage};
+use crate::{Admitted, FixtureJournal, JournalError, StepState, provision, storage};
 
 /// An admitted signed quota change; built by the executor from verified
 /// inputs.
@@ -57,15 +57,6 @@ pub struct QuotaChange {
     pub inode_hard: u64,
     /// `intent` until its outcome is observed.
     pub state: StepState,
-}
-
-/// A new or an exactly repeated quota change.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum QuotaChangeResult {
-    /// Recorded now, in `intent`.
-    New(QuotaChange),
-    /// The same request was recorded before; its stored state.
-    Existing(QuotaChange),
 }
 
 const COLUMNS: &str = "operation_id, site_id, idempotency_key, grant_id, nonce, plan_digest, grant_digest, block_hard_kib, inode_hard, expires_at, state";
@@ -176,7 +167,7 @@ impl FixtureJournal {
         &mut self,
         intent: &QuotaChangeIntent,
         now: Timestamp,
-    ) -> Result<QuotaChangeResult, JournalError> {
+    ) -> Result<Admitted<QuotaChange>, JournalError> {
         let signed = self.take_signed(&crate::signed::Expected {
             plan_digest: &intent.plan_digest,
             grant_digest: &intent.grant_digest,
@@ -218,9 +209,7 @@ impl FixtureJournal {
                         intent.expires_at.get() as i64,
                     ];
             return if exact {
-                Ok(QuotaChangeResult::Existing(change(
-                    &texts, numbers, &state,
-                )?))
+                Ok(Admitted::Existing(change(&texts, numbers, &state)?))
             } else {
                 Err(JournalError::Conflict)
             };
@@ -272,7 +261,7 @@ impl FixtureJournal {
         crate::signed::insert(&transaction, &intent.operation_id, signed.as_ref())?;
         storage::set_clock(&transaction, now)?;
         transaction.commit().map_err(storage::unavailable)?;
-        Ok(QuotaChangeResult::New(QuotaChange {
+        Ok(Admitted::New(QuotaChange {
             operation_id: intent.operation_id.clone(),
             site_id: intent.site_id.clone(),
             block_hard_kib: intent.block_hard_kib,

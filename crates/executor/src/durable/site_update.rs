@@ -6,15 +6,14 @@
 //! names the signed components in order. W516: then the intent, and the
 //! steps through the admin helper, which alone touches the site.
 
-use rustiron_journal::{UpdateResult, UpdateStep};
-
-use super::{Executor, signed_inputs};
+use super::Executor;
 use crate::{
     AdmissionRequest, ExecutorError,
     admin_helper::{self, AdminRequest, AdminStep},
     ols,
     provision::SiteLayout,
 };
+use rustiron_journal::{Admitted, SiteUpdate, UpdateStep};
 
 impl Executor {
     /// W530 (D-087): the installed core, plugins, and themes of a site that
@@ -37,7 +36,7 @@ impl Executor {
             .as_deref()
             .ok_or(ExecutorError::Unavailable)?;
         let request = AdminRequest {
-            operation_id: provision.intent.operation_id.clone(),
+            operation_id: provision.intent.operation_id,
             step: AdminStep::UpdateInventory,
         };
         match admin_helper::request(socket, &request)? {
@@ -53,54 +52,59 @@ impl Executor {
     pub fn update_site(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<UpdateResult, ExecutorError> {
+    ) -> Result<Admitted<SiteUpdate>, ExecutorError> {
         let intent = crate::verified_update(&self.anchor, request)?;
-        self.check_identity(&intent.host_id, &intent.host_epoch)?;
-        let now = request.now.ok_or(ExecutorError::TimeDenied)?;
-        if let Some(existing) = self.journal.update_status(&intent.operation_id)? {
-            return Ok(UpdateResult::Existing(existing));
-        }
-        let site = &intent.site_id;
-        if !self.journal.succeeded_sites()?.contains(site)
-            || self.journal.ejected_sites()?.contains(site)
-        {
-            return Err(ExecutorError::PreconditionChanged);
-        }
-        self.refuse_proxy_site(site)?;
-        if !self.journal.update_basis_holds(&intent, now)? {
-            return Err(ExecutorError::PreconditionChanged);
-        }
-        // The host checks follow the journal's: the site is in the current
-        // generation's managed set, and the intake holds the signed recipe.
-        let include = ols::open_include()?;
-        let live = ols::observe(&include)?;
-        if !ols::managed_accounts(&include, &live.0)?.contains(&SiteLayout::derive(site).account) {
-            return Err(ExecutorError::PreconditionChanged);
-        }
-        let manifest = crate::site_update::intake_manifest(
-            std::path::Path::new(crate::layout::UPDATE_INTAKE_DIR),
-            self.anchor.owner_uid,
-            site,
-        )?;
-        if !crate::site_update::manifest_matches(
-            &manifest,
-            &intent.recipe_digest,
-            &intent.components,
-        ) {
-            return Err(ExecutorError::PreconditionChanged);
-        }
-        // Only the admin helper runs update steps; without it nothing is
-        // recorded.
-        if self.anchor.admin_socket.is_none() {
-            return Err(ExecutorError::Unavailable);
-        }
-        let update = match self.admit(signed_inputs(request)?, |journal| {
-            journal.record_update(&intent, now)
-        })? {
-            UpdateResult::Existing(existing) => return Ok(UpdateResult::Existing(existing)),
-            UpdateResult::New(update) => update,
+        // W700: a stored operation goes to the journal, which answers only an
+        // exact replay; before, any request naming it got the stored row.
+        let update = match self.admit_signed(
+            request,
+            (&intent.host_id, &intent.host_epoch),
+            |journal| Ok(journal.update_status(&intent.operation_id)?.is_some()),
+            |executor, now| {
+                let site = &intent.site_id;
+                if !executor.journal.succeeded_sites()?.contains(site)
+                    || executor.journal.ejected_sites()?.contains(site)
+                {
+                    return Err(ExecutorError::PreconditionChanged);
+                }
+                executor.refuse_proxy_site(site)?;
+                if !executor.journal.update_basis_holds(&intent, now)? {
+                    return Err(ExecutorError::PreconditionChanged);
+                }
+                // The host checks follow the journal's: the site is in the current
+                // generation's managed set, and the intake holds the signed recipe.
+                let include = ols::open_include()?;
+                let live = ols::observe(&include)?;
+                if !ols::managed_accounts(&include, &live.0)?
+                    .contains(&SiteLayout::derive(site).account)
+                {
+                    return Err(ExecutorError::PreconditionChanged);
+                }
+                let manifest = crate::site_update::intake_manifest(
+                    std::path::Path::new(crate::layout::UPDATE_INTAKE_DIR),
+                    executor.anchor.owner_uid,
+                    site,
+                )?;
+                if !crate::site_update::manifest_matches(
+                    &manifest,
+                    &intent.recipe_digest,
+                    &intent.components,
+                ) {
+                    return Err(ExecutorError::PreconditionChanged);
+                }
+                // Only the admin helper runs update steps; without it nothing is
+                // recorded.
+                if executor.anchor.admin_socket.is_none() {
+                    return Err(ExecutorError::Unavailable);
+                }
+                Ok(())
+            },
+            |journal, now| journal.record_update(&intent, now),
+        )? {
+            Admitted::Existing(existing) => return Ok(Admitted::Existing(existing)),
+            Admitted::New(update) => update,
         };
-        Ok(UpdateResult::New(self.run_update(&update.operation_id)?))
+        Ok(Admitted::New(self.run_update(&update.operation_id)?))
     }
 
     /// W516: each step's intent is recorded before the admin helper runs

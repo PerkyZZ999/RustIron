@@ -40,7 +40,19 @@ Orchestrate **WordPress**, full-stack **Node.js 22** / **Bun 1.4** / static SPA 
 
 ---
 
-## What's New in v0.1.1
+## What's New in v0.2
+
+| Area | What changed |
+| :--- | :--- |
+| **Second factor for Admins** | Admin accounts need a TOTP code from an authenticator app at each sign-in, with ten one-use recovery codes stored encrypted. The setup shows a scannable QR code; a host-shell command resets a lost factor ([Runbook 38](docs/operator/38-CONSOLE-PRODUCTION-DEPLOYMENT.md)). |
+| **Sign-in limits** | Failed sign-ins are limited per address, per account, and in total, with clear wait messages and no account lockout. The SSH tunnel is never paused. |
+| **Honest live data** | A Console without a live source shows "Unavailable" with the cause and what to check, never sample data. Pages no longer flash sample content while the first observation loads. |
+| **Live data path** | The install wizard runs the Console as the coordinator's user and ships a 30-second observation feed, so a fresh host shows its real state. |
+| **Safer updates** | The product updater creates new product and state folders that an older install lacks, so hosts installed before v0.1.1 update cleanly, and rolls them back. |
+| **Console polish** | Confirmations before deleting accounts and forwarders, mail rules against forwarding loops and hidden mailboxes, field-level form messages, deep links that survive sign-in, and commands shown only for valid wizard input. |
+| **Quality** | Whole-project architecture and code-review passes, plus a two-stage QA run (exploratory testing and Bombadil property-based fuzzing) whose 25 findings are all fixed. |
+
+## What Was New in v0.1.1
 
 | Area | What changed |
 | :--- | :--- |
@@ -222,10 +234,10 @@ For AlmaLinux 10 hosts, RustIron ships an interactive setup wizard, a signed rel
 sudo python3 packaging/rustiron-install-wizard.py
 
 # Pack & sign a unified release bundle (off-host signing workstation, namespace rustiron-release-v1)
-python3 scripts/release/bundle_release.py pack   --version 0.1.1   --stage-dir /path/to/staged-release   --out-dir /path/to/dist   --console-dir console   --signing-key ~/.ssh/rustiron_release_ed25519
+python3 scripts/release/bundle_release.py pack   --version 0.2.0   --stage-dir /path/to/staged-release   --out-dir /path/to/dist   --console-dir console   --signing-key ~/.ssh/rustiron_release_ed25519
 
 # Verify and atomically apply a signed bundle on the host (with automatic rollback on failure)
-sudo python3 packaging/rustiron-updater.py apply   --bundle rustiron-0.1.1-almalinux10-x86_64.tar.gz   --release-signers /etc/rustiron/release-allowed-signers   --release-signer-id release_signer
+sudo python3 packaging/rustiron-updater.py apply   --bundle rustiron-0.2.0-almalinux10-x86_64.tar.gz   --release-signers /etc/rustiron/release-allowed-signers   --release-signer-id release_signer
 ```
 
 See [Packaging & Installer Guide](packaging/README.md), [Release Bundler Guide](scripts/release/README.md), [Runbook 16: Product Update](docs/operator/16-PRODUCT-UPDATE.md), and [Runbook 38: Console Production Deployment](docs/operator/38-CONSOLE-PRODUCTION-DEPLOYMENT.md).

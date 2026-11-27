@@ -217,7 +217,7 @@ fn an_unclaimed_snapshot_beside_another_state_or_malformed_is_refused() {
     for (state, value) in [
         ("succeeded", snapshot.clone()),
         ("untouched", snapshot.clone()),
-        ("intent", snapshot.clone()),
+        ("intent", snapshot),
         ("failed", "AB".repeat(32)),
         ("failed", "ab".repeat(31)),
         ("failed", format!("{}\n", "ab".repeat(32))),

@@ -4,15 +4,13 @@ import { Link } from "@tanstack/react-router";
 import {
   ArrowLeftRight,
   CalendarClock,
-  Check,
   ChevronDown,
-  Copy,
   HardDriveUpload,
   RotateCcw,
   ShieldCheck,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import {
   buildAppProvisionCmd,
@@ -26,35 +24,9 @@ import {
   REVIEW_AND_SIGN_STEPS,
   shellQuote,
 } from "./cli-commands";
-import { toastManager } from "./components/ui/toast";
 import { useData } from "./data";
-import { Glyph } from "./ui";
+import { CopyButton, Glyph } from "./ui";
 import { SeparateCustodyApplyPanel } from "./write-panel";
-
-function CopyCommand({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return undefined;
-    const t = setTimeout(() => setCopied(false), 2000);
-    return () => clearTimeout(t);
-  }, [copied]);
-  return (
-    <button
-      type="button"
-      className="btn quiet sm"
-      aria-label={label}
-      onClick={() =>
-        void navigator.clipboard?.writeText(text).then(() => {
-          setCopied(true);
-          toastManager.add({ id: `copy-${label}`, type: "success", title: "Command copied" });
-        })
-      }
-    >
-      <Glyph icon={copied ? Check : Copy} className={copied ? "check-pop" : undefined} />
-      {copied ? "Copied" : "Copy"}
-    </button>
-  );
-}
 
 type BackupActionTab = "capture" | "probe" | "restore";
 
@@ -108,14 +80,24 @@ function BackupSitePicker({
   );
 }
 
+/**
+ * W738 (QA-07): the chosen site while it is in the current list, else the first
+ * current site. The list changes when the live data arrives, so a choice made
+ * against an older list never targets a site the host does not have.
+ */
+export function resolveBackupSite(chosen: string, sites: { id: string }[]): string {
+  if (sites.some((site) => site.id === chosen)) return chosen;
+  return sites[0]?.id ?? chosen;
+}
+
 export function BackupRestoreActionsPanel() {
   const { sites } = useData();
   const [tab, setTab] = useState<BackupActionTab>("capture");
-  const [siteId, setSiteId] = useState(sites[0]?.id ?? "");
+  const [siteId, setSiteId] = useState("");
   const [consistency, setConsistency] = useState<"marker" | "frozen">("marker");
   const [snapshotId, setSnapshotId] = useState("");
-  const resolvedSite = siteId || sites[0]?.id || "site_id";
-  const cmd = buildBackupCmd(tab, resolvedSite, consistency, snapshotId);
+  const resolvedSite = resolveBackupSite(siteId, sites);
+  const cmd = buildBackupCmd(tab, resolvedSite || "<site_id>", consistency, snapshotId);
 
   return (
     <section className="panel stack" aria-labelledby="bk-act-t">
@@ -124,7 +106,7 @@ export function BackupRestoreActionsPanel() {
           <Glyph icon={tab === "restore" ? RotateCcw : HardDriveUpload} />
           <h2 id="bk-act-t">Backup &amp; restore actions</h2>
         </div>
-        <CopyCommand text={cmd} label="Copy backup or restore command" />
+        <CopyButton text={cmd} label="Copy backup or restore command" />
       </div>
 
       <div
@@ -249,7 +231,7 @@ export function BackupScheduleWizard() {
           <Glyph icon={CalendarClock} />
           <h2 id="sched-wiz-t">Create backup schedule</h2>
         </div>
-        {hasSelection ? <CopyCommand text={cmd} label="Copy backup schedule command" /> : null}
+        {hasSelection ? <CopyButton text={cmd} label="Copy backup schedule command" /> : null}
       </div>
 
       <div className="form-grid">
@@ -442,7 +424,7 @@ export function MigrationWizardsPanel() {
           <Glyph icon={ArrowLeftRight} />
           <h2 id="mig-wiz-t">Start a migration</h2>
         </div>
-        <CopyCommand text={cmd} label="Copy migration commands" />
+        <CopyButton text={cmd} label="Copy migration commands" />
       </div>
 
       <div

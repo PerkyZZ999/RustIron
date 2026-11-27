@@ -158,14 +158,22 @@ fn libc_flags() -> i32 {
 mod tests {
     use super::*;
 
+    /// W720: a folder-name part that no other test in this process uses. The
+    /// clock alone can repeat across parallel tests.
+    fn unique_suffix() -> String {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |time| time.as_nanos());
+        let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("{nanos}-{next}")
+    }
+
     fn tree() -> PathBuf {
         let base = std::env::temp_dir().join(format!(
             "ri-w499-tree-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            unique_suffix()
         ));
         fs::create_dir_all(base.join("srv/sites/rs_blog9/html/wp")).unwrap();
         fs::create_dir_all(base.join("srv/sites/rs_blog9/tmp")).unwrap();

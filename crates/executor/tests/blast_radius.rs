@@ -8,10 +8,11 @@ use rustiron_contracts::{
     approval::{FixtureGrant, FixturePlan},
 };
 use rustiron_executor::{AdmissionRequest, Executor, ExecutorError, TrustAnchor};
-use rustiron_journal::RecordResult;
+
 use serde_json::{Value, json};
 
 mod support;
+use rustiron_journal::Admitted;
 use support::{KEYGEN, hex, new_key, private_dir, private_file, sign};
 
 const PLAN: &str = include_str!("../../contracts/tests/fixtures/fixture-plan.json");
@@ -206,7 +207,7 @@ fn blast_radius_envelope_enforces_durably_across_restart_and_allows_exact_replay
     let first = executor
         .submit(&req1)
         .expect("first admission within budget");
-    assert!(matches!(first, RecordResult::New(_)));
+    assert!(matches!(first, Admitted::New(_)));
     executor.execute(&op1_id, Some(now)).expect("execute first");
 
     // Observe reports exact durable consumption and 0 remaining.
@@ -225,7 +226,7 @@ fn blast_radius_envelope_enforces_durably_across_restart_and_allows_exact_replay
     let replay = resumed
         .submit(&req1)
         .expect("exact replay stays idempotent");
-    assert!(matches!(replay, RecordResult::Existing(_)));
+    assert!(matches!(replay, Admitted::Existing(_)));
 
     // Reset fixture symlink so live precondition passes, then submit a 2nd new
     // operation: durable blast-radius budget MUST reject it after resume!

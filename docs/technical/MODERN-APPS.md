@@ -54,7 +54,8 @@ Each app runs under an immutable, template-driven unit instantiated by account (
 - `EnvironmentFile=/srv/sites/%i/private/app.env` (plus a root-owned drop-in `10-rustiron-app.conf` setting non-secret `PORT`, `HOST=127.0.0.1`, `NODE_ENV=production`, `TMPDIR=/srv/sites/%i/tmp`, `RUSTIRON_APP_DATA=/srv/sites/%i/data`, and the exact pinned `ExecStart`)
 - `UMask=0027`, `NoNewPrivileges=yes`, `CapabilityBoundingSet=`, `AmbientCapabilities=`
 - `PrivateTmp=yes`, `PrivateDevices=yes`, `PrivateIPC=yes`, `ProtectProc=invisible`
-- `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `IPAddressDeny=any`, `IPAddressAllow=localhost` on `rustiron-app@.service`; `PrivateNetwork=yes` on `rustiron-app-worker@.service` (combined with `rustiron_app_t` denying outbound `name_connect` so compromised apps cannot reach sibling app ports or host loopback services)
+- `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `IPAddressDeny=any`, `IPAddressAllow=localhost` on `rustiron-app@.service`
+- `PrivateNetwork=yes` on `rustiron-app-worker@.service`. With `rustiron_app_t` denying outbound `name_connect`, a compromised app cannot reach sibling app ports or host loopback services.
 - `ProtectSystem=strict`, `ProtectHome=yes`
 - `ProtectKernelTunables=yes`, `ProtectKernelModules=yes`, `ProtectKernelLogs=yes`, `ProtectControlGroups=yes`, `ProtectClock=yes`, `ProtectHostname=yes`
 - `RestrictNamespaces=yes`, `RestrictSUIDSGID=yes`, `RestrictRealtime=yes`, `LockPersonality=yes`, `RemoveIPC=yes`, `SystemCallArchitectures=native`, `SystemCallFilter=@system-service`
@@ -96,7 +97,7 @@ Creates one isolated Node.js or Bun app site and reserves its hostname, loopback
 | `quota_mib` | `128..=65536` (bounded by enrolled policy cap) |
 
 Fixed effects: creates `rs_<site_id>`, site directories, SELinux MCS labels, `rustiron-app@<site_id>.service` drop-in, ACME webroot, and journal proxy routes.
-It does **not** reload OLS (`config_activate` stays separate) and runs no package scripts.
+The provision does **not** reload OLS (`config_activate` stays separate) and runs no package scripts.
 
 Blast-radius envelope (D-098): `sites_touched: 1`, `ols_reload: false`, `all_site_ols_impact: false`, `network_exposure: false`, `privilege_tier: app_provision`.
 
@@ -163,11 +164,18 @@ Blast-radius envelope (D-098): `sites_touched: 1`, `ols_reload: false`, `all_sit
 Reserved for dedicated app-only hosts or multi-IP hosts (post-v1.0 / P28) under [D-056](../decisions/D-056-web-server-per-workload.md), and expanded for `v0.1.1` under [D-102](../decisions/D-102-caddy-fullstack-and-postgres18.md) (owner-approved **A1 + B1 + C2**):
 
 - **Identity and confinement:** Runs as unprivileged `rustiron-caddy` with `CAP_NET_BIND_SERVICE`, `NoNewPrivileges=yes`, `ProtectSystem=strict`, and dedicated SELinux domain `rustiron_caddy_t`. The admin API listens only on the `0700` Unix socket `/run/rustiron-caddy/admin.sock` (zero port `2019` exposure), so `systemctl reload` swaps generations without a restart ([D-102 revision W662](../decisions/D-102-caddy-fullstack-and-postgres18.md#revision-2026-11-26-w662)).
-- **Shared TLS custody (B1):** Keeps `rustiron-acme` / Certbot as the single TLS issuer; Caddy runs with `auto_https disable_certs` and reads `/etc/rustiron-tls/<account>/live/` read-only so `rustiron_caddy_t` requires zero outbound internet access.
+- **Shared TLS custody (B1):** `rustiron-acme` / Certbot stays the single TLS issuer. Caddy runs with `auto_https disable_certs` and reads `/etc/rustiron-tls/<account>/live/` read-only, so `rustiron_caddy_t` needs no outbound internet access.
 - **Proxy headers:** Caddy's defaults replace any client `X-Forwarded-For`, `X-Forwarded-Proto`, and `X-Forwarded-Host` with authentic values, and every `reverse_proxy` overwrites `X-Real-IP`. The renderer adds no `header_up -…` deletions, because Caddy applies them after its own values ([W662-F1](../validation/S10-W662/README.md)).
-- **Trusted generation rendering:** The executor renders an immutable `Caddyfile` from trusted journal records and validates it with `caddy validate --adapter caddyfile`. Reloads swap atomically and roll back on health failure.
-- **Dual-mode port ownership (A1):** Supports `caddy_only` (app-only host), `caddy_multi_ip` (separate public IP), and `caddy_edge_over_ols` (single-IP mixed host where Caddy owns `:80/:443` and proxies WordPress domains to OLS on `127.0.0.1:8080`).
-- **Schema 2 full-stack topologies & selectable databases (C2):** `app_provision` schema 2 adds `static_spa` (`runtime: static_v1`), `backend_api`, `fullstack_split` (static `frontend_dir` + `/api/*` backend), and `fullstack_dual_ssr` (SSR frontend + API backend), optional blue/green standby ports (`standby_port`, `frontend_standby_port`), Caddy SSE (`flush_interval -1`) and prefix stripping, plus selectable `database` (`none`, `sqlite`, `mariadb`, `postgresql_18` `>= 18.7`, EOL `2030-11-14`) with dedicated least-privilege SELinux sub-types (`rustiron_app_mariadb_t`, `rustiron_app_pg_t`).
+- **Trusted generation rendering:** The executor renders an immutable `Caddyfile` from trusted journal records and validates it with `caddy validate --adapter caddyfile`. Reloads swap atomically and roll back on health failure. If restoring the previous generation also fails, the executor reports `ACTIVATION_ROLLBACK_FAILED`. The release then stays open for reconciliation and is never recorded as rolled back ([W674](../validation/S10-W674/README.md)).
+- **Dual-mode port ownership (A1):** Three modes are supported:
+  - `caddy_only`: an app-only host;
+  - `caddy_multi_ip`: Caddy on a separate public IP;
+  - `caddy_edge_over_ols`: a single-IP mixed host. Caddy owns `:80/:443` and proxies WordPress domains to OLS on `127.0.0.1:8080`.
+- **Schema 2 full-stack topologies & selectable databases (C2):** `app_provision` schema 2 adds:
+  - the topologies `static_spa` (`runtime: static_v1`), `backend_api`, `fullstack_split` (static `frontend_dir` + `/api/*` backend), and `fullstack_dual_ssr` (SSR frontend + API backend);
+  - optional blue/green standby ports (`standby_port`, `frontend_standby_port`);
+  - Caddy SSE (`flush_interval -1`) and prefix stripping;
+  - a selectable `database`: `none`, `sqlite`, `mariadb`, or `postgresql_18` (`>= 18.7`, EOL `2030-11-14`), with dedicated least-privilege SELinux sub-types (`rustiron_app_mariadb_t`, `rustiron_app_pg_t`).
 - **Runtime compatibility:** Runs the exact same `rustiron-app@<site_id>.service`, release bundle, `data/`, and P03 backup formats as Option A while preserving full schema 1 compatibility.
 
 ## P27 incremental delivery slices
@@ -177,4 +185,14 @@ Reserved for dedicated app-only hosts or multi-IP hosts (post-v1.0 / P28) under 
 3. **Done ([W598](../validation/S10-W598/README.md)) — Slice 3 (Executor and units):** Added `rustiron-app@.service`, `rustiron-app-worker@.service`, `crates/executor/src/app_site.rs`, admin-helper steps, `site_delete` cleanup, and app unit diagnoses.
 4. **Done ([W599](../validation/S10-W599/README.md)) — Slice 4 (VM lab proof):** Proved `node_22_v1` (`v22.23.4`) and `bun_1_v1` (`1.4.2`) with workers on `w599-app`: deploy, WebSocket, confinement, rollback, upgrade, deletion, 0 AVCs. Fixed W599-F1 to F5 and added [runbook 32](../operator/32-MODERN-APPS.md). **P27 is Lab verified.**
 5. **Done ([W603](../validation/S10-W603/README.md)) — P30 follow-on:** Layered pinned EmDash 1.6.0, `upgrade-emdash` rollback, and WordPress WXR + media migration on top of Slice 4.
-6. **Done ([W640](../validation/S10-W640/README.md)) — Dedicated SELinux MCS `rustiron_app_t` hardening (`C-01`):** Added `packaging/selinux/rustiron_app.{te,fc}` (`mcs_constrained(rustiron_app_t)`, loopback `name_bind` only, zero `name_connect`, zero `corecmd_exec_bin`), `SELinuxContext=system_u:system_r:rustiron_app_t:s0:c<N>` in app/worker drop-ins and `Migrate`/`restore_app_sqlite` (`rustiron_unpack_t` on `Unpack`), `{root}/data(/.*)?` `httpd_sys_rw_content_t` fcontext install and `site_delete`/`site_retire` cleanup, fixed `W640-F1` (`IPAddressDeny=0.0.0.0/0 ::/0` diagnosis), and proved cross-app MCS (even with DAC relaxed to `0755`/`0644`), cross-app/host TCP, worker `PrivateNetwork=yes`, and shell/binary exec denials on disposable overlay `w640-appmac` with `0` normal raw AVCs.
+6. **Done ([W640](../validation/S10-W640/README.md)) — Dedicated SELinux MCS `rustiron_app_t` hardening (`C-01`):** W640 added these parts:
+   - `packaging/selinux/rustiron_app.{te,fc}`: `mcs_constrained(rustiron_app_t)`, loopback `name_bind` only, zero `name_connect`, zero `corecmd_exec_bin`;
+   - `SELinuxContext=system_u:system_r:rustiron_app_t:s0:c<N>` in the app/worker drop-ins and in `Migrate`/`restore_app_sqlite` (`rustiron_unpack_t` on `Unpack`);
+   - the `{root}/data(/.*)?` `httpd_sys_rw_content_t` fcontext install, with `site_delete`/`site_retire` cleanup;
+   - the `W640-F1` fix (`IPAddressDeny=0.0.0.0/0 ::/0` diagnosis).
+
+   On disposable overlay `w640-appmac`, W640 proved these denials with `0` normal raw AVCs:
+   - cross-app MCS, even with DAC relaxed to `0755`/`0644`;
+   - cross-app and host TCP;
+   - worker `PrivateNetwork=yes`;
+   - shell and binary execution.

@@ -568,31 +568,8 @@ pub(crate) fn dump_database(
     let out_str = provision::path_str(out_path)?;
     let password = site_role_password(layout)?;
     let guard = write_temp_pgpass(account, &password, &format!("dump-{account}"))?;
-    // The dump goes to stdout; root writes it into an O_CREAT|O_EXCL|O_NOFOLLOW
-    // 0600 file below.
-    let output = Command::new(PG_DUMP)
-        .env("PGPASSFILE", &guard.0)
-        .env("PGSSLMODE", "disable")
-        .args([
-            "-w",
-            "--format=custom",
-            "--no-owner",
-            "--no-acl",
-            "-h",
-            PG_SOCKET_DIR,
-            "-U",
-            account,
-            "-d",
-            account,
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|_| ExecutorError::StepFailed)?;
-    if !output.status.success() || output.stdout.is_empty() {
-        return Err(ExecutorError::StepFailed);
-    }
+    // W675: pg_dump writes straight into the O_CREAT|O_EXCL|O_NOFOLLOW 0600 file,
+    // so a large database never passes through this process's memory.
     let fd = rustix::fs::open(
         out_str,
         OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
@@ -607,10 +584,42 @@ pub(crate) fn dump_database(
         )
         .map_err(|_| ExecutorError::StepFailed)?;
     }
-    let mut file = File::from(fd);
-    file.write_all(&output.stdout)
-        .and_then(|()| file.sync_all())
+    let file = File::from(fd);
+    let written = file
+        .try_clone()
         .map_err(|_| ExecutorError::StepFailed)
+        .and_then(|sink| {
+            provision::run_streaming(
+                PG_DUMP,
+                &[
+                    "-w",
+                    "--format=custom",
+                    "--no-owner",
+                    "--no-acl",
+                    "-h",
+                    PG_SOCKET_DIR,
+                    "-U",
+                    account,
+                    "-d",
+                    account,
+                ],
+                &[
+                    ("PGPASSFILE", guard.0.as_os_str()),
+                    ("PGSSLMODE", std::ffi::OsStr::new("disable")),
+                ],
+                None,
+                Some(sink),
+            )
+        })
+        .and_then(|()| file.sync_all().map_err(|_| ExecutorError::StepFailed))
+        .and_then(|()| match file.metadata() {
+            Ok(meta) if meta.len() > 0 => Ok(()),
+            _ => Err(ExecutorError::StepFailed),
+        });
+    if written.is_err() {
+        let _ = fs::remove_file(out_path);
+    }
+    written
 }
 
 /// Restores a verified custom-format `pg_dump` file into the site's database.
@@ -635,21 +644,18 @@ pub(crate) fn restore_database(layout: &SiteLayout, dump_path: &Path) -> Result<
         Mode::empty(),
     )
     .map_err(|_| ExecutorError::StepFailed)?;
-    let mut file = File::from(fd);
+    let file = File::from(fd);
     let meta = file.metadata().map_err(|_| ExecutorError::StepFailed)?;
     if !meta.is_file() || meta.nlink() != 1 || meta.len() == 0 {
         return Err(ExecutorError::StepFailed);
     }
-    let mut dump_bytes = Vec::with_capacity(meta.len() as usize);
-    file.read_to_end(&mut dump_bytes)
-        .map_err(|_| ExecutorError::StepFailed)?;
-    // Feed the dump via stdin so the client needs no path into site-owned or
-    // root-only snapshot directories.
+    // W675: the verified descriptor is pg_restore's stdin, so the client needs
+    // no path into site-owned or root-only snapshot folders and the dump is
+    // never buffered here.
     let guard = write_temp_pgpass(account, &password, &format!("restore-{account}"))?;
-    let mut child = Command::new(PG_RESTORE)
-        .env("PGPASSFILE", &guard.0)
-        .env("PGSSLMODE", "disable")
-        .args([
+    provision::run_streaming(
+        PG_RESTORE,
+        &[
             "-w",
             "--exit-on-error",
             "--clean",
@@ -662,27 +668,14 @@ pub(crate) fn restore_database(layout: &SiteLayout, dump_path: &Path) -> Result<
             account,
             "-d",
             account,
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| ExecutorError::StepFailed)?;
-    let written = child
-        .stdin
-        .take()
-        .ok_or(ExecutorError::StepFailed)
-        .and_then(|mut stdin| {
-            stdin
-                .write_all(&dump_bytes)
-                .map_err(|_| ExecutorError::StepFailed)
-        });
-    let status = child.wait().map_err(|_| ExecutorError::StepFailed)?;
-    written?;
-    if !status.success() {
-        return Err(ExecutorError::StepFailed);
-    }
-    Ok(())
+        ],
+        &[
+            ("PGPASSFILE", guard.0.as_os_str()),
+            ("PGSSLMODE", std::ffi::OsStr::new("disable")),
+        ],
+        Some(file),
+        None,
+    )
 }
 
 /// Drops the site's PostgreSQL 18 database and role during `site_delete`.

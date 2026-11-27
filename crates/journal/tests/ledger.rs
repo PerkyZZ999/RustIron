@@ -1,5 +1,4 @@
 //! Real SQLite/process-lease fixture tests; no grant authority or host effects.
-use rustiron_journal::{FixtureJournal, JournalError, RecordResult, RecordedState};
 use std::{
     fs,
     os::unix::fs::{DirBuilderExt, PermissionsExt},
@@ -7,6 +6,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 mod support;
+use rustiron_journal::{Admitted, FixtureJournal, JournalError, RecordedState};
 use support::*;
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 struct State(PathBuf);
@@ -109,11 +109,11 @@ fn new_intent_and_exact_retry_are_distinct() {
     let intent = intent(1);
     assert!(matches!(
         ledger.record_intent(&intent, time(1000)).unwrap(),
-        RecordResult::New(_)
+        Admitted::New(_)
     ));
     assert!(matches!(
         ledger.record_intent(&intent, time(1000)).unwrap(),
-        RecordResult::Existing(_)
+        Admitted::Existing(_)
     ));
     assert_eq!(
         ledger.status(&intent.operation_id).unwrap().unwrap().state,
@@ -130,7 +130,7 @@ fn restart_keeps_uncertain_intent_and_expired_exact_replay_is_status_only() {
     let mut ledger = state.open().unwrap();
     assert!(matches!(
         ledger.record_intent(&first, time(20000)).unwrap(),
-        RecordResult::Existing(_)
+        Admitted::Existing(_)
     ));
     assert_eq!(
         ledger.status(&first.operation_id).unwrap().unwrap().state,
@@ -274,7 +274,7 @@ fn complete_target_report_can_be_recorded_but_not_overwritten() {
     );
     assert!(matches!(
         ledger.record_intent(&intent(2), time(1001)).unwrap(),
-        RecordResult::New(_)
+        Admitted::New(_)
     ));
 }
 #[test]
@@ -296,7 +296,7 @@ fn proven_predecessor_is_untouched_and_does_not_reuse_old_grant() {
     );
     assert!(matches!(
         ledger.record_intent(&first, time(20000)).unwrap(),
-        RecordResult::Existing(_)
+        Admitted::Existing(_)
     ));
 }
 #[test]
@@ -448,7 +448,7 @@ fn transaction_abort_after_insert_rolls_back_nonce_and_intent() {
     state.sql("DROP TRIGGER abort_clock");
     assert!(matches!(
         ledger.record_intent(&first, time(999)).unwrap(),
-        RecordResult::New(_)
+        Admitted::New(_)
     ));
 }
 
@@ -472,7 +472,7 @@ fn fixture_history_capacity_never_prunes_consumed_nonces() {
     );
     assert!(matches!(
         ledger.record_intent(&first, time(20000)).unwrap(),
-        RecordResult::Existing(_)
+        Admitted::Existing(_)
     ));
 }
 
@@ -1101,4 +1101,69 @@ fn the_unresolved_operation_of_one_resource_is_read_without_choosing() {
         ),
         Err(error) => assert_eq!(error, JournalError::Unavailable),
     }
+}
+
+/// W705 (mutation campaign): a compensation window that ends before expiry
+/// is refused on its own, and a window that ends exactly at expiry is valid.
+#[test]
+fn a_compensation_window_ending_before_expiry_alone_is_refused() {
+    let state = State::new();
+    let mut ledger = state.init();
+    let mut early = intent(1);
+    early.compensation_valid_until = time(9999);
+    assert_eq!(
+        ledger.record_intent(&early, time(1000)).unwrap_err(),
+        JournalError::Conflict
+    );
+    let mut equal = intent(2);
+    equal.compensation_valid_until = equal.expires_at;
+    assert!(matches!(
+        ledger.record_intent(&equal, time(1000)).unwrap(),
+        Admitted::New(_)
+    ));
+}
+
+/// W705 (mutation campaign): time equal to the last admission is not a
+/// clock rollback; only earlier time is.
+#[test]
+fn an_admission_at_the_last_admission_time_is_accepted() {
+    let state = State::new();
+    let mut ledger = state.init();
+    let first = intent(1);
+    ledger.record_intent(&first, time(1000)).unwrap();
+    ledger
+        .record_observation(
+            &first.operation_id,
+            Some(&first.target_generation),
+            Some(&first.target_digest),
+        )
+        .unwrap();
+    assert!(matches!(
+        ledger.record_intent(&intent(2), time(1000)).unwrap(),
+        Admitted::New(_)
+    ));
+}
+
+/// W705 (mutation campaign): a status lookup under a new retry key whose
+/// nonce is already consumed is a conflict, not "no earlier intent".
+#[test]
+fn a_lookup_under_a_new_key_with_a_consumed_nonce_is_a_conflict() {
+    let state = State::new();
+    let mut ledger = state.init();
+    let first = intent(1);
+    ledger.record_intent(&first, time(1000)).unwrap();
+    let mut second = intent(2);
+    second.nonce = first.nonce.clone();
+    assert_eq!(
+        ledger.existing(&second).unwrap_err(),
+        JournalError::Conflict
+    );
+    assert_eq!(ledger.existing(&intent(3)).unwrap(), None);
+    assert!(ledger.existing(&first).unwrap().is_some());
+    let mut changed = first.clone();
+    changed.target_digest = digest('e');
+    assert_eq!(
+        ledger.existing(&changed).unwrap_err(),
+        JournalError::Conflict
+    );
 }

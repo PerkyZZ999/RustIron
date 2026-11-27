@@ -81,7 +81,7 @@ pub(crate) fn removal_commands(provision: &Provision) -> Vec<(&'static str, Vec<
             ],
         ));
     }
-    commands.push(("/usr/sbin/userdel", vec!["--".to_owned(), account.clone()]));
+    commands.push(("/usr/sbin/userdel", vec!["--".to_owned(), account]));
     commands
 }
 

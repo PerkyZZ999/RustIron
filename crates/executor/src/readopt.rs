@@ -682,9 +682,7 @@ pub fn observe_host_site(layout: &SiteLayout) -> HostSiteFacts {
         ..HostSiteFacts::default()
     };
     if let Ok(sites) = files::open_traversable_directory(Path::new(crate::layout::SITES_ROOT), 0) {
-        let device = fs::fstat(&sites)
-            .map(|stat| stat.st_dev)
-            .unwrap_or(u64::MAX);
+        let device = fs::fstat(&sites).map_or(u64::MAX, |stat| stat.st_dev);
         facts.root = stat_child(&sites, &layout.account, device);
         let root = facts
             .root
@@ -944,7 +942,7 @@ pub fn generation_summary(
     bounded(serde_json::json!({
         "current": input.current.as_ref().map(|(id, _)| id.as_str()),
         "digest": input.current.as_ref().map(|(_, digest)| digest.as_str()),
-        "stored_files": input.stored.as_ref().map(|files| files.len()),
+        "stored_files": input.stored.as_ref().map(std::collections::BTreeMap::len),
         "rendered": ols::generation_id(&rendered_digest).as_str(),
         "rendered_digest": rendered_digest.as_str(),
         "server": input.host.as_ref().map(|host| host.server),

@@ -799,7 +799,7 @@ fn run_unit_output(
 }
 
 /// `rustiron-probe-<probe>-<step>-<8 hex>`: every probe unit matches the
-/// pattern that [`cleanup`] stops and lists.
+/// pattern that [`cleanup`](fn@cleanup) stops and lists.
 pub(crate) fn unit_name(target: &ProbeTarget<'_>, step: &str) -> Result<String, ExecutorError> {
     let mut random = [0_u8; 4];
     rustix::rand::getrandom(&mut random, rustix::rand::GetRandomFlags::empty())
@@ -1253,7 +1253,7 @@ mod receipt_tests {
             receipt["fields"]["health_checks_passed"]["observed"]["admin_exists"],
             false
         );
-        let mut good = forged.clone();
+        let mut good = forged;
         good.health = Some(super::health::judge(
             || super::health::parse_facts(b"3\t1\t1\t41\n"),
             || {

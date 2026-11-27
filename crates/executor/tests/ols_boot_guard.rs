@@ -188,7 +188,7 @@ fn a_link_the_operation_does_not_explain_changes_nothing() {
     let journal = JournalFinding::Pending(activation.clone());
     let planted = generation(b"planted");
     // The target id with other bytes is not the target.
-    let altered = (activation.target.0.clone(), sha(b"other bytes"));
+    let altered = (activation.target.0, sha(b"other bytes"));
     for link in [
         names(&planted),
         names(&altered),

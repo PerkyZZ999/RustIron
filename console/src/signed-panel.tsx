@@ -25,7 +25,7 @@ import {
   type SignedObject,
   signedBytes,
 } from "./signed";
-import { Glyph } from "./ui";
+import { copyText, Glyph } from "./ui";
 
 const partTitle = { plan: "Plan", grant: "Grant" } as const;
 
@@ -95,8 +95,8 @@ function CopyBytes({ object }: { object: SignedObject }) {
       <Button
         variant="outline"
         size="sm"
-        onClick={() => {
-          void navigator.clipboard?.writeText(text).then(() => setCopied(true));
+        onClick={async () => {
+          if (await copyText(text, `${partTitle[object.part]} bytes copied`)) setCopied(true);
         }}
       >
         <Glyph icon={Copy} />

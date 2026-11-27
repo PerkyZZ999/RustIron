@@ -8,10 +8,10 @@ use rustiron_contracts::approval::{
     UpdateKind,
 };
 use rustiron_journal::{
-    CaptureConsistency, CaptureIntent, CaptureManifest, CaptureMethod, DeleteIntent,
+    Admitted, CaptureConsistency, CaptureIntent, CaptureManifest, CaptureMethod, DeleteIntent,
     FixtureJournal, JournalError, MAX_RESTORE_ATTEMPTS, ProvisionIntent, ProvisionStep,
-    QuotaChangeIntent, RestoreFrom, RestoreIntent, RestoreResult, RestoreState, RestoreStep,
-    SiteRestore, StepState, UpdateIntent,
+    QuotaChangeIntent, RestoreFrom, RestoreIntent, RestoreState, RestoreStep, SiteRestore,
+    StepState, UpdateIntent,
 };
 use std::{
     fs,
@@ -187,10 +187,10 @@ fn restore(n: u32, scope: RestoreScope) -> RestoreIntent {
     }
 }
 
-fn new_restore(result: RestoreResult) -> SiteRestore {
+fn new_restore(result: Admitted<SiteRestore>) -> SiteRestore {
     match result {
-        RestoreResult::New(restore) => restore,
-        RestoreResult::Existing(_) => panic!("expected a new restore"),
+        Admitted::New(restore) => restore,
+        Admitted::Existing(_) => panic!("expected a new restore"),
     }
 }
 
@@ -220,7 +220,7 @@ fn a_restore_records_its_first_attempt_and_replays_exactly() {
     assert_eq!(ledger.admission_count().unwrap(), before + 1);
     assert!(matches!(
         ledger.record_site_restore(&intent, time(NOW + 1)),
-        Ok(RestoreResult::Existing(_))
+        Ok(Admitted::Existing(_))
     ));
     // The same key with another scope is a conflict.
     let mut other = intent.clone();
@@ -604,6 +604,6 @@ fn a_files_restore_needs_a_complete_safety_manifest_too() {
     let database = restore(2, RestoreScope::Database);
     assert!(matches!(
         ledger.record_site_restore(&database, time(NOW)),
-        Ok(RestoreResult::New(_))
+        Ok(Admitted::New(_))
     ));
 }

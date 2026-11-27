@@ -1,8 +1,10 @@
 // W629 (P29 Slice 9): Console Sign-In, First-Run Admin Setup (/login), and
 // Console User Accounts & Roles management (/users) powered by Better Auth.
-import { Link, useNavigate } from "@tanstack/react-router";
+import { consoleRequest, failureText, type ConsoleReply } from "./console-request";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   AlertCircle,
+  ArrowLeft,
   Check,
   Eye,
   EyeOff,
@@ -10,7 +12,7 @@ import {
   Lock,
   LogIn,
   LogOut,
-  Trash2,
+  ShieldCheck,
   UserPlus,
   Users,
 } from "lucide-react";
@@ -19,9 +21,10 @@ import { useCallback, useEffect, useState } from "react";
 import { BrandLockup, BrandMark } from "@/components/console/brand-logo";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { OTPField, OTPFieldInput, OTPFieldSeparator } from "@/components/ui/otp-field";
 import type { ConsoleAccountUser, ConsoleRole } from "./auth-backend";
 import { useAuth } from "./auth-context";
-import { Crumbs, Glyph, Page, TableScroll } from "./ui";
+import { ConfirmDeleteButton, Crumbs, Glyph, Page, TableScroll } from "./ui";
 
 const roleDescriptions: Record<ConsoleRole, string> = {
   admin: "Full panel access, user management, and signed plan submission",
@@ -59,26 +62,28 @@ function AdminSetupForm({ onDone }: { onDone: () => Promise<void> }) {
     }
     setBusy(true);
     setErr(null);
+    const reply = await consoleRequest("/api/accounts/setup", {
+      method: "POST",
+      json: {
+        name,
+        email,
+        password,
+        ...(setupToken.trim() ? { setupToken: setupToken.trim() } : {}),
+      },
+    });
+    if (!reply.ok) {
+      setBusy(false);
+      setErr(
+        failureText(
+          reply,
+          `Setup failed (HTTP ${reply.status}).`,
+          "Could not reach the Console authentication service.",
+        ),
+      );
+      return;
+    }
     try {
-      const res = await fetch("/api/accounts/setup", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          name,
-          email,
-          password,
-          ...(setupToken.trim() ? { setupToken: setupToken.trim() } : {}),
-        }),
-      });
-      const body = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
-      if (!res.ok) {
-        setErr(body.message ?? body.error ?? `Setup failed (HTTP ${res.status}).`);
-        return;
-      }
       await onDone();
-    } catch {
-      setErr("Could not reach the Console authentication service.");
     } finally {
       setBusy(false);
     }
@@ -105,6 +110,8 @@ function AdminSetupForm({ onDone }: { onDone: () => Promise<void> }) {
             id="setup-name"
             className="input"
             required
+            minLength={2}
+            maxLength={100}
             autoComplete="name"
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -173,10 +180,178 @@ function AdminSetupForm({ onDone }: { onDone: () => Promise<void> }) {
   );
 }
 
+/** W728: every refused second-factor code reads the same, so a refusal names no factor. */
+const CODE_REFUSED = "Sign-in failed. Check your details and try again.";
+const RECOVERY_CODE = /^[A-Z0-9]{4}-[A-Z0-9]{4}$/;
+
+type SecondFactorMethod = "totp" | "recovery";
+
+/** The text for a refused code check: the server's wait on 429, else the generic refusal. */
+function codeFailureText(reply: Extract<ConsoleReply<unknown>, { ok: false }>): string {
+  if (reply.status === null) return "Could not reach the Console authentication service.";
+  if (reply.status === 429)
+    return failureText(reply, "Too many attempts. Wait a minute and try again.");
+  return CODE_REFUSED;
+}
+
+/**
+ * W728 (TOTP task 36): step 2 of sign-in for an account with a second factor, ported
+ * from the refined `/login`. The challenge cookie from step 1 names the account.
+ */
+function SecondFactorForm({
+  email,
+  onBack,
+  onSignedIn,
+}: {
+  email: string;
+  onBack: () => void;
+  onSignedIn: () => Promise<void>;
+}) {
+  const [method, setMethod] = useState<SecondFactorMethod>("totp");
+  const [code, setCode] = useState("");
+  const [recoveryCode, setRecoveryCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  // The step replaced the password form, so focus moves to each input as it appears.
+  const focusOnMount = useCallback((input: HTMLInputElement | null) => input?.focus(), []);
+
+  async function handleVerify(e: React.FormEvent) {
+    e.preventDefault();
+    const value = method === "totp" ? code : recoveryCode.trim();
+    const complete = method === "totp" ? /^\d{6}$/.test(value) : RECOVERY_CODE.test(value);
+    if (!complete) {
+      setErr(
+        method === "totp"
+          ? "Enter all 6 digits from your authenticator app."
+          : "Enter one recovery code, for example 7KQ4-M2XD.",
+      );
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    const path =
+      method === "totp"
+        ? "/api/auth/two-factor/verify-totp"
+        : "/api/auth/two-factor/verify-backup-code";
+    const reply = await consoleRequest(path, { method: "POST", json: { code: value } });
+    if (!reply.ok) {
+      setBusy(false);
+      setErr(codeFailureText(reply));
+      return;
+    }
+    try {
+      await onSignedIn();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function switchMethod() {
+    setMethod((m) => (m === "totp" ? "recovery" : "totp"));
+    setErr(null);
+  }
+
+  return (
+    <form
+      className="motion-hero rounded-panel border border-border bg-surface p-6 shadow-[var(--shadow-float)] matte-surface sm:p-8"
+      onSubmit={(e) => void handleVerify(e)}
+      noValidate
+    >
+      <div className="mb-6 flex flex-col gap-2">
+        <BrandLockup className="h-8 w-auto self-start" />
+        <div className="min-w-0">
+          <h2 className="text-base font-semibold leading-6 tracking-tight text-foreground">
+            Enter your code
+          </h2>
+          <p className="truncate font-mono text-xs text-muted-foreground">Step 2 of 2 · {email}</p>
+        </div>
+      </div>
+      <div className="space-y-4">
+        {err ? <AuthAlert tone="err" text={err} /> : null}
+        {method === "totp" ? (
+          <div className="form-row">
+            <label id="login-code-label" htmlFor="login-code">
+              6-digit code from your authenticator app
+            </label>
+            <OTPField
+              length={6}
+              size="lg"
+              value={code}
+              autoComplete="one-time-code"
+              aria-labelledby="login-code-label"
+              aria-invalid={err ? true : undefined}
+              onValueChange={(value) => {
+                setCode(value);
+                if (err) setErr(null);
+              }}
+              className="justify-between"
+            >
+              <OTPFieldInput ref={focusOnMount} id="login-code" aria-label="Digit 1" />
+              <OTPFieldInput aria-label="Digit 2" />
+              <OTPFieldInput aria-label="Digit 3" />
+              <OTPFieldSeparator />
+              <OTPFieldInput aria-label="Digit 4" />
+              <OTPFieldInput aria-label="Digit 5" />
+              <OTPFieldInput aria-label="Digit 6" />
+            </OTPField>
+            <span className="hint">The code changes every 30 seconds.</span>
+          </div>
+        ) : (
+          <div className="form-row">
+            <label htmlFor="login-recovery">Recovery code</label>
+            <Input
+              id="login-recovery"
+              placeholder="XXXX-XXXX"
+              ref={focusOnMount}
+              autoComplete="off"
+              spellCheck={false}
+              value={recoveryCode}
+              aria-invalid={err ? true : undefined}
+              onChange={(e) => {
+                setRecoveryCode(e.target.value.toUpperCase());
+                if (err) setErr(null);
+              }}
+              className="font-mono tracking-wider"
+            />
+            <span className="hint">Each recovery code works once.</span>
+          </div>
+        )}
+        <Button type="submit" variant="default" className="w-full" disabled={busy}>
+          <Glyph icon={ShieldCheck} />
+          {busy ? "Verifying…" : "Verify and sign in"}
+        </Button>
+        <div className="flex items-center justify-between gap-3 text-xs">
+          <button
+            type="button"
+            onClick={onBack}
+            className="inline-flex min-h-8 cursor-pointer items-center gap-1 font-medium text-muted-foreground hover:text-foreground"
+          >
+            <ArrowLeft aria-hidden="true" className="size-3.5" />
+            Back
+          </button>
+          <button
+            type="button"
+            onClick={switchMethod}
+            className="inline-flex min-h-8 cursor-pointer items-center gap-1 font-medium text-focus hover:underline"
+          >
+            <KeyRound aria-hidden="true" className="size-3.5" />
+            {method === "totp" ? "Use a recovery code instead" : "Use the authenticator app"}
+          </button>
+        </div>
+      </div>
+      <div className="mt-6 flex items-center justify-center gap-1.5 border-t border-border pt-4 text-xs text-muted-foreground">
+        <Lock aria-hidden="true" className="size-3.5" strokeWidth={1.75} />
+        <span>Better Auth · second factor</span>
+      </div>
+    </form>
+  );
+}
+
 function SignInForm({ onSignedIn }: { onSignedIn: () => Promise<void> }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [needsCode, setNeedsCode] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -184,23 +359,41 @@ function SignInForm({ onSignedIn }: { onSignedIn: () => Promise<void> }) {
     e.preventDefault();
     setBusy(true);
     setErr(null);
+    const reply = await consoleRequest("/api/auth/sign-in/email", {
+      method: "POST",
+      json: { email, password },
+    });
+    if (!reply.ok) {
+      setBusy(false);
+      // W717: a rate-limit refusal (W694) names its wait; any other refusal stays
+      // generic so it never reveals which factor failed.
+      setErr(
+        reply.status === null
+          ? "Could not reach the Console authentication service."
+          : reply.status === 429
+            ? failureText(reply, "Too many sign-in attempts. Wait a minute and try again.")
+            : "Invalid email or password.",
+      );
+      return;
+    }
+    // W728: an account with a second factor gets a challenge cookie, not a session.
+    if ((reply.data as { twoFactorRedirect?: unknown } | null)?.twoFactorRedirect === true) {
+      setBusy(false);
+      setPassword("");
+      setNeedsCode(true);
+      return;
+    }
     try {
-      const res = await fetch("/api/auth/sign-in/email", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
-      if (!res.ok) {
-        setErr("Invalid email or password.");
-        return;
-      }
       await onSignedIn();
-    } catch {
-      setErr("Could not reach the Console authentication service.");
     } finally {
       setBusy(false);
     }
+  }
+
+  if (needsCode) {
+    return (
+      <SecondFactorForm email={email} onBack={() => setNeedsCode(false)} onSignedIn={onSignedIn} />
+    );
   }
 
   return (
@@ -274,11 +467,14 @@ function SignInForm({ onSignedIn }: { onSignedIn: () => Promise<void> }) {
 export function StandaloneAuthGate({ themeControl }: { themeControl?: React.ReactNode }) {
   const { status, refresh } = useAuth();
   const navigate = useNavigate();
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
   const setupRequired = status?.setup_required ?? false;
 
+  // W748 (QA-17): the gate stands in for the page that was asked for, so after
+  // sign-in that page opens; only the sign-in page itself moves on to the Overview.
   async function handleSuccess() {
     await refresh();
-    void navigate({ to: "/" });
+    if (pathname === "/login") void navigate({ to: "/" });
   }
 
   return (
@@ -358,51 +554,51 @@ export function LoginPage() {
   );
 }
 
-function CreateUserForm({ onCreated }: { onCreated: () => Promise<void> }) {
+/** W747 (QA-16): success goes to the page notice; the form keeps only its own error. */
+function CreateUserForm({ onCreated }: { onCreated: (message: string) => Promise<void> }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<ConsoleRole>("operator");
   const [busy, setBusy] = useState(false);
-  const [feedback, setFeedback] = useState<{ tone: "err" | "ok"; text: string } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
-    setFeedback(null);
+    setErr(null);
+    const reply = await consoleRequest("/api/accounts/users", {
+      method: "POST",
+      json: { name, email, password, role },
+    });
+    if (!reply.ok) {
+      setBusy(false);
+      setErr(failureText(reply, "Failed to create user.", "Could not reach the accounts API."));
+      return;
+    }
+    setName("");
+    setEmail("");
+    setPassword("");
     try {
-      const res = await fetch("/api/accounts/users", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name, email, password, role }),
-      });
-      const body = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
-      if (!res.ok) {
-        setFeedback({ tone: "err", text: body.message ?? body.error ?? "Failed to create user." });
-        return;
-      }
-      setName("");
-      setEmail("");
-      setPassword("");
-      setFeedback({ tone: "ok", text: `Created ${role} account for ${email}.` });
-      await onCreated();
-    } catch {
-      setFeedback({ tone: "err", text: "Could not reach the accounts API." });
+      await onCreated(`Created ${role} account for ${email}.`);
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <form className="panel stack" onSubmit={(e) => void handleCreate(e)}>
+    <form
+      className="panel stack"
+      onSubmit={(e) => void handleCreate(e)}
+      onInvalidCapture={() => setErr(null)}
+    >
       <div className="panel-head">
         <div className="row" style={{ gap: 8 }}>
           <Glyph icon={UserPlus} />
           <h2>Add Console user</h2>
         </div>
       </div>
-      {feedback ? <AuthAlert tone={feedback.tone} text={feedback.text} /> : null}
+      {err ? <AuthAlert tone="err" text={err} /> : null}
       <div className="form-grid">
         <div className="form-row">
           <label htmlFor="u-name">Full name</label>
@@ -410,6 +606,8 @@ function CreateUserForm({ onCreated }: { onCreated: () => Promise<void> }) {
             id="u-name"
             className="input"
             required
+            minLength={2}
+            maxLength={100}
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Jordan Lee"
@@ -521,15 +719,11 @@ function AccountsTable({
                 </td>
                 <td className="tnum">{u.activeSessions}</td>
                 <td>
-                  <button
-                    type="button"
-                    className="icon-btn"
+                  <ConfirmDeleteButton
+                    label={`Delete ${u.email}`}
                     disabled={u.id === currentUserId}
-                    aria-label={`Delete ${u.email}`}
-                    onClick={() => void onDelete(u.id)}
-                  >
-                    <Glyph icon={Trash2} />
-                  </button>
+                    onConfirm={() => void onDelete(u.id)}
+                  />
                 </td>
               </tr>
             ))}
@@ -541,19 +735,8 @@ function AccountsTable({
 }
 
 async function fetchConsoleUsers(): Promise<ConsoleAccountUser[] | null> {
-  try {
-    const res = await fetch("/api/accounts/users", {
-      cache: "no-store",
-      credentials: "same-origin",
-    });
-    if (res.ok) {
-      const body = (await res.json()) as { users?: ConsoleAccountUser[] };
-      return body.users ?? [];
-    }
-  } catch {
-    // Ignore in offline unit tests.
-  }
-  return null;
+  const reply = await consoleRequest<{ users?: ConsoleAccountUser[] }>("/api/accounts/users");
+  return reply.ok ? (reply.data?.users ?? []) : null;
 }
 
 export function UsersPage() {
@@ -580,15 +763,12 @@ export function UsersPage() {
 
   async function handleRoleChange(id: string, role: ConsoleRole) {
     setNotice(null);
-    const res = await fetch(`/api/accounts/users/${id}`, {
+    const res = await consoleRequest(`/api/accounts/users/${id}`, {
       method: "PATCH",
-      credentials: "same-origin",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ role }),
+      json: { role },
     });
-    const body = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
     if (!res.ok) {
-      setNotice({ tone: "err", text: body.message ?? body.error ?? "Role update failed." });
+      setNotice({ tone: "err", text: failureText(res, "Role update failed.") });
       return;
     }
     setNotice({ tone: "ok", text: "Account role updated." });
@@ -597,13 +777,9 @@ export function UsersPage() {
 
   async function handleDelete(id: string) {
     setNotice(null);
-    const res = await fetch(`/api/accounts/users/${id}`, {
-      method: "DELETE",
-      credentials: "same-origin",
-    });
-    const body = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
+    const res = await consoleRequest(`/api/accounts/users/${id}`, { method: "DELETE" });
     if (!res.ok) {
-      setNotice({ tone: "err", text: body.message ?? body.error ?? "Could not delete account." });
+      setNotice({ tone: "err", text: failureText(res, "Could not delete account.") });
       return;
     }
     setNotice({ tone: "ok", text: "Account removed and sessions revoked." });
@@ -611,14 +787,13 @@ export function UsersPage() {
   }
 
   async function handleRevokeOthers() {
-    const res = await fetch("/api/accounts/sessions/revoke-others", {
-      method: "POST",
-      credentials: "same-origin",
-    });
-    if (res.ok) {
-      setNotice({ tone: "ok", text: "All other sessions for your account have been signed out." });
-      await loadUsers();
+    const res = await consoleRequest("/api/accounts/sessions/revoke-others", { method: "POST" });
+    if (!res.ok) {
+      setNotice({ tone: "err", text: failureText(res, "Could not sign out other sessions.") });
+      return;
     }
+    setNotice({ tone: "ok", text: "All other sessions for your account have been signed out." });
+    await loadUsers();
   }
 
   const session = status?.session ?? null;
@@ -659,46 +834,58 @@ export function UsersPage() {
 
       {notice ? <AuthAlert tone={notice.tone} text={notice.text} /> : null}
 
-      {setupRequired ? (
-        <AdminSetupForm
-          onDone={async () => {
-            await refresh();
-            await loadUsers();
-          }}
-        />
-      ) : session?.user.role === "admin" ? (
-        <div className="stack">
-          <AccountsTable
-            users={users}
-            currentUserId={session.user.id}
-            onRoleChange={handleRoleChange}
-            onDelete={handleDelete}
+      {/* W747 (QA-16): any form action replaces the page notice. */}
+      <div
+        style={{ display: "contents" }}
+        onSubmitCapture={() => setNotice(null)}
+        onInvalidCapture={() => setNotice(null)}
+      >
+        {setupRequired ? (
+          <AdminSetupForm
+            onDone={async () => {
+              await refresh();
+              await loadUsers();
+            }}
           />
-          <CreateUserForm onCreated={loadUsers} />
-        </div>
-      ) : session ? (
-        <section className="panel">
-          <div className="panel-head">
-            <h2>Your account</h2>
-            <span className="pill ok">{session.user.role}</span>
+        ) : session?.user.role === "admin" ? (
+          <div className="stack">
+            <AccountsTable
+              users={users}
+              currentUserId={session.user.id}
+              onRoleChange={handleRoleChange}
+              onDelete={handleDelete}
+            />
+            <CreateUserForm
+              onCreated={async (message) => {
+                setNotice({ tone: "ok", text: message });
+                await loadUsers();
+              }}
+            />
           </div>
-          <dl className="kv">
-            <dt>Name</dt>
-            <dd>{session.user.name}</dd>
-            <dt>Email</dt>
-            <dd className="mono">{session.user.email}</dd>
-            <dt>Permissions</dt>
-            <dd>{roleDescriptions[session.user.role]}</dd>
-          </dl>
-        </section>
-      ) : (
-        <SignInForm
-          onSignedIn={async () => {
-            await refresh();
-            await loadUsers();
-          }}
-        />
-      )}
+        ) : session ? (
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Your account</h2>
+              <span className="pill ok">{session.user.role}</span>
+            </div>
+            <dl className="kv">
+              <dt>Name</dt>
+              <dd>{session.user.name}</dd>
+              <dt>Email</dt>
+              <dd className="mono">{session.user.email}</dd>
+              <dt>Permissions</dt>
+              <dd>{roleDescriptions[session.user.role]}</dd>
+            </dl>
+          </section>
+        ) : (
+          <SignInForm
+            onSignedIn={async () => {
+              await refresh();
+              await loadUsers();
+            }}
+          />
+        )}
+      </div>
     </Page>
   );
 }

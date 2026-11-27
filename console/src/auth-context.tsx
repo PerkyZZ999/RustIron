@@ -1,5 +1,14 @@
 // W629 (P29 Slice 9): Client-side Better Auth session context for the Console UI.
-import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from "react";
+import { consoleRequest } from "./console-request";
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  use,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 
 import type { ConsoleAuthStatus } from "./auth-backend";
 
@@ -20,19 +29,9 @@ const AuthContext = createContext<AuthContextValue>({
 });
 
 async function fetchAuthStatus(): Promise<ConsoleAuthStatus | null> {
-  try {
-    const res = await fetch("/api/accounts/status", {
-      cache: "no-store",
-      credentials: "same-origin",
-    });
-    if (res.ok) {
-      const body = (await res.json()) as ConsoleAuthStatus;
-      if (body && body.auth_provider === "better-auth") return body;
-    }
-  } catch {
-    // Offline / unit-test mode without auth endpoint keeps status null.
-  }
-  return null;
+  // Offline and unit-test modes without the auth endpoint keep the status null.
+  const reply = await consoleRequest<ConsoleAuthStatus | null>("/api/accounts/status");
+  return reply.ok && reply.data?.auth_provider === "better-auth" ? reply.data : null;
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -63,27 +62,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
-    try {
-      await fetch("/api/auth/sign-out", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "content-type": "application/json" },
-        body: "{}",
-      });
-    } finally {
-      const next = await fetchAuthStatus();
-      if (next) setStatus(next);
-      setResolved(true);
-    }
+    await consoleRequest("/api/auth/sign-out", { method: "POST", json: {} });
+    const next = await fetchAuthStatus();
+    if (next) setStatus(next);
+    setResolved(true);
   }, []);
 
-  return (
-    <AuthContext.Provider value={{ status, loading, resolved, refresh, signOut }}>
-      {children}
-    </AuthContext.Provider>
+  const value = useMemo(
+    () => ({ status, loading, resolved, refresh, signOut }),
+    [status, loading, resolved, refresh, signOut],
   );
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {
-  return useContext(AuthContext);
+  return use(AuthContext);
 }

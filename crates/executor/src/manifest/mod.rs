@@ -88,7 +88,7 @@ pub(crate) fn from_relay(
     from_relay_for(bytes, sha256, truncated, root, "html", dump)
 }
 
-/// As [`from_relay`] with an explicit content subdirectory (`html` or `data`).
+/// As `from_relay` (test builds) with an explicit content subdirectory (`html` or `data`).
 pub(crate) fn from_relay_for(
     bytes: Vec<u8>,
     sha256: &str,

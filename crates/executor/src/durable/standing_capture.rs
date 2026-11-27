@@ -13,17 +13,17 @@ use rustiron_contracts::approval::{
     CaptureRecipe, StandingCaptureBindingContext, StandingCaptureGrant, StandingCapturePlan,
     WindowPosition, check_standing_capture_binding,
 };
-use rustiron_journal::{CaptureIntent, CaptureMethod, CaptureResult};
 
 use super::{Executor, signed_inputs};
 use crate::{AdmissionRequest, ExecutorError};
+use rustiron_journal::{Admitted, Capture, CaptureIntent, CaptureMethod};
 
 impl Executor {
     /// D-035: one run of a standing capture grant.
     pub fn product_standing_capture(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<CaptureResult, ExecutorError> {
+    ) -> Result<Admitted<Capture>, ExecutorError> {
         let plan = StandingCapturePlan::decode(request.plan)?;
         let method = match plan.recipe_id() {
             CaptureRecipe::SiteFilesDbV1 => CaptureMethod::SiteFilesDbV1,
@@ -82,7 +82,7 @@ impl Executor {
         // after its window closed; anything else under this ID is refused.
         if let Some(existing) = self.journal.capture_status(&intent.operation_id)? {
             return if existing.intent == intent {
-                Ok(CaptureResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(ExecutorError::ReplayDenied)
             };

@@ -67,8 +67,7 @@ pub(crate) fn run_bytes(
         wait,
     } = attempt;
     let request = Ok::<_, ErrorCode>(ApplyRequest {
-        request_id: Id::try_from(format!("cli-{}", std::process::id()))
-            .expect("PID IDs are bounded ASCII"),
+        request_id: crate::cli_request_id(""),
         operation_id,
         idempotency_key,
         plan: plan.trim_ascii().to_vec(),
@@ -105,8 +104,7 @@ pub(crate) fn submit_quiet(
     attempt: Attempt,
 ) -> (serde_json::Value, u8) {
     let request = ApplyRequest {
-        request_id: Id::try_from(format!("cli-{}", std::process::id()))
-            .expect("PID IDs are bounded ASCII"),
+        request_id: crate::cli_request_id(""),
         operation_id: attempt.operation_id,
         idempotency_key: attempt.idempotency_key,
         plan: plan.trim_ascii().to_vec(),
@@ -170,8 +168,7 @@ fn wait_for_state(socket: &Path, operation_id: &Id, wait: Duration) -> Option<Ou
     let deadline = Instant::now() + wait;
     for attempt in 0u64.. {
         let request = Request {
-            request_id: Id::try_from(format!("cli-{}-s{attempt}", std::process::id()))
-                .expect("PID IDs are bounded ASCII"),
+            request_id: crate::cli_request_id(&format!("-s{attempt}")),
             command: ReadCommand::OperationStatus {
                 operation_id: operation_id.clone(),
             },
@@ -290,14 +287,13 @@ fn exchange_frames(
     {
         return response(ApplyOutcome::OutcomeUnknown);
     }
-    let reply = match local::read_frame(
+    let Ok(reply) = local::read_frame(
         stream,
         MAX_RESPONSE_BYTES,
         ErrorCode::ResponseTooLarge,
         deadline,
-    ) {
-        Ok(reply) => reply,
-        Err(_) => return response(ApplyOutcome::OutcomeUnknown),
+    ) else {
+        return response(ApplyOutcome::OutcomeUnknown);
     };
     decode_apply_response(&reply, &request.request_id, &request.operation_id)
         .unwrap_or_else(|_| response(ApplyOutcome::OutcomeUnknown))

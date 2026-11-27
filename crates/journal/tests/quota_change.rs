@@ -3,9 +3,8 @@
 //! the site's recorded limits. Real SQLite; no host effects.
 use rustiron_contracts::approval::{Hostname, SiteId};
 use rustiron_journal::{
-    CaptureConsistency, CaptureIntent, CaptureManifest, CaptureMethod, DeleteIntent,
-    FixtureJournal, JournalError, ProvisionIntent, ProvisionStep, QuotaChangeIntent,
-    QuotaChangeResult, StepState,
+    Admitted, CaptureConsistency, CaptureIntent, CaptureManifest, CaptureMethod, DeleteIntent,
+    FixtureJournal, JournalError, ProvisionIntent, ProvisionStep, QuotaChangeIntent, StepState,
 };
 use std::{
     fs,
@@ -162,8 +161,7 @@ fn the_newest_done_change_is_the_sites_recorded_limits() {
     served(&mut ledger, "blog2");
     assert_eq!(ledger.latest_quota_limits(&site_id("blog1")).unwrap(), None);
     let first = change(1, "blog1", 524_288, 40_000);
-    let QuotaChangeResult::New(open) = ledger.record_quota_change(&first, time(1000)).unwrap()
-    else {
+    let Admitted::New(open) = ledger.record_quota_change(&first, time(1000)).unwrap() else {
         panic!("a new change");
     };
     assert_eq!(open.state, StepState::Intent);
@@ -185,7 +183,7 @@ fn the_newest_done_change_is_the_sites_recorded_limits() {
     );
     assert_eq!(
         ledger.record_quota_change(&first, time(1100)).unwrap(),
-        QuotaChangeResult::Existing(done.clone())
+        Admitted::Existing(done.clone())
     );
     let mut other = first.clone();
     other.inode_hard = 50_000;

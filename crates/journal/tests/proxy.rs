@@ -3,8 +3,8 @@
 //! provision's. Real SQLite; no host effects.
 use rustiron_contracts::approval::{Hostname, ProxyRoute, SiteId};
 use rustiron_journal::{
-    DeleteIntent, DeleteResult, FixtureJournal, JournalError, ProvisionIntent, ProvisionResult,
-    ProvisionState, ProvisionStep, ProxyFacts, StepState,
+    Admitted, DeleteIntent, FixtureJournal, JournalError, ProvisionIntent, ProvisionState,
+    ProvisionStep, ProxyFacts, StepState,
 };
 use std::{
     fs,
@@ -108,14 +108,14 @@ fn a_proxy_provision_records_its_routes_and_replays_exactly() {
     let recorded = ledger
         .record_proxy_provision(&intent, &facts, time(1000))
         .unwrap();
-    assert!(matches!(recorded, ProvisionResult::New(_)));
+    assert!(matches!(recorded, Admitted::New(_)));
     assert_eq!(
         ledger.proxy_facts(&intent.operation_id).unwrap(),
         Some(facts.clone())
     );
     assert!(matches!(
         ledger.record_proxy_provision(&intent, &facts, time(1001)),
-        Ok(ProvisionResult::Existing(_))
+        Ok(Admitted::Existing(_))
     ));
     // The same key with other routes, or as a recipe provision, conflicts.
     let mut other = facts.clone();
@@ -315,14 +315,14 @@ fn a_proxy_site_is_deleted_without_a_capture_and_only_it() {
     }
     assert_eq!(ledger.admission_count().unwrap(), before);
     let intent = deletion("ytproxy", 3, None);
-    let DeleteResult::New(recorded) = ledger.record_deletion(&intent, time(1100)).unwrap() else {
+    let Admitted::New(recorded) = ledger.record_deletion(&intent, time(1100)).unwrap() else {
         panic!("expected a new deletion");
     };
     assert_eq!(recorded.capture_operation_id, None);
     assert_eq!(recorded.state, StepState::Intent);
     assert!(matches!(
         ledger.record_deletion(&intent, time(1101)),
-        Ok(DeleteResult::Existing(_))
+        Ok(Admitted::Existing(_))
     ));
     let failed = ledger.finish_deletion(&intent.operation_id, false).unwrap();
     assert_eq!(failed.state, StepState::Failed);
@@ -330,7 +330,7 @@ fn a_proxy_site_is_deleted_without_a_capture_and_only_it() {
     let retry = deletion("ytproxy", 4, None);
     assert!(matches!(
         ledger.record_deletion(&retry, time(1102)),
-        Ok(DeleteResult::New(_))
+        Ok(Admitted::New(_))
     ));
     ledger.finish_deletion(&retry.operation_id, true).unwrap();
     drop(ledger);

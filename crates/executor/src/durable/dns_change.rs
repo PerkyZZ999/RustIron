@@ -2,13 +2,13 @@
 
 use rustiron_contracts::Id;
 use rustiron_contracts::approval::{SetOperation, ZoneName, parse_zone};
-use rustiron_journal::{DnsChange, DnsChangeResult, DnsChangeSet, StepState};
 
 use super::{Executor, signed_inputs};
 use crate::{
     AdmissionRequest, ExecutorError,
     admin_helper::{self, AdminRequest, AdminStep, Reply},
 };
+use rustiron_journal::{Admitted, DnsChange, DnsChangeSet, StepState};
 
 impl Executor {
     /// Admits one signed change of an owned zone's record sets. Before
@@ -22,17 +22,26 @@ impl Executor {
     pub fn change_dns(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<DnsChangeResult, ExecutorError> {
+    ) -> Result<Admitted<DnsChange>, ExecutorError> {
         let (plan, mut intent) = crate::verified_dns_change(&self.anchor, request)?;
         self.check_identity(&intent.host_id, &intent.host_epoch)?;
         let now = request.now.ok_or(ExecutorError::TimeDenied)?;
-        if let Some(existing) = self.journal.dns_change_status(&intent.operation_id)? {
-            return Ok(DnsChangeResult::Existing(existing));
-        }
-        if self.anchor.admin_socket.is_none() {
-            return Err(ExecutorError::Unavailable);
-        }
-        let before = self.read_sets(&intent.zone, plan.operations())?;
+        // W700: a stored operation goes to the journal, which answers only an
+        // exact replay (sets compared by owner, type, and expectation, so the
+        // live sets are not read again); before, any request naming it got
+        // the stored row.
+        let before = if self
+            .journal
+            .dns_change_status(&intent.operation_id)?
+            .is_some()
+        {
+            vec![None; plan.operations().len()]
+        } else {
+            if self.anchor.admin_socket.is_none() {
+                return Err(ExecutorError::Unavailable);
+            }
+            self.read_sets(&intent.zone, plan.operations())?
+        };
         intent.sets = plan
             .operations()
             .iter()
@@ -48,10 +57,10 @@ impl Executor {
         let change = match self.admit(signed_inputs(request)?, |journal| {
             journal.record_dns_change(&intent, now)
         })? {
-            DnsChangeResult::Existing(existing) => return Ok(DnsChangeResult::Existing(existing)),
-            DnsChangeResult::New(change) => change,
+            Admitted::Existing(existing) => return Ok(Admitted::Existing(existing)),
+            Admitted::New(change) => change,
         };
-        Ok(DnsChangeResult::New(
+        Ok(Admitted::New(
             self.run_dns_change(&change, plan.operations())?,
         ))
     }

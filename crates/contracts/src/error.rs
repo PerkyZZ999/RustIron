@@ -26,6 +26,19 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
+    /// Every code, for the error-code list check (W704). Keep it in step
+    /// with the enum, as `ExecutorError::ALL` is.
+    pub const ALL: [Self; 8] = [
+        Self::InvalidRequest,
+        Self::UnsupportedVersion,
+        Self::RequestTooLarge,
+        Self::ResponseTooLarge,
+        Self::UnauthorizedPeer,
+        Self::NotFound,
+        Self::CursorExpired,
+        Self::DependencyUnavailable,
+    ];
+
     /// Stable CLI exit status; human messages are not a machine contract.
     pub const fn exit_code(self) -> u8 {
         match self {
@@ -73,6 +86,14 @@ pub struct ApiError {
 
 impl ApiError {
     /// Builds a safe default error without reflecting rejected input.
+    ///
+    /// # Panics
+    ///
+    /// Never: every [`ErrorCode`] message fits [`Text`] (tested for each code).
+    #[expect(
+        clippy::expect_used,
+        reason = "every ErrorCode message is a short static string within Text bounds"
+    )]
     pub fn new(code: ErrorCode) -> Self {
         Self {
             code,
@@ -149,3 +170,50 @@ impl fmt::Display for ProtocolError {
 }
 
 impl Error for ProtocolError {}
+
+#[cfg(test)]
+mod w672_tests {
+    use super::*;
+
+    /// The `expect` in [`ApiError::new`] holds for every code. The `match` is
+    /// exhaustive, so a new code fails to compile until it is listed here.
+    /// Add the new code to [`ErrorCode::ALL`] at the same time.
+    #[test]
+    fn every_error_code_builds_a_bounded_message() {
+        for code in ErrorCode::ALL {
+            match code {
+                ErrorCode::InvalidRequest => {}
+                ErrorCode::UnsupportedVersion => {}
+                ErrorCode::RequestTooLarge => {}
+                ErrorCode::ResponseTooLarge => {}
+                ErrorCode::UnauthorizedPeer => {}
+                ErrorCode::NotFound => {}
+                ErrorCode::CursorExpired => {}
+                ErrorCode::DependencyUnavailable => {}
+            }
+            assert_eq!(ApiError::new(code).code, code);
+        }
+    }
+
+    /// W704: the error-code list has one row for each code and no other row.
+    #[test]
+    fn every_error_code_has_one_row_in_the_list() {
+        const LIST: &str = include_str!("../../../docs/technical/ERROR-CODES.md");
+        let heading = "## Read protocol (`ErrorCode`)";
+        let start = LIST.find(heading).expect("section heading") + heading.len();
+        let section = &LIST[start..];
+        let section = &section[..section.find("\n## ").unwrap_or(section.len())];
+        let mut listed: Vec<String> = section
+            .lines()
+            .filter_map(|line| line.strip_prefix("| `")?.split_once("` |"))
+            .map(|(code, _)| format!("\"{code}\""))
+            .collect();
+        let mut codes: Vec<String> = ErrorCode::ALL
+            .iter()
+            .map(|code| serde_json::to_string(code).expect("code serializes"))
+            .collect();
+        listed.sort_unstable();
+        codes.sort_unstable();
+        assert_eq!(listed, codes);
+    }
+}

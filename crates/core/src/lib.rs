@@ -1,4 +1,10 @@
 //! Coordinator inventory state, without privileged ownership or execution authority.
+#![warn(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "W672: production code returns errors; tests may unwrap (clippy.toml)"
+)]
 
 use rusqlite::{Connection, OptionalExtension, params};
 use rustiron_contracts::{approval::MAX_OBSERVATION_AGE_SECONDS, *};

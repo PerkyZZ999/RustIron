@@ -3,6 +3,12 @@
 //! The future executor must independently verify authorization, ownership, time
 //! and live preconditions before using a real authoritative journal. Caller
 //! reports to this fixture library are not proof that those checks happened.
+#![warn(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "W672: production code returns errors; tests may unwrap (clippy.toml)"
+)]
 
 use rusqlite::{Connection, OptionalExtension, params};
 use rustiron_contracts::{
@@ -33,15 +39,14 @@ mod storage;
 
 pub use app::{
     APP_MIGRATION_CAPTURE_MAX_AGE_SECONDS, AppFacts, AppFullstackSpec, AppLifecycle,
-    AppLifecycleIntent, AppLifecycleResult, AppRelease, AppReleaseIntent, AppReleaseResult,
-    AppReleaseState, AppReleaseStep, AppReleaseStepRecord, AppSlot, CaddyGeneration,
-    CaddyGenerationState, CaddyIngressMode,
+    AppLifecycleIntent, AppRelease, AppReleaseIntent, AppReleaseState, AppReleaseStep,
+    AppReleaseStepRecord, AppSlot, CaddyGeneration, CaddyGenerationState, CaddyIngressMode,
 };
 pub use capture::{
-    Capture, CaptureConsistency, CaptureIntent, CaptureManifest, CaptureMethod, CaptureResult,
-    CaptureState, CaptureSuccess, MAX_LOCK_DAYS, MAX_MANIFEST_ENTRIES, MAX_RETAINED_OBJECTS,
-    ObjectRetention, RETENTION_MODE, RetainedObjectKind, RetentionEvidence, UnmatchedReason,
-    refusal_code_ok, version_id_ok,
+    Capture, CaptureConsistency, CaptureIntent, CaptureManifest, CaptureMethod, CaptureState,
+    CaptureSuccess, MAX_LOCK_DAYS, MAX_MANIFEST_ENTRIES, MAX_RETAINED_OBJECTS, ObjectRetention,
+    RETENTION_MODE, RetainedObjectKind, RetentionEvidence, UnmatchedReason, refusal_code_ok,
+    version_id_ok,
 };
 pub use observe::{
     Observation, ObservedAdmission, ObservedCapture, ObservedCertificate, ObservedOperation,
@@ -233,43 +238,33 @@ fn resource_history(
 }
 
 pub use certificate::{
-    Certificate, CertificateIntent, CertificateResult, CertificateState, RENEW_BEFORE_SECONDS,
-    RENEW_RETRY_SECONDS, Renewal, RenewalTarget,
+    Certificate, CertificateIntent, CertificateState, RENEW_BEFORE_SECONDS, RENEW_RETRY_SECONDS,
+    Renewal, RenewalTarget,
 };
-pub use credential_rotate::{
-    CredentialRotateIntent, CredentialRotateResult, CredentialRotateState, CredentialRotation,
-};
-pub use delete::{DELETE_CAPTURE_MAX_AGE_SECONDS, DeleteIntent, DeleteResult, Deletion};
-pub use dns::{
-    DnsChange, DnsChangeIntent, DnsChangeResult, DnsChangeSet, DnsImport, DnsImportIntent,
-    DnsImportResult,
-};
+pub use credential_rotate::{CredentialRotateIntent, CredentialRotateState, CredentialRotation};
+pub use delete::{DELETE_CAPTURE_MAX_AGE_SECONDS, DeleteIntent, Deletion};
+pub use dns::{DnsChange, DnsChangeIntent, DnsChangeSet, DnsImport, DnsImportIntent};
 pub use import::{
     Import, ImportFacts, ImportScrub, ImportStep, ImportStepRecord, ScrubIntent, ScrubOrigin,
-    ScrubResult,
 };
-pub use probe::{Probe, ProbeIntent, ProbeResult, ProbeState};
+pub use probe::{Probe, ProbeIntent, ProbeState};
 pub use provision::{
-    Provision, ProvisionIntent, ProvisionResult, ProvisionState, ProvisionStep, StepRecord,
-    StepState,
+    Provision, ProvisionIntent, ProvisionState, ProvisionStep, StepRecord, StepState,
 };
 pub use proxy::ProxyFacts;
-pub use quota_change::{QuotaChange, QuotaChangeIntent, QuotaChangeResult};
-pub use readopt::{
-    ReadoptOutcome, ReadoptResult, ReadoptState, Readoption, ReadoptionIntent, SiteAdoption,
-};
-pub use retire::{RetireIntent, RetireResult, Retirement};
+pub use quota_change::{QuotaChange, QuotaChangeIntent};
+pub use readopt::{ReadoptOutcome, ReadoptState, Readoption, ReadoptionIntent, SiteAdoption};
+pub use retire::{RetireIntent, Retirement};
 pub use site_clone::{
-    CloneFacts, CloneScrubGrant, CloneScrubIntent, CloneScrubResult, CloneStep, CloneStepRecord,
-    SiteClone,
+    CloneFacts, CloneScrubGrant, CloneScrubIntent, CloneStep, CloneStepRecord, SiteClone,
 };
 pub use site_restore::{
     MAX_RESTORE_ATTEMPTS, RESTORE_SAFETY_MAX_AGE_SECONDS, RestoreAttempt, RestoreFrom,
-    RestoreIntent, RestoreResult, RestoreState, RestoreStep, RestoreStepRecord, SiteRestore,
+    RestoreIntent, RestoreState, RestoreStep, RestoreStepRecord, SiteRestore,
 };
 pub use site_update::{
-    SiteUpdate, UPDATE_CAPTURE_MAX_AGE_SECONDS, UpdateIntent, UpdateResult, UpdateState,
-    UpdateStep, UpdateStepRecord,
+    SiteUpdate, UPDATE_CAPTURE_MAX_AGE_SECONDS, UpdateIntent, UpdateState, UpdateStep,
+    UpdateStepRecord,
 };
 
 /// Ordinary non-root operator; the original fixture rule.
@@ -412,13 +407,25 @@ pub struct Operation {
     pub compensation_attempted: bool,
 }
 
-/// Distinguishes a new durable intent from status-only exact replay.
-#[derive(Debug, Eq, PartialEq)]
-pub enum RecordResult {
-    /// Intent transaction committed. Still not permission to execute a host effect.
-    New(Operation),
-    /// Existing status only, including after expiry; never retry an effect from this.
-    Existing(Operation),
+/// The result of every signed admission: a new durable intent, or the status of an
+/// exact earlier one (W689 candidate 1; one type instead of one per verb).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Admitted<Row> {
+    /// The intent transaction committed in this call and consumed the nonce.
+    /// Still not permission to execute a host effect.
+    New(Row),
+    /// Stored status only, also after expiry; never permission to repeat an effect.
+    Existing(Row),
+}
+
+impl<Row> Admitted<Row> {
+    /// The row, and whether it already existed.
+    pub fn into_row(self) -> (Row, bool) {
+        match self {
+            Self::New(row) => (row, false),
+            Self::Existing(row) => (row, true),
+        }
+    }
 }
 
 /// Process-locked fixture ledger. `initialize`/`open` refuse root; only the
@@ -455,25 +462,7 @@ impl FixtureJournal {
     /// W372: an `adopted` provision row belongs to its re-adoption's
     /// admission and is not counted again.
     pub fn admission_count(&self) -> Result<u64, JournalError> {
-        let count: i64 = self
-            .connection
-            .query_row(
-                "SELECT (SELECT count(*) FROM operations) + (SELECT count(*) FROM provisions WHERE state<>'adopted') \
-                 + (SELECT count(*) FROM captures) + (SELECT count(*) FROM restore_probes) \
-                 + (SELECT count(*) FROM readoptions) \
-                 + (SELECT count(*) FROM import_scrubs WHERE origin='signed') \
-                 + (SELECT count(*) FROM certificates) + (SELECT count(*) FROM retirements) \
-                 + (SELECT count(*) FROM updates) + (SELECT count(*) FROM deletions) \
-                 + (SELECT count(*) FROM quota_changes) + (SELECT count(*) FROM clone_scrub_grants) \
-                 + (SELECT count(*) FROM site_restores) + (SELECT count(*) FROM dns_imports) \
-                 + (SELECT count(*) FROM dns_changes) + (SELECT count(*) FROM app_releases) \
-                 + (SELECT count(*) FROM app_lifecycles) \
-                 + (SELECT count(*) FROM credential_rotations)",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(storage::unavailable)?;
-        u64::try_from(count).map_err(storage::unavailable)
+        storage::admission_count(&self.connection)
     }
 
     /// Returns actual connection PRAGMA values for evidence and diagnostics.
@@ -857,7 +846,7 @@ impl FixtureJournal {
         &mut self,
         intent: &Intent,
         now: Timestamp,
-    ) -> Result<RecordResult, JournalError> {
+    ) -> Result<Admitted<Operation>, JournalError> {
         self.record_intent_with(intent, now, |_| Ok(()))
     }
 
@@ -868,7 +857,7 @@ impl FixtureJournal {
         intent: &Intent,
         now: Timestamp,
         extra: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<(), JournalError>,
-    ) -> Result<RecordResult, JournalError> {
+    ) -> Result<Admitted<Operation>, JournalError> {
         let signed = self.take_signed(&signed::Expected {
             plan_digest: &intent.plan_digest,
             grant_digest: &intent.grant_digest,
@@ -886,7 +875,7 @@ impl FixtureJournal {
             .map_err(storage::unavailable)?;
         if let Some(existing) = storage::by_key(&transaction, &intent.idempotency_key)? {
             return if &existing.intent == intent {
-                Ok(RecordResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(JournalError::Conflict)
             };
@@ -931,7 +920,7 @@ impl FixtureJournal {
             )
             .map_err(storage::unavailable)?;
         transaction.commit().map_err(storage::unavailable)?;
-        Ok(RecordResult::New(Operation {
+        Ok(Admitted::New(Operation {
             intent: intent.clone(),
             state: RecordedState::Intent,
             effect_attempted: false,

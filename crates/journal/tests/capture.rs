@@ -1,7 +1,7 @@
 //! Backup capture journal behavior on real SQLite; no host effects.
 use rustiron_contracts::approval::{Hostname, SiteId};
 use rustiron_journal::{
-    CaptureIntent, CaptureMethod, CaptureResult, CaptureState, FixtureJournal, JournalError,
+    Admitted, CaptureIntent, CaptureMethod, CaptureState, FixtureJournal, JournalError,
     ProvisionIntent, ProvisionStep,
 };
 use std::{
@@ -136,7 +136,7 @@ fn backup_policy_binding_survives_reopen_and_is_absent_after_v12_migration() {
                 &digest('f')
             )
             .unwrap(),
-        CaptureResult::Existing(status)
+        Admitted::Existing(status)
     );
     let count = ledger.admission_count().unwrap();
     drop(ledger);
@@ -184,7 +184,7 @@ fn a_capture_needs_a_succeeded_provision_and_runs_one_at_a_time() {
                 &digest('e')
             )
             .unwrap(),
-        CaptureResult::New(_)
+        Admitted::New(_)
     ));
     assert!(matches!(
         ledger
@@ -196,7 +196,7 @@ fn a_capture_needs_a_succeeded_provision_and_runs_one_at_a_time() {
                 &digest('e')
             )
             .unwrap(),
-        CaptureResult::Existing(_)
+        Admitted::Existing(_)
     ));
     assert_eq!(
         ledger
@@ -470,7 +470,7 @@ fn new_capture_method_survives_restart_and_replay() {
         .unwrap();
     drop(ledger);
     let mut ledger = state.open().unwrap();
-    let CaptureResult::Existing(existing) = ledger
+    let Admitted::Existing(existing) = ledger
         .record_capture(
             &intent,
             time(1001),
@@ -507,7 +507,7 @@ fn migration_preserves_legacy_capture_without_inventing_its_method() {
     state.sql(&format!("{TO_V16} DROP TABLE page_cache_optouts; DROP TABLE page_cache_optins; DROP TABLE capture_unclaimed; DROP TABLE capture_backup_policy; DROP TABLE probe_backup_policy; DROP TABLE capture_freeze; DROP TABLE capture_consistency; DROP TABLE capture_manifest; DROP TABLE capture_extent; DROP TABLE capture_retention; DROP TABLE capture_methods; PRAGMA user_version=6;"));
     let mut migrated =
         FixtureJournal::migrate(&state.0, id("host_fixture"), id("epoch_fixture")).unwrap();
-    let CaptureResult::Existing(existing) = migrated
+    let Admitted::Existing(existing) = migrated
         .record_capture(
             &intent,
             time(1003),
@@ -566,7 +566,7 @@ fn method_write_failure_rolls_back_capture_intent_and_nonce() {
             None,
             &digest('e')
         ),
-        Ok(CaptureResult::New(_))
+        Ok(Admitted::New(_))
     ));
 }
 
@@ -600,7 +600,7 @@ fn a_new_capture_stores_retention_and_a_legacy_row_does_not_gain_it() {
             .err(),
         Some(JournalError::Conflict)
     );
-    let CaptureResult::New(created) = ledger
+    let Admitted::New(created) = ledger
         .record_capture(
             &intent,
             time(1000),
@@ -632,7 +632,7 @@ fn a_new_capture_stores_retention_and_a_legacy_row_does_not_gain_it() {
     state.sql(&format!("{TO_V16} DROP TABLE page_cache_optouts; DROP TABLE page_cache_optins; DROP TABLE capture_unclaimed; DROP TABLE capture_backup_policy; DROP TABLE probe_backup_policy; DROP TABLE capture_freeze; DROP TABLE capture_consistency; DROP TABLE capture_manifest; DROP TABLE capture_extent; DROP TABLE capture_retention; PRAGMA user_version=7;"));
     let mut migrated =
         FixtureJournal::migrate(&state.0, id("host_fixture"), id("epoch_fixture")).unwrap();
-    let CaptureResult::Existing(existing) = migrated
+    let Admitted::Existing(existing) = migrated
         .record_capture(
             &intent,
             time(1003),

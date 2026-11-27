@@ -4,9 +4,9 @@
 //! step. Real SQLite; no host effects.
 use rustiron_contracts::approval::{Hostname, SiteId, SnapshotId};
 use rustiron_journal::{
-    CaptureConsistency, CaptureIntent, CaptureManifest, CaptureMethod, CloneFacts,
-    CloneScrubIntent, CloneScrubResult, CloneStep, FixtureJournal, JournalError, ProvisionIntent,
-    ProvisionResult, ProvisionState, ProvisionStep, StepState,
+    Admitted, CaptureConsistency, CaptureIntent, CaptureManifest, CaptureMethod, CloneFacts,
+    CloneScrubIntent, CloneStep, FixtureJournal, JournalError, ProvisionIntent, ProvisionState,
+    ProvisionStep, StepState,
 };
 use std::{
     fs,
@@ -192,7 +192,7 @@ fn a_clone_reserves_its_target_with_the_recorded_capture_and_replays_exactly() {
     source(&mut ledger);
     let intent = target();
     let created = ledger.record_clone(&intent, &facts(), time(1100)).unwrap();
-    let ProvisionResult::New(provision) = created else {
+    let Admitted::New(provision) = created else {
         panic!("expected a new clone provision");
     };
     assert_eq!(provision.state, ProvisionState::Running);
@@ -201,7 +201,7 @@ fn a_clone_reserves_its_target_with_the_recorded_capture_and_replays_exactly() {
     assert!(stored.steps.is_empty());
     assert!(matches!(
         ledger.record_clone(&intent, &facts(), time(1101)),
-        Ok(ProvisionResult::Existing(_))
+        Ok(Admitted::Existing(_))
     ));
     // The same retry key with other facts, or as a plain provision, is a conflict.
     let other = CloneFacts {
@@ -583,7 +583,7 @@ fn a_signed_scrub_opens_the_scrub_of_an_interrupted_clone() {
         Some(JournalError::Consumed)
     );
     let first = signed_scrub(3, "stage9");
-    let CloneScrubResult::New(open) = ledger.record_clone_scrub(&first, time(1200)).unwrap() else {
+    let Admitted::New(open) = ledger.record_clone_scrub(&first, time(1200)).unwrap() else {
         panic!("a new signed scrub");
     };
     assert_eq!(open.state, StepState::Intent);
@@ -609,7 +609,7 @@ fn a_signed_scrub_opens_the_scrub_of_an_interrupted_clone() {
     );
     assert_eq!(
         ledger.record_clone_scrub(&first, time(1300)).unwrap(),
-        CloneScrubResult::Existing(failed)
+        Admitted::Existing(failed)
     );
     // A retry opens the failed scrub again; done closes both.
     let retry = signed_scrub(5, "stage9");

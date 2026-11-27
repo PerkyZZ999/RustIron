@@ -11,7 +11,7 @@ use rustiron_contracts::{
     approval::{Hostname, Sha256Digest, SiteId},
 };
 use rustiron_journal::{
-    CaptureIntent, CaptureMethod, CaptureResult, CaptureState, FixtureJournal, ProvisionIntent,
+    Admitted, CaptureIntent, CaptureMethod, CaptureState, FixtureJournal, ProvisionIntent,
     ProvisionStep,
 };
 
@@ -119,7 +119,7 @@ fn admits_next(journal: &mut FixtureJournal) -> bool {
             Some(30),
             &digest('e'),
         ),
-        Ok(CaptureResult::New(_))
+        Ok(Admitted::New(_))
     )
 }
 

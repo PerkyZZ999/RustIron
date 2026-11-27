@@ -101,14 +101,7 @@ pub(crate) fn write(
         Ok(()) | Err(rustix::io::Errno::NOENT) => {}
         Err(_) => return Err(ExecutorError::Unavailable),
     }
-    let fd = fs::openat(
-        &directory,
-        TEMPORARY,
-        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::from_raw_mode(0o600),
-    )
-    .map_err(|_| ExecutorError::Unavailable)?;
-    let mut file = File::from(fd);
+    let mut file = create_temporary(&directory)?;
     file.write_all(
         format!(
             "{MAGIC}\n{}\n{}\n{}\n",
@@ -126,11 +119,24 @@ pub(crate) fn write(
     fs::fsync(&directory).map_err(|_| ExecutorError::Unavailable)
 }
 
+/// Creates the temporary mark file. Any entry already at the name, a link
+/// included, is refused, never followed or reused.
+fn create_temporary(directory: impl rustix::fd::AsFd) -> Result<File, ExecutorError> {
+    fs::openat(
+        directory,
+        TEMPORARY,
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o600),
+    )
+    .map(File::from)
+    .map_err(|_| ExecutorError::Unavailable)
+}
+
 #[cfg(test)]
 mod tests {
     use rustiron_contracts::Id;
 
-    use super::{Mark, check, parse};
+    use super::{Mark, TEMPORARY, check, create_temporary, parse};
     use crate::ExecutorError;
 
     fn id(text: &str) -> Id {
@@ -172,6 +178,32 @@ mod tests {
             check(Some(&mark(0)), &id("host_other"), &id("epoch_1"), 5),
             Err(ExecutorError::JournalRollback)
         );
+    }
+
+    /// W705 (mutation campaign): an entry planted at the temporary name
+    /// between the unlink and the open is refused: a link is not followed
+    /// and an existing file is not reused.
+    #[test]
+    fn the_temporary_file_is_created_new_and_never_through_a_link() {
+        let dir = std::env::temp_dir().join(format!("ri-mark-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let open = || std::fs::File::open(&dir).unwrap();
+        let target = dir.join("target");
+        std::fs::write(&target, b"").unwrap();
+        std::os::unix::fs::symlink(&target, dir.join(TEMPORARY)).unwrap();
+        assert_eq!(
+            create_temporary(open()).err(),
+            Some(ExecutorError::Unavailable)
+        );
+        std::fs::remove_file(dir.join(TEMPORARY)).unwrap();
+        std::fs::write(dir.join(TEMPORARY), b"").unwrap();
+        assert_eq!(
+            create_temporary(open()).err(),
+            Some(ExecutorError::Unavailable)
+        );
+        std::fs::remove_file(dir.join(TEMPORARY)).unwrap();
+        assert!(create_temporary(open()).is_ok());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

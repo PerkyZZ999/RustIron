@@ -2,8 +2,8 @@
 //! site at a time. Real SQLite; no host effects.
 use rustiron_contracts::approval::{Hostname, SiteId};
 use rustiron_journal::{
-    CertificateIntent, CertificateResult, CertificateState, FixtureJournal, JournalError,
-    ProvisionIntent, ProvisionStep,
+    Admitted, CertificateIntent, CertificateState, FixtureJournal, JournalError, ProvisionIntent,
+    ProvisionStep,
 };
 use std::{
     fs,
@@ -105,12 +105,12 @@ fn an_issuance_is_admitted_once_installed_and_served_from_the_journal() {
     let first = certificate(&one, 1);
     assert!(matches!(
         ledger.record_certificate(&first, time(1100)).unwrap(),
-        CertificateResult::New(row) if row.state == CertificateState::Intent
+        Admitted::New(row) if row.state == CertificateState::Intent
     ));
     assert_eq!(ledger.admission_count().unwrap(), before + 1);
     assert!(matches!(
         ledger.record_certificate(&first, time(1101)).unwrap(),
-        CertificateResult::Existing(_)
+        Admitted::Existing(_)
     ));
     let mut other = first.clone();
     other.plan_digest = digest('9');
@@ -226,7 +226,7 @@ fn a_v22_journal_migrates_to_v23() {
         ledger
             .record_certificate(&certificate(&one, 1), time(1100))
             .unwrap(),
-        CertificateResult::New(_)
+        Admitted::New(_)
     ));
     drop(ledger);
     assert!(state.open().is_ok());

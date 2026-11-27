@@ -78,7 +78,7 @@ impl Standing {
             "checked_at": now,
             "plan_digest": self.plan.digest(),
             "grant_sha256": self.grant.sha256(),
-            "site_ids": self.grant.site_ids().iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            "site_ids": self.grant.site_ids().iter().map(rustiron_contracts::approval::SiteId::as_str).collect::<Vec<_>>(),
             "schedule": {
                 "first_window_start": schedule.first_window_start,
                 "period_seconds": schedule.period_seconds,
@@ -149,8 +149,7 @@ pub(crate) fn runs(dir: &Path, output: Output) -> ExitCode {
 /// One coordinator read; `Err` carries the public error code.
 fn read(socket: &Path, command: ReadCommand) -> Result<ReadData, ErrorCode> {
     let request = Request {
-        request_id: Id::try_from(format!("cli-{}", std::process::id()))
-            .expect("PID IDs are bounded ASCII"),
+        request_id: crate::cli_request_id(""),
         command,
     };
     match crate::exchange(socket, &request)? {

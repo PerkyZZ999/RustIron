@@ -258,7 +258,7 @@ fn an_exact_clone_records_its_reservation_and_source_before_any_effect() {
     let mut executor = Executor::open(fixture.anchor.clone()).unwrap();
     assert!(matches!(
         executor.site_clone(&request),
-        Ok(rustiron_journal::ProvisionResult::Existing(_))
+        Ok(rustiron_journal::Admitted::Existing(_))
     ));
     let other = AdmissionRequest {
         operation_id: identifier("op_site_clone2"),

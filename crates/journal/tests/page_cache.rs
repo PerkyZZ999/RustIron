@@ -11,7 +11,7 @@
 //! same transaction. The opt-out must name the recipe of the site's opt-in.
 use rustiron_contracts::approval::{Hostname, SiteId};
 use rustiron_journal::{
-    FixtureJournal, JournalError, ProvisionIntent, ProvisionStep, RecordResult, RecordedState,
+    Admitted, FixtureJournal, JournalError, ProvisionIntent, ProvisionStep, RecordedState,
 };
 use std::{
     fs,
@@ -133,7 +133,7 @@ fn a_v14_journal_migrates_and_keeps_its_operations() {
         FixtureJournal::migrate(&state.0, id("host_fixture"), id("epoch_fixture")).unwrap();
     assert!(matches!(
         migrated.record_intent(&first, time(1001)).unwrap(),
-        RecordResult::Existing(existing) if existing.state == RecordedState::Intent
+        Admitted::Existing(existing) if existing.state == RecordedState::Intent
     ));
     assert_eq!(migrated.admission_count().unwrap(), 2);
     assert!(migrated.page_cache_sites().unwrap().is_empty());
@@ -164,13 +164,13 @@ fn an_opt_in_needs_a_succeeded_provision_and_counts_only_after_success() {
         ledger
             .record_page_cache_intent(&first, &blog1, RECIPE, time(1000))
             .unwrap(),
-        RecordResult::New(_)
+        Admitted::New(_)
     ));
     assert!(matches!(
         ledger
             .record_page_cache_intent(&first, &blog1, RECIPE, time(1000))
             .unwrap(),
-        RecordResult::Existing(_)
+        Admitted::Existing(_)
     ));
     assert_eq!(
         ledger.page_cache_site(&first.operation_id).unwrap(),
@@ -239,7 +239,7 @@ fn a_compensated_opt_in_does_not_count_and_does_not_block_a_new_plan() {
         ledger
             .record_page_cache_intent(&second, &blog1, RECIPE, time(1002))
             .unwrap(),
-        RecordResult::New(_)
+        Admitted::New(_)
     ));
 }
 
@@ -301,7 +301,7 @@ fn a_v15_journal_migrates_in_place_and_keeps_its_opt_ins() {
         migrated
             .record_page_cache_opt_out_intent(&other(2, "out"), &site("blog1"), RECIPE, time(1002))
             .unwrap(),
-        RecordResult::New(_)
+        Admitted::New(_)
     ));
 }
 
@@ -342,13 +342,13 @@ fn an_opt_out_needs_the_site_opted_in_and_a_later_opt_in_re_enables_it() {
         ledger
             .record_page_cache_opt_out_intent(&out, &blog1, RECIPE, time(1001))
             .unwrap(),
-        RecordResult::New(_)
+        Admitted::New(_)
     ));
     assert!(matches!(
         ledger
             .record_page_cache_opt_out_intent(&out, &blog1, RECIPE, time(1001))
             .unwrap(),
-        RecordResult::Existing(_)
+        Admitted::Existing(_)
     ));
     assert_eq!(
         ledger.page_cache_opt_out_site(&out.operation_id).unwrap(),
@@ -378,7 +378,7 @@ fn an_opt_out_needs_the_site_opted_in_and_a_later_opt_in_re_enables_it() {
         ledger
             .record_page_cache_intent(&again, &blog1, RECIPE, time(1003))
             .unwrap(),
-        RecordResult::New(_)
+        Admitted::New(_)
     ));
     succeed(&mut ledger, &again);
     assert_eq!(ledger.page_cache_sites().unwrap(), vec![blog1.clone()]);
@@ -422,7 +422,7 @@ fn a_compensated_opt_out_keeps_the_site_opted_in() {
                 time(1003)
             )
             .unwrap(),
-        RecordResult::New(_)
+        Admitted::New(_)
     ));
 }
 
@@ -578,13 +578,13 @@ fn a_cache_on_opt_in_records_its_recipe_and_its_opt_out_must_name_it() {
         ledger
             .record_page_cache_intent(&first, &blog1, CACHE_ON, time(1000))
             .unwrap(),
-        RecordResult::New(_)
+        Admitted::New(_)
     ));
     assert!(matches!(
         ledger
             .record_page_cache_intent(&first, &blog1, CACHE_ON, time(1000))
             .unwrap(),
-        RecordResult::Existing(_)
+        Admitted::Existing(_)
     ));
     assert_eq!(
         ledger.page_cache_site_recipe(&blog1).unwrap(),
@@ -623,7 +623,7 @@ fn a_cache_on_opt_in_records_its_recipe_and_its_opt_out_must_name_it() {
         ledger
             .record_page_cache_opt_out_intent(&out, &blog1, CACHE_ON, time(1001))
             .unwrap(),
-        RecordResult::New(_)
+        Admitted::New(_)
     ));
     assert_eq!(records(&out.operation_id).page_cache_recipe, Some(CACHE_ON));
     succeed(&mut ledger, &out);

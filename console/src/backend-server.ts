@@ -169,14 +169,37 @@ function mapCoordinatorErrorStatus(code: CoordinatorErrorCode): number {
   }
 }
 
+/**
+ * W739 (QA-08): the HTTP status of an error inside a coordinator reply
+ * (`ErrorCode` in crates/contracts/src/error.rs). A dependency outage is a
+ * server condition, not a client mistake.
+ */
+export function replyErrorStatus(code: string): number {
+  switch (code) {
+    case "NOT_FOUND":
+    case "CURSOR_EXPIRED":
+      return 404;
+    case "INVALID_REQUEST":
+    case "REQUEST_TOO_LARGE":
+      return 400;
+    case "UNAUTHORIZED_PEER":
+      return 403;
+    case "DEPENDENCY_UNAVAILABLE":
+      return 503;
+    default:
+      // UNSUPPORTED_VERSION, RESPONSE_TOO_LARGE, or an unknown code: the
+      // Console and the coordinator disagree.
+      return 502;
+  }
+}
+
 function mapCoordinatorResult(result: CoordinatorResult): Response {
   if (!result.ok) {
     return jsonReply(mapCoordinatorErrorStatus(result.code), { error: result.code });
   }
   if (result.response.status === "error") {
-    const code = result.response.error?.code ?? "COORDINATOR_ERROR";
-    const status = code === "NOT_FOUND" || code === "CURSOR_EXPIRED" ? 404 : 400;
-    return jsonReply(status, { error: code, response: result.response });
+    const { code } = result.response.error;
+    return jsonReply(replyErrorStatus(code), { error: code, response: result.response });
   }
   return jsonReply(200, result.response);
 }
@@ -290,6 +313,13 @@ const DIST_MIME_TYPES: Record<string, string> = {
   ".woff2": "font/woff2",
 };
 
+/**
+ * W719: a top-level path that names a built asset. Every build output sits at
+ * the top of `dist/`; page addresses that contain a dot (such as a hostname)
+ * are always nested, so they still get `index.html`.
+ */
+const TOP_LEVEL_ASSET = /^\/[^/]+\.(?:js|css|map|gz|svg|png|ico|json|webmanifest|woff2|txt)$/i;
+
 function isSafeRelativeAsset(rel: string): boolean {
   return Boolean(rel) && !rel.includes("\0") && !rel.includes("..");
 }
@@ -305,6 +335,32 @@ function resolveDistFile(
   const info = lstatSync(candidate);
   if (!info.isFile() || info.isSymbolicLink()) return null;
   return { filePath: candidate, immutable: /^chunk-[a-z0-9]+\.(js|css)$/i.test(rel) };
+}
+
+/** True when `accept-encoding` lists gzip without `q=0`. */
+function acceptsGzip(req: Request): boolean {
+  return (req.headers.get("accept-encoding") ?? "").split(",").some((part) => {
+    const [coding, ...params] = part.trim().toLowerCase().split(";");
+    return coding === "gzip" && !params.some((p) => /^\s*q=0(\.0*)?\s*$/.test(p));
+  });
+}
+
+/** W683: the build's gzip sidecar for a hashed chunk, when the client accepts it. */
+function gzipSidecar(distRoot: string, pathname: string, req: Request): string | null {
+  if (!acceptsGzip(req)) return null;
+  return resolveDistFile(distRoot, `${pathname}.gz`)?.filePath ?? null;
+}
+
+/**
+ * W723: the Console port from `RUSTIRON_CONSOLE_PORT`. An unset or empty value
+ * is the default 4319, as is a value that is not a whole number from 0 to
+ * 65535. Port 0 still asks for a free port on purpose.
+ */
+export function consolePort(raw: string | undefined): number {
+  const text = raw?.trim();
+  if (!text) return 4319;
+  const port = Number(text);
+  return Number.isInteger(port) && port >= 0 && port <= 65535 ? port : 4319;
 }
 
 /** W651: serves built production SPA & hashed assets with full D-090 Host + CSP/HSTS headers. */
@@ -329,11 +385,25 @@ export function createProdDistHandler(options: {
       const mime =
         DIST_MIME_TYPES[extname(hit.filePath).toLowerCase()] ?? "application/octet-stream";
       const headers: Record<string, string> = { "content-type": mime };
-      if (hit.immutable) headers["cache-control"] = "public, max-age=31536000, immutable";
-      return withD090Headers(new Response(readFileSync(hit.filePath), { headers }), {
+      let body = hit.filePath;
+      if (hit.immutable) {
+        headers["cache-control"] = "public, max-age=31536000, immutable";
+        headers.vary = "accept-encoding";
+        const gz = gzipSidecar(distRoot, pathname, req);
+        if (gz) {
+          body = gz;
+          headers["content-encoding"] = "gzip";
+        }
+      }
+      return withD090Headers(new Response(readFileSync(body), { headers }), {
         hsts,
         preserveCacheControl: hit.immutable,
       });
+    }
+    // W719: a missing asset (an old chunk after an update) is 404, never the
+    // app's HTML, so the lazy route loader sees a failed import and reloads once.
+    if (TOP_LEVEL_ASSET.test(pathname)) {
+      return withD090Headers(new Response("Not Found", { status: 404 }), { hsts });
     }
     return withD090Headers(
       new Response(readFileSync(indexPath), {

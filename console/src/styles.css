@@ -616,3 +616,97 @@
   background: var(--surface);
   border-color: var(--border);
 }
+
+/* W695 (v0.2 pass 18): route and drawer view transitions. Only the page
+   content takes part in a route transition; the shell stays still. */
+.page {
+  view-transition-name: page;
+}
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+}
+/* The page animates only in a typed route transition, never when a drawer closes. */
+::view-transition-group(page),
+::view-transition-old(page),
+::view-transition-new(page) {
+  animation: none;
+}
+/* One selector per type: the bundler's CSS step drops the list form. */
+html:active-view-transition-type(nav-forward)::view-transition-old(page),
+html:active-view-transition-type(nav-back)::view-transition-old(page),
+html:active-view-transition-type(nav-lateral)::view-transition-old(page) {
+  animation: 120ms ease-in both vt-fade-out;
+}
+/* One selector per type: the bundler's CSS step drops the list form. */
+html:active-view-transition-type(nav-forward)::view-transition-new(page),
+html:active-view-transition-type(nav-back)::view-transition-new(page),
+html:active-view-transition-type(nav-lateral)::view-transition-new(page) {
+  animation: 180ms ease-out both vt-fade-in;
+}
+html:active-view-transition-type(nav-forward)::view-transition-old(page) {
+  animation-name: vt-out-left;
+}
+html:active-view-transition-type(nav-forward)::view-transition-new(page) {
+  animation-name: vt-in-right;
+}
+html:active-view-transition-type(nav-back)::view-transition-old(page) {
+  animation-name: vt-out-right;
+}
+html:active-view-transition-type(nav-back)::view-transition-new(page) {
+  animation-name: vt-in-left;
+}
+::view-transition-old(.drawer-out) {
+  animation: 200ms ease-in both vt-drawer-out;
+}
+@keyframes vt-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes vt-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes vt-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+@keyframes vt-out-left {
+  to {
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+}
+@keyframes vt-in-left {
+  from {
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+}
+@keyframes vt-out-right {
+  to {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+@keyframes vt-drawer-out {
+  to {
+    transform: translateX(100%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
+:root[data-motion="reduce"]::view-transition-group(*),
+:root[data-motion="reduce"]::view-transition-old(*),
+:root[data-motion="reduce"]::view-transition-new(*) {
+  animation: none !important;
+}

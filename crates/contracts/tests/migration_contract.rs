@@ -112,7 +112,8 @@ fn a_requested_hostname_renames_the_site() {
     let plan = plan_migration(&inventory, &renamed, &profile(), &empty_state()).unwrap();
     assert_eq!(plan.hostname().as_str(), "copy.example.net");
     assert_eq!(
-        plan.source_hostname().map(|h| h.as_str()),
+        plan.source_hostname()
+            .map(rustiron_contracts::approval::Hostname::as_str),
         Some("blog.example.test")
     );
     let tail: Vec<_> = plan.steps().iter().rev().take(2).collect();

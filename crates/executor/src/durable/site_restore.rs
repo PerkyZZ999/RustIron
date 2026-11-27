@@ -1,15 +1,15 @@
 //! D-089 (W543): admission of a signed `site_restore` and its attempts.
 
 use rustiron_contracts::Id;
-use rustiron_journal::{RestoreFrom, RestoreResult, RestoreState, SiteRestore, StepState};
 
-use super::{Executor, signed_inputs};
+use super::Executor;
 use crate::{
     AdmissionRequest, ExecutorError,
     admin_helper::{self, AdminRequest, AdminStep},
     ols,
     provision::SiteLayout,
 };
+use rustiron_journal::{Admitted, RestoreFrom, RestoreState, SiteRestore, StepState};
 
 impl Executor {
     /// Admits one signed restore of a live site from its own capture, then
@@ -22,53 +22,50 @@ impl Executor {
     pub fn restore_site(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<RestoreResult, ExecutorError> {
+    ) -> Result<Admitted<SiteRestore>, ExecutorError> {
         let (intent, destination_digest) = crate::verified_restore(&self.anchor, request)?;
-        self.check_identity(&intent.host_id, &intent.host_epoch)?;
-        let now = request.now.ok_or(ExecutorError::TimeDenied)?;
-        if self
-            .journal
-            .site_restore_status(&intent.operation_id)?
-            .is_none()
-        {
-            if !self.journal.site_restore_basis_holds(&intent, now)? {
-                return Err(ExecutorError::PreconditionChanged);
-            }
-            // Both captures were written to the destination as it is
-            // enrolled now, so the safety capture can always come back.
-            for operation in [
-                &intent.capture_operation_id,
-                &intent.safety_capture_operation_id,
-            ] {
-                let capture = self
-                    .journal
-                    .capture_status(operation)?
-                    .ok_or(ExecutorError::PreconditionChanged)?;
-                if capture.backup_policy_digest.as_ref() != Some(&destination_digest) {
+        let restore = match self.admit_signed(
+            request,
+            (&intent.host_id, &intent.host_epoch),
+            |journal| Ok(journal.site_restore_status(&intent.operation_id)?.is_some()),
+            |executor, now| {
+                if !executor.journal.site_restore_basis_holds(&intent, now)? {
                     return Err(ExecutorError::PreconditionChanged);
                 }
-            }
-            let include = ols::open_include()?;
-            let live = ols::observe(&include)?;
-            if !ols::managed_accounts(&include, &live.0)?
-                .contains(&SiteLayout::derive(&intent.site_id).account)
-            {
-                return Err(ExecutorError::PreconditionChanged);
-            }
-            // Only the admin helper runs restore steps; without it nothing
-            // is recorded.
-            if self.anchor.admin_socket.is_none() {
-                return Err(ExecutorError::Unavailable);
-            }
-        }
-        match self.admit(signed_inputs(request)?, |journal| {
-            journal.record_site_restore(&intent, now)
-        })? {
-            RestoreResult::Existing(existing) => Ok(RestoreResult::Existing(existing)),
-            RestoreResult::New(restore) => self
-                .run_restore(&restore.operation_id)
-                .map(RestoreResult::New),
-        }
+                // Both captures were written to the destination as it is
+                // enrolled now, so the safety capture can always come back.
+                for operation in [
+                    &intent.capture_operation_id,
+                    &intent.safety_capture_operation_id,
+                ] {
+                    let capture = executor
+                        .journal
+                        .capture_status(operation)?
+                        .ok_or(ExecutorError::PreconditionChanged)?;
+                    if capture.backup_policy_digest.as_ref() != Some(&destination_digest) {
+                        return Err(ExecutorError::PreconditionChanged);
+                    }
+                }
+                let include = ols::open_include()?;
+                let live = ols::observe(&include)?;
+                if !ols::managed_accounts(&include, &live.0)?
+                    .contains(&SiteLayout::derive(&intent.site_id).account)
+                {
+                    return Err(ExecutorError::PreconditionChanged);
+                }
+                // Only the admin helper runs restore steps; without it nothing
+                // is recorded.
+                if executor.anchor.admin_socket.is_none() {
+                    return Err(ExecutorError::Unavailable);
+                }
+                Ok(())
+            },
+            |journal, now| journal.record_site_restore(&intent, now),
+        )? {
+            Admitted::Existing(existing) => return Ok(Admitted::Existing(existing)),
+            Admitted::New(restore) => restore,
+        };
+        self.run_restore(&restore.operation_id).map(Admitted::New)
     }
 
     /// Runs the open attempt's remaining steps: each step's intent is

@@ -66,7 +66,7 @@ const fn runtime_trusted_dir(runtime: AppRuntime) -> &'static str {
 /// Runtime CLI argument that loads `private/app.env` inside the site account's
 /// own process so PID 1 (`init_t:s0`) never reads MCS-labeled tenant secrets
 /// (W599-F2).
-pub(crate) fn runtime_env_arg(runtime: AppRuntime, root: &Path) -> String {
+fn runtime_env_arg(runtime: AppRuntime, root: &Path) -> String {
     let env_path = root.join("private").join("app.env");
     let env_str = env_path.to_string_lossy();
     match runtime {
@@ -170,7 +170,7 @@ pub(crate) fn run_credentials_step(
 /// executable regular file inside its trusted binary directory. Allows a
 /// root-owned in-directory symlink such as AlmaLinux 10 `/usr/bin/node -> node-22`
 /// (W599-F1) while refusing any symlink escape outside the trusted directory.
-pub(crate) fn verify_runtime_binary(runtime: AppRuntime) -> Result<&'static str, ExecutorError> {
+fn verify_runtime_binary(runtime: AppRuntime) -> Result<&'static str, ExecutorError> {
     let path = runtime_binary(runtime);
     let expected_dir = Path::new(runtime_trusted_dir(runtime));
     let link_meta = fs::symlink_metadata(path).map_err(|_| ExecutorError::Unavailable)?;
@@ -191,7 +191,7 @@ pub(crate) fn verify_runtime_binary(runtime: AppRuntime) -> Result<&'static str,
 }
 
 /// Systemd backend unit name for `account` in slot `slot`.
-pub(crate) fn backend_unit_for_slot(account: &str, slot: AppSlot) -> String {
+fn backend_unit_for_slot(account: &str, slot: AppSlot) -> String {
     match slot {
         AppSlot::A => format!("rustiron-app@{account}.service"),
         AppSlot::B => format!("rustiron-app-b@{account}.service"),
@@ -207,7 +207,7 @@ pub(crate) const fn backend_prefix_for_slot(slot: AppSlot) -> &'static str {
 }
 
 /// Systemd frontend SSR unit name for `account` in slot `slot` (`fullstack_dual_ssr`).
-pub(crate) fn web_unit_for_slot(account: &str, slot: AppSlot) -> String {
+fn web_unit_for_slot(account: &str, slot: AppSlot) -> String {
     match slot {
         AppSlot::A => format!("rustiron-app-web@{account}.service"),
         AppSlot::B => format!("rustiron-app-web-b@{account}.service"),
@@ -223,7 +223,7 @@ pub(crate) const fn web_prefix_for_slot(slot: AppSlot) -> &'static str {
 }
 
 /// Effective backend port for `slot`.
-pub(crate) fn backend_port_for_slot(
+fn backend_port_for_slot(
     facts: &AppFacts,
     spec: Option<&AppFullstackSpec>,
     slot: AppSlot,
@@ -237,10 +237,7 @@ pub(crate) fn backend_port_for_slot(
 }
 
 /// Effective frontend SSR port for `slot` (`fullstack_dual_ssr`).
-pub(crate) fn frontend_port_for_slot(
-    spec: &AppFullstackSpec,
-    slot: AppSlot,
-) -> Result<u16, ExecutorError> {
+fn frontend_port_for_slot(spec: &AppFullstackSpec, slot: AppSlot) -> Result<u16, ExecutorError> {
     match slot {
         AppSlot::A => spec.frontend_port.ok_or(ExecutorError::BindingDenied),
         AppSlot::B => spec
@@ -250,7 +247,7 @@ pub(crate) fn frontend_port_for_slot(
 }
 
 /// Deterministic systemd drop-in (`10-rustiron-app.conf`) for `rustiron-app@` or `rustiron-app-b@`.
-pub(crate) fn render_app_slot_dropin(
+fn render_app_slot_dropin(
     root: &Path,
     facts: &AppFacts,
     runtime_bin: &str,
@@ -278,7 +275,7 @@ pub(crate) fn render_app_slot_dropin(
 }
 
 /// Deterministic systemd drop-in (`10-rustiron-app.conf`) for `rustiron-app@<account>.service`.
-pub(crate) fn render_app_dropin(
+fn render_app_dropin(
     root: &Path,
     facts: &AppFacts,
     runtime_bin: &str,
@@ -298,7 +295,7 @@ pub(crate) fn render_app_dropin(
 
 /// Deterministic systemd drop-in (`10-rustiron-app.conf`) for `rustiron-app-web@` or `rustiron-app-web-b@`
 /// (`fullstack_dual_ssr`).
-pub(crate) fn render_web_slot_dropin(
+fn render_web_slot_dropin(
     root: &Path,
     facts: &AppFacts,
     spec: &AppFullstackSpec,
@@ -330,7 +327,7 @@ pub(crate) fn render_web_slot_dropin(
 }
 
 /// Deterministic systemd drop-in (`10-rustiron-app.conf`) for `rustiron-app-worker@<account>.service`.
-pub(crate) fn render_worker_dropin(
+fn render_worker_dropin(
     root: &Path,
     facts: &AppFacts,
     worker_entrypoint: &str,
@@ -379,8 +376,8 @@ pub(crate) fn run_provision_step(
     facts: &AppFacts,
     spec: Option<&AppFullstackSpec>,
 ) -> Result<(), ExecutorError> {
-    let database = spec.map(|s| s.database).unwrap_or(AppDatabase::Sqlite);
-    let topology = spec.map(|s| s.topology).unwrap_or(AppTopology::BackendApi);
+    let database = spec.map_or(AppDatabase::Sqlite, |s| s.database);
+    let topology = spec.map_or(AppTopology::BackendApi, |s| s.topology);
     let is_static = topology == AppTopology::StaticSpa;
     match step {
         ProvisionStep::Recipe => {
@@ -555,7 +552,7 @@ pub(crate) fn run_provision_step(
 }
 
 /// Parsed, validated sorted per-file manifest (`<sha256>  <relative-path>`).
-pub(crate) fn parse_manifest(text: &str) -> Result<BTreeMap<String, String>, ExecutorError> {
+fn parse_manifest(text: &str) -> Result<BTreeMap<String, String>, ExecutorError> {
     let mut entries = BTreeMap::new();
     for line in text.lines() {
         if line.is_empty() {
@@ -587,10 +584,7 @@ pub(crate) fn parse_manifest(text: &str) -> Result<BTreeMap<String, String>, Exe
 
 /// Checks that every declared key in `required_keys` appears as a `KEY=...`
 /// assignment in `env_path`, without retaining or logging any secret value.
-pub(crate) fn verify_env_keys_present(
-    env_path: &Path,
-    required_keys: &[String],
-) -> Result<(), ExecutorError> {
+fn verify_env_keys_present(env_path: &Path, required_keys: &[String]) -> Result<(), ExecutorError> {
     if required_keys.is_empty() {
         return Ok(());
     }
@@ -812,13 +806,13 @@ fn sha256_file(path: &Path, max_bytes: u64) -> Result<(String, u64), ExecutorErr
 
 /// Verifies that the parsed manifest contains every required entrypoint or
 /// frontend index file for the site's enrolled topology (W659, D-102).
-pub(crate) fn verify_manifest_entrypoints(
+fn verify_manifest_entrypoints(
     entries: &BTreeMap<String, String>,
     facts: &AppFacts,
     spec: Option<&AppFullstackSpec>,
     migration_entrypoint: Option<&str>,
 ) -> Result<(), ExecutorError> {
-    let topology = spec.map(|s| s.topology).unwrap_or(AppTopology::BackendApi);
+    let topology = spec.map_or(AppTopology::BackendApi, |s| s.topology);
     match topology {
         AppTopology::StaticSpa => {
             let dir = spec
@@ -867,7 +861,7 @@ pub(crate) fn verify_manifest_entrypoints(
 
 /// Verifies the intake archive and manifest SHA-256 digests and `app.env` keys
 /// before committing or executing an `app_deploy`.
-pub(crate) fn verify_intake(
+fn verify_intake(
     intake_root: &Path,
     release: &AppRelease,
     facts: &AppFacts,
@@ -907,7 +901,7 @@ pub(crate) fn verify_intake(
 
 /// Parses an HTTP/1.x status line and accepts only `2xx` or `3xx`.
 #[cfg(test)]
-pub(crate) fn health_status_ok(response: &str) -> bool {
+fn health_status_ok(response: &str) -> bool {
     let Some(first) = response.lines().next() else {
         return false;
     };
@@ -971,7 +965,10 @@ pub(crate) fn probe_loopback_http(
 /// `PrivateNetwork=yes` is enforced; when `true` (MariaDB/PostgreSQL 18
 /// migrations), `IPAddressDeny=any` + `IPAddressAllow=127.0.0.1/32` permits
 /// loopback DB connectivity only while blocking all external networks.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the systemd-run properties are listed explicitly so each confinement choice is visible at the call site"
+)]
 fn run_confined_as_site(
     account: &str,
     selinux_context: Option<&str>,
@@ -1022,7 +1019,7 @@ fn run_confined_as_site(
 
 /// Walks `dir` verifying every unpacked file is regular, has no setuid/setgid,
 /// matches `expected` SHA-256 and counts, and returns total unpacked bytes.
-pub(crate) fn verify_unpacked_tree(
+fn verify_unpacked_tree(
     dir: &Path,
     expected: &BTreeMap<String, String>,
     expected_bytes: u64,
@@ -1090,48 +1087,71 @@ fn snapshot_mariadb_for_migration(account: &str, snap_dir: &Path) -> Result<(), 
         .map_err(|_| ExecutorError::StepFailed)?;
     let dump_path = snap_dir.join("pre-migrate.sql");
     let _ = fs::remove_file(&dump_path);
-    let dump = provision::spawn(
-        "/usr/bin/mariadb-dump",
-        &[
-            "--socket",
-            provision::DB_SOCKET,
-            "--single-transaction",
-            "--routines",
-            "--triggers",
-            "--add-drop-table",
-            "--",
-            account,
-        ],
-        true,
-        None,
-    )?;
-    let mut file = OpenOptions::new()
+    mariadb_dump_into(account, &dump_path, None)
+}
+
+/// W675: a consistent `mariadb-dump` of `account`'s database written straight
+/// into a new `O_CREAT|O_EXCL|O_NOFOLLOW` `0600` file at `path`, optionally
+/// fchowned to `owner`. The dump streams through the kernel: no 1 MiB capture
+/// cap, no UTF-8 requirement, and no copy in this process's memory.
+fn mariadb_dump_into(account: &str, path: &Path, owner: Option<u32>) -> Result<(), ExecutorError> {
+    let file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-        .open(&dump_path)
+        .open(path)
         .map_err(|_| ExecutorError::StepFailed)?;
-    file.write_all(dump.as_bytes())
-        .and_then(|()| file.sync_all())
+    if let Some(uid) = owner {
+        // W663-E2: fchown the descriptor; the folder may be site-writable.
+        rustix::fs::fchown(
+            &file,
+            Some(rustix::process::Uid::from_raw(uid)),
+            Some(rustix::process::Gid::from_raw(uid)),
+        )
+        .map_err(|_| ExecutorError::StepFailed)?;
+    }
+    let written = file
+        .try_clone()
         .map_err(|_| ExecutorError::StepFailed)
+        .and_then(|sink| {
+            provision::run_streaming(
+                "/usr/bin/mariadb-dump",
+                &[
+                    "--socket",
+                    provision::DB_SOCKET,
+                    "--single-transaction",
+                    "--routines",
+                    "--triggers",
+                    "--add-drop-table",
+                    "--",
+                    account,
+                ],
+                &[],
+                None,
+                Some(sink),
+            )
+        })
+        .and_then(|()| file.sync_all().map_err(|_| ExecutorError::StepFailed));
+    if written.is_err() {
+        let _ = fs::remove_file(path);
+    }
+    written
 }
 
 /// W658 (D-102 C2): restores a root-only pre-migration MariaDB SQL snapshot.
 fn restore_mariadb_snapshot(account: &str, snap_dir: &Path) -> Result<(), ExecutorError> {
     let dump_path = snap_dir.join("pre-migrate.sql");
-    let (mut file, _) =
+    let (file, _) =
         open_regular_nofollow(&dump_path, Some(0), true).map_err(|_| ExecutorError::StepFailed)?;
-    let mut sql = Vec::new();
-    file.read_to_end(&mut sql)
-        .map_err(|_| ExecutorError::StepFailed)?;
-    provision::spawn(
+    // W675: the verified root-owned snapshot is the client's stdin, unbuffered.
+    provision::run_streaming(
         provision::MARIADB,
         &["--batch", "--socket", provision::DB_SOCKET, account],
-        false,
-        Some(&sql),
+        &[],
+        Some(file),
+        None,
     )
-    .map(drop)
 }
 
 /// Runs one journaled step of an open `app_deploy` across all 4 D-102
@@ -1146,344 +1166,481 @@ pub(crate) fn run_deploy_step(
     previous_release_id: Option<&str>,
     blue_green_cutover: bool,
 ) -> Result<(), ExecutorError> {
-    let database = spec.map(|s| s.database).unwrap_or(AppDatabase::Sqlite);
-    let topology = spec.map(|s| s.topology).unwrap_or(AppTopology::BackendApi);
-    let is_static = topology == AppTopology::StaticSpa;
-    let current_slot = spec.map(|s| s.active_slot).unwrap_or(AppSlot::A);
-    let target_slot = if blue_green_cutover && spec.is_some_and(|s| s.blue_green) {
-        current_slot.opposite()
-    } else {
-        current_slot
-    };
-    let release_dir = layout.root.join("releases").join(&release.release_id);
-    let release_str = release_dir.to_string_lossy().into_owned();
-    let data_dir = layout.root.join("data");
-    let data_str = data_dir.to_string_lossy().into_owned();
-    let tmp_dir = layout.root.join("tmp");
-    let tmp_str = tmp_dir.to_string_lossy().into_owned();
-    let target_app_unit = backend_unit_for_slot(&layout.account, target_slot);
-    let target_web_unit = web_unit_for_slot(&layout.account, target_slot);
-    let current_app_unit = backend_unit_for_slot(&layout.account, current_slot);
-    let current_web_unit = web_unit_for_slot(&layout.account, current_slot);
-    let worker_unit = format!("rustiron-app-worker@{}.service", layout.account);
-    let is_dual_ssr = topology == AppTopology::FullstackDualSsr;
+    let d = Deploy::new(
+        layout,
+        facts,
+        spec,
+        release,
+        previous_release_id,
+        blue_green_cutover,
+    );
     match step {
-        AppReleaseStep::Unpack => {
-            let (bundle, entries) = verify_intake(
-                Path::new(crate::layout::APP_INTAKE_DIR),
-                release,
-                facts,
-                spec,
-                &layout.root,
-            )?;
-            let passwd = provision::read_etc("passwd")?;
-            let uid = provision::account_uid(&passwd, &layout.account)
-                .ok_or(ExecutorError::StepFailed)?;
-            if release_dir.exists() {
-                return Err(ExecutorError::PreconditionChanged);
-            }
-            fs::create_dir(&release_dir).map_err(|_| ExecutorError::StepFailed)?;
-            // W663: fchown through a no-follow descriptor; releases/ is site-owned.
-            let release_fd = rustix::fs::open(
-                &release_dir,
-                rustix::fs::OFlags::RDONLY
-                    | rustix::fs::OFlags::DIRECTORY
-                    | rustix::fs::OFlags::NOFOLLOW
-                    | rustix::fs::OFlags::CLOEXEC,
-                rustix::fs::Mode::empty(),
-            )
-            .map_err(|_| ExecutorError::StepFailed)?;
-            rustix::fs::fchown(
-                &release_fd,
-                Some(rustix::process::Uid::from_raw(uid)),
-                Some(rustix::process::Gid::from_raw(uid)),
-            )
-            .map_err(|_| ExecutorError::StepFailed)?;
-            let staged_bundle = tmp_dir.join(format!("bundle-{}.tar.gz", release.release_id));
-            // W663-E1: tmp/ is writable by the site, so a planted symlink or file
-            // here must never be followed: unlink the name, then create it
-            // O_EXCL|O_NOFOLLOW and fchown the new file.
-            let _ = fs::remove_file(&staged_bundle);
-            let (mut bundle_file, _) = open_regular_nofollow(&bundle, Some(0), false)?;
-            copy_verified_file(&mut bundle_file, &staged_bundle, 0o600, Some(uid))?;
-            let level = crate::capture::site_level(layout)?;
-            let unpack_ctx = format!("system_u:system_r:rustiron_unpack_t:{level}");
-            let staged_str = staged_bundle.to_string_lossy().into_owned();
-            let unpack_res = run_confined_as_site(
-                &layout.account,
-                Some(&unpack_ctx),
-                &[&release_str, &tmp_str],
-                &[],
-                facts.memory_max_mib,
-                facts.tasks_max,
-                false,
-                &[
-                    "/usr/bin/tar",
-                    "-xzf",
-                    &staged_str,
-                    "-C",
-                    &release_str,
-                    "--no-same-owner",
-                    "--no-same-permissions",
-                ],
-            );
-            let _ = fs::remove_file(&staged_bundle);
-            unpack_res?;
-            verify_unpacked_tree(&release_dir, &entries, release.total_bytes)?;
-            provision::output("/usr/bin/chmod", &["-R", "a-w", "--", &release_str])?;
-            provision::run("/usr/sbin/restorecon", &["-R", "--", &release_str])
+        AppReleaseStep::Unpack => deploy_unpack(&d),
+        AppReleaseStep::Migrate => deploy_migrate(&d),
+        AppReleaseStep::Activate => deploy_activate(&d),
+        AppReleaseStep::Health => deploy_health(&d),
+        AppReleaseStep::Rollback => deploy_rollback(&d),
+    }
+}
+
+/// The values every `app_deploy` step derives from its release (W701).
+struct Deploy<'a> {
+    layout: &'a SiteLayout,
+    facts: &'a AppFacts,
+    spec: Option<&'a AppFullstackSpec>,
+    release: &'a AppRelease,
+    previous_release_id: Option<&'a str>,
+    blue_green_cutover: bool,
+    database: AppDatabase,
+    is_static: bool,
+    current_slot: AppSlot,
+    target_slot: AppSlot,
+    is_dual_ssr: bool,
+    release_dir: PathBuf,
+    release_str: String,
+    data_dir: PathBuf,
+    data_str: String,
+    tmp_dir: PathBuf,
+    tmp_str: String,
+    target_app_unit: String,
+    target_web_unit: String,
+    current_app_unit: String,
+    current_web_unit: String,
+    worker_unit: String,
+}
+
+impl<'a> Deploy<'a> {
+    fn new(
+        layout: &'a SiteLayout,
+        facts: &'a AppFacts,
+        spec: Option<&'a AppFullstackSpec>,
+        release: &'a AppRelease,
+        previous_release_id: Option<&'a str>,
+        blue_green_cutover: bool,
+    ) -> Self {
+        let database = spec.map_or(AppDatabase::Sqlite, |s| s.database);
+        let topology = spec.map_or(AppTopology::BackendApi, |s| s.topology);
+        let is_static = topology == AppTopology::StaticSpa;
+        let current_slot = spec.map_or(AppSlot::A, |s| s.active_slot);
+        let target_slot = if blue_green_cutover && spec.is_some_and(|s| s.blue_green) {
+            current_slot.opposite()
+        } else {
+            current_slot
+        };
+        let release_dir = layout.root.join("releases").join(&release.release_id);
+        let release_str = release_dir.to_string_lossy().into_owned();
+        let data_dir = layout.root.join("data");
+        let data_str = data_dir.to_string_lossy().into_owned();
+        let tmp_dir = layout.root.join("tmp");
+        let tmp_str = tmp_dir.to_string_lossy().into_owned();
+        let target_app_unit = backend_unit_for_slot(&layout.account, target_slot);
+        let target_web_unit = web_unit_for_slot(&layout.account, target_slot);
+        let current_app_unit = backend_unit_for_slot(&layout.account, current_slot);
+        let current_web_unit = web_unit_for_slot(&layout.account, current_slot);
+        let worker_unit = format!("rustiron-app-worker@{}.service", layout.account);
+        let is_dual_ssr = topology == AppTopology::FullstackDualSsr;
+        Self {
+            layout,
+            facts,
+            spec,
+            release,
+            previous_release_id,
+            blue_green_cutover,
+            database,
+            is_static,
+            current_slot,
+            target_slot,
+            is_dual_ssr,
+            release_dir,
+            release_str,
+            data_dir,
+            data_str,
+            tmp_dir,
+            tmp_str,
+            target_app_unit,
+            target_web_unit,
+            current_app_unit,
+            current_web_unit,
+            worker_unit,
         }
-        AppReleaseStep::Migrate => {
-            if is_static {
-                return Err(ExecutorError::BindingDenied);
-            }
-            let migration = release
-                .migration_entrypoint
-                .as_deref()
-                .ok_or(ExecutorError::BindingDenied)?;
-            let bin = verify_runtime_binary(release.runtime)?;
-            let env_arg = runtime_env_arg(release.runtime, &layout.root);
-            let snap_dir = tmp_dir.join(format!("pre-migrate-{}", release.release_id));
-            let passwd = provision::read_etc("passwd")?;
-            let uid = provision::account_uid(&passwd, &layout.account)
-                .ok_or(ExecutorError::StepFailed)?;
-            // Stop running units before SQLite WAL snapshot (or non-blue-green
-            // migration); for MariaDB/PostgreSQL 18 blue/green cutover, online
-            // consistent dumps keep the live slot serving.
-            if !blue_green_cutover || database == AppDatabase::Sqlite {
-                let _ = provision::output("/usr/bin/systemctl", &["stop", "--", &current_app_unit]);
-                if is_dual_ssr {
-                    let _ =
-                        provision::output("/usr/bin/systemctl", &["stop", "--", &current_web_unit]);
-                }
-                if facts.worker_entrypoint.is_some() {
-                    let _ = provision::output("/usr/bin/systemctl", &["stop", "--", &worker_unit]);
-                }
-            }
-            match database {
-                AppDatabase::Sqlite => snapshot_sqlite_for_migration(&data_dir, &snap_dir, uid)?,
-                AppDatabase::Mariadb => {
-                    snapshot_mariadb_for_migration(&layout.account, &snap_dir)?;
-                }
-                AppDatabase::Postgresql18 => {
-                    fs::create_dir_all(&snap_dir).map_err(|_| ExecutorError::StepFailed)?;
-                    fs::set_permissions(&snap_dir, fs::Permissions::from_mode(0o700))
-                        .map_err(|_| ExecutorError::StepFailed)?;
-                    postgres::dump_database(layout, &snap_dir.join("pre-migrate.dump"), None)?;
-                }
-                AppDatabase::None => {}
-            }
-            let level = crate::capture::site_level(layout)?;
-            let domain = app_selinux_domain(database);
-            let app_ctx = format!("system_u:system_r:{domain}:{level}");
-            let allow_loopback_db =
-                matches!(database, AppDatabase::Mariadb | AppDatabase::Postgresql18);
-            let root_str = layout.root.to_string_lossy().into_owned();
-            let script_path = release_dir.join(migration).to_string_lossy().into_owned();
-            run_confined_as_site(
-                &layout.account,
-                Some(&app_ctx),
-                &[&data_str, &tmp_str],
-                &[
-                    ("RUSTIRON_APP_DATA", &data_str),
-                    ("RUSTIRON_APP_ROOT", &root_str),
-                    ("RUSTIRON_SITE_ACCOUNT", &layout.account),
-                ],
-                facts.memory_max_mib,
-                facts.tasks_max,
-                allow_loopback_db,
-                &[bin, &env_arg, &script_path],
-            )
+    }
+}
+
+/// The `unpack` step of [`run_deploy_step`].
+fn deploy_unpack(d: &Deploy<'_>) -> Result<(), ExecutorError> {
+    let layout = d.layout;
+    let facts = d.facts;
+    let spec = d.spec;
+    let release = d.release;
+    let release_dir = &d.release_dir;
+    let release_str = &d.release_str;
+    let tmp_dir = &d.tmp_dir;
+    let tmp_str = &d.tmp_str;
+    let (bundle, entries) = verify_intake(
+        Path::new(crate::layout::APP_INTAKE_DIR),
+        release,
+        facts,
+        spec,
+        &layout.root,
+    )?;
+    let passwd = provision::read_etc("passwd")?;
+    let uid = provision::account_uid(&passwd, &layout.account).ok_or(ExecutorError::StepFailed)?;
+    if release_dir.exists() {
+        return Err(ExecutorError::PreconditionChanged);
+    }
+    fs::create_dir(release_dir).map_err(|_| ExecutorError::StepFailed)?;
+    // W663: fchown through a no-follow descriptor; releases/ is site-owned.
+    let release_fd = rustix::fs::open(
+        release_dir,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|_| ExecutorError::StepFailed)?;
+    rustix::fs::fchown(
+        &release_fd,
+        Some(rustix::process::Uid::from_raw(uid)),
+        Some(rustix::process::Gid::from_raw(uid)),
+    )
+    .map_err(|_| ExecutorError::StepFailed)?;
+    let staged_bundle = tmp_dir.join(format!("bundle-{}.tar.gz", release.release_id));
+    // W663-E1: tmp/ is writable by the site, so a planted symlink or file
+    // here must never be followed: unlink the name, then create it
+    // O_EXCL|O_NOFOLLOW and fchown the new file.
+    let _ = fs::remove_file(&staged_bundle);
+    let (mut bundle_file, _) = open_regular_nofollow(&bundle, Some(0), false)?;
+    copy_verified_file(&mut bundle_file, &staged_bundle, 0o600, Some(uid))?;
+    let level = crate::capture::site_level(layout)?;
+    let unpack_ctx = format!("system_u:system_r:rustiron_unpack_t:{level}");
+    let staged_str = staged_bundle.to_string_lossy().into_owned();
+    let unpack_res = run_confined_as_site(
+        &layout.account,
+        Some(&unpack_ctx),
+        &[release_str, tmp_str],
+        &[],
+        facts.memory_max_mib,
+        facts.tasks_max,
+        false,
+        &[
+            "/usr/bin/tar",
+            "-xzf",
+            &staged_str,
+            "-C",
+            release_str,
+            "--no-same-owner",
+            "--no-same-permissions",
+        ],
+    );
+    let _ = fs::remove_file(&staged_bundle);
+    unpack_res?;
+    verify_unpacked_tree(release_dir, &entries, release.total_bytes)?;
+    provision::output("/usr/bin/chmod", &["-R", "a-w", "--", release_str])?;
+    provision::run("/usr/sbin/restorecon", &["-R", "--", release_str])
+}
+
+/// The `migrate` step of [`run_deploy_step`].
+fn deploy_migrate(d: &Deploy<'_>) -> Result<(), ExecutorError> {
+    let layout = d.layout;
+    let facts = d.facts;
+    let release = d.release;
+    let blue_green_cutover = d.blue_green_cutover;
+    let database = d.database;
+    let is_static = d.is_static;
+    let is_dual_ssr = d.is_dual_ssr;
+    let release_dir = &d.release_dir;
+    let data_dir = &d.data_dir;
+    let data_str = &d.data_str;
+    let tmp_dir = &d.tmp_dir;
+    let tmp_str = &d.tmp_str;
+    let current_app_unit = &d.current_app_unit;
+    let current_web_unit = &d.current_web_unit;
+    let worker_unit = &d.worker_unit;
+    if is_static {
+        return Err(ExecutorError::BindingDenied);
+    }
+    let migration = release
+        .migration_entrypoint
+        .as_deref()
+        .ok_or(ExecutorError::BindingDenied)?;
+    let bin = verify_runtime_binary(release.runtime)?;
+    let env_arg = runtime_env_arg(release.runtime, &layout.root);
+    let snap_dir = tmp_dir.join(format!("pre-migrate-{}", release.release_id));
+    let passwd = provision::read_etc("passwd")?;
+    let uid = provision::account_uid(&passwd, &layout.account).ok_or(ExecutorError::StepFailed)?;
+    // Stop running units before SQLite WAL snapshot (or non-blue-green
+    // migration); for MariaDB/PostgreSQL 18 blue/green cutover, online
+    // consistent dumps keep the live slot serving.
+    if !blue_green_cutover || database == AppDatabase::Sqlite {
+        let _ = provision::output("/usr/bin/systemctl", &["stop", "--", current_app_unit]);
+        if is_dual_ssr {
+            let _ = provision::output("/usr/bin/systemctl", &["stop", "--", current_web_unit]);
         }
-        AppReleaseStep::Activate => {
-            if is_static {
-                switch_current_symlink(&layout.root, Some(&release.release_id))?;
-                return Ok(());
-            }
-            let bin = verify_runtime_binary(release.runtime)?;
-            let level = crate::capture::site_level(layout)?;
-            let target_port = backend_port_for_slot(facts, spec, target_slot)?;
-            let release_subpath = if blue_green_cutover {
-                format!("releases/{}", release.release_id)
-            } else {
-                "current".to_owned()
-            };
-            let dropin = render_app_slot_dropin(
-                &layout.root,
-                facts,
-                bin,
-                &level,
-                database,
-                target_port,
-                &release_subpath,
-            );
-            write_dropin(
-                backend_prefix_for_slot(target_slot),
-                &layout.account,
-                &dropin,
-            )?;
-            if is_dual_ssr {
-                let s = spec.ok_or(ExecutorError::BindingDenied)?;
-                let fe_rt = s.frontend_runtime.ok_or(ExecutorError::BindingDenied)?;
-                let fe_bin = verify_runtime_binary(fe_rt)?;
-                let fe_port = frontend_port_for_slot(s, target_slot)?;
-                let web_dropin = render_web_slot_dropin(
-                    &layout.root,
-                    facts,
-                    s,
-                    fe_bin,
-                    &level,
-                    fe_port,
-                    &release_subpath,
-                )?;
-                write_dropin(
-                    web_prefix_for_slot(target_slot),
-                    &layout.account,
-                    &web_dropin,
-                )?;
-            }
-            if !blue_green_cutover && let Some(worker) = facts.worker_entrypoint.as_deref() {
-                let worker_dropin =
-                    render_worker_dropin(&layout.root, facts, worker, bin, &level, database);
-                write_dropin(
-                    crate::layout::SITE_APP_WORKER_UNIT_PREFIX,
-                    &layout.account,
-                    &worker_dropin,
-                )?;
-            }
-            provision::run("/usr/sbin/restorecon", &["-R", "--", &data_str])?;
-            provision::output("/usr/bin/systemctl", &["daemon-reload"])?;
-            if !blue_green_cutover {
-                switch_current_symlink(&layout.root, Some(&release.release_id))?;
-            }
-            provision::output("/usr/bin/systemctl", &["enable", "--", &target_app_unit])?;
-            provision::output("/usr/bin/systemctl", &["restart", "--", &target_app_unit])?;
-            if is_dual_ssr {
-                provision::output("/usr/bin/systemctl", &["enable", "--", &target_web_unit])?;
-                provision::output("/usr/bin/systemctl", &["restart", "--", &target_web_unit])?;
-            }
-            if !blue_green_cutover && facts.worker_entrypoint.is_some() {
-                provision::output("/usr/bin/systemctl", &["enable", "--", &worker_unit])?;
-                provision::output("/usr/bin/systemctl", &["restart", "--", &worker_unit])?;
-            }
+        if facts.worker_entrypoint.is_some() {
+            let _ = provision::output("/usr/bin/systemctl", &["stop", "--", worker_unit]);
+        }
+    }
+    match database {
+        AppDatabase::Sqlite => snapshot_sqlite_for_migration(data_dir, &snap_dir, uid)?,
+        AppDatabase::Mariadb => {
+            snapshot_mariadb_for_migration(&layout.account, &snap_dir)?;
+        }
+        AppDatabase::Postgresql18 => {
+            fs::create_dir_all(&snap_dir).map_err(|_| ExecutorError::StepFailed)?;
+            fs::set_permissions(&snap_dir, fs::Permissions::from_mode(0o700))
+                .map_err(|_| ExecutorError::StepFailed)?;
+            postgres::dump_database(layout, &snap_dir.join("pre-migrate.dump"), None)?;
+        }
+        AppDatabase::None => {}
+    }
+    let level = crate::capture::site_level(layout)?;
+    let domain = app_selinux_domain(database);
+    let app_ctx = format!("system_u:system_r:{domain}:{level}");
+    let allow_loopback_db = matches!(database, AppDatabase::Mariadb | AppDatabase::Postgresql18);
+    let root_str = layout.root.to_string_lossy().into_owned();
+    let script_path = release_dir.join(migration).to_string_lossy().into_owned();
+    run_confined_as_site(
+        &layout.account,
+        Some(&app_ctx),
+        &[data_str, tmp_str],
+        &[
+            ("RUSTIRON_APP_DATA", data_str),
+            ("RUSTIRON_APP_ROOT", &root_str),
+            ("RUSTIRON_SITE_ACCOUNT", &layout.account),
+        ],
+        facts.memory_max_mib,
+        facts.tasks_max,
+        allow_loopback_db,
+        &[bin, &env_arg, &script_path],
+    )
+}
+
+/// The `activate` step of [`run_deploy_step`].
+fn deploy_activate(d: &Deploy<'_>) -> Result<(), ExecutorError> {
+    let layout = d.layout;
+    let facts = d.facts;
+    let spec = d.spec;
+    let release = d.release;
+    let blue_green_cutover = d.blue_green_cutover;
+    let database = d.database;
+    let is_static = d.is_static;
+    let target_slot = d.target_slot;
+    let is_dual_ssr = d.is_dual_ssr;
+    let data_str = &d.data_str;
+    let target_app_unit = &d.target_app_unit;
+    let target_web_unit = &d.target_web_unit;
+    let worker_unit = &d.worker_unit;
+    if is_static {
+        switch_current_symlink(&layout.root, Some(&release.release_id))?;
+        return Ok(());
+    }
+    let bin = verify_runtime_binary(release.runtime)?;
+    let level = crate::capture::site_level(layout)?;
+    let target_port = backend_port_for_slot(facts, spec, target_slot)?;
+    let release_subpath = if blue_green_cutover {
+        format!("releases/{}", release.release_id)
+    } else {
+        "current".to_owned()
+    };
+    let dropin = render_app_slot_dropin(
+        &layout.root,
+        facts,
+        bin,
+        &level,
+        database,
+        target_port,
+        &release_subpath,
+    );
+    write_dropin(
+        backend_prefix_for_slot(target_slot),
+        &layout.account,
+        &dropin,
+    )?;
+    if is_dual_ssr {
+        let s = spec.ok_or(ExecutorError::BindingDenied)?;
+        let fe_rt = s.frontend_runtime.ok_or(ExecutorError::BindingDenied)?;
+        let fe_bin = verify_runtime_binary(fe_rt)?;
+        let fe_port = frontend_port_for_slot(s, target_slot)?;
+        let web_dropin = render_web_slot_dropin(
+            &layout.root,
+            facts,
+            s,
+            fe_bin,
+            &level,
+            fe_port,
+            &release_subpath,
+        )?;
+        write_dropin(
+            web_prefix_for_slot(target_slot),
+            &layout.account,
+            &web_dropin,
+        )?;
+    }
+    if !blue_green_cutover && let Some(worker) = facts.worker_entrypoint.as_deref() {
+        let worker_dropin =
+            render_worker_dropin(&layout.root, facts, worker, bin, &level, database);
+        write_dropin(
+            crate::layout::SITE_APP_WORKER_UNIT_PREFIX,
+            &layout.account,
+            &worker_dropin,
+        )?;
+    }
+    provision::run("/usr/sbin/restorecon", &["-R", "--", data_str])?;
+    provision::output("/usr/bin/systemctl", &["daemon-reload"])?;
+    if !blue_green_cutover {
+        switch_current_symlink(&layout.root, Some(&release.release_id))?;
+    }
+    provision::output("/usr/bin/systemctl", &["enable", "--", target_app_unit])?;
+    provision::output("/usr/bin/systemctl", &["restart", "--", target_app_unit])?;
+    if is_dual_ssr {
+        provision::output("/usr/bin/systemctl", &["enable", "--", target_web_unit])?;
+        provision::output("/usr/bin/systemctl", &["restart", "--", target_web_unit])?;
+    }
+    if !blue_green_cutover && facts.worker_entrypoint.is_some() {
+        provision::output("/usr/bin/systemctl", &["enable", "--", worker_unit])?;
+        provision::output("/usr/bin/systemctl", &["restart", "--", worker_unit])?;
+    }
+    Ok(())
+}
+
+/// The `health` step of [`run_deploy_step`].
+fn deploy_health(d: &Deploy<'_>) -> Result<(), ExecutorError> {
+    let layout = d.layout;
+    let facts = d.facts;
+    let spec = d.spec;
+    let release = d.release;
+    let blue_green_cutover = d.blue_green_cutover;
+    let is_static = d.is_static;
+    let target_slot = d.target_slot;
+    let is_dual_ssr = d.is_dual_ssr;
+    let target_app_unit = &d.target_app_unit;
+    let target_web_unit = &d.target_web_unit;
+    let worker_unit = &d.worker_unit;
+    if is_static {
+        let dir = spec
+            .and_then(|s| s.frontend_dir.as_deref())
+            .ok_or(ExecutorError::StepFailed)?;
+        let index_path = layout.root.join("current").join(dir).join("index.html");
+        let meta = fs::metadata(&index_path).map_err(|_| ExecutorError::StepFailed)?;
+        return if meta.is_file() {
             Ok(())
+        } else {
+            Err(ExecutorError::StepFailed)
+        };
+    }
+    let state = provision::output("/usr/bin/systemctl", &["is-active", "--", target_app_unit])?;
+    if state.trim() != "active" {
+        return Err(ExecutorError::StepFailed);
+    }
+    if is_dual_ssr {
+        let wstate =
+            provision::output("/usr/bin/systemctl", &["is-active", "--", target_web_unit])?;
+        if wstate.trim() != "active" {
+            return Err(ExecutorError::StepFailed);
         }
-        AppReleaseStep::Health => {
-            if is_static {
-                let dir = spec
-                    .and_then(|s| s.frontend_dir.as_deref())
-                    .ok_or(ExecutorError::StepFailed)?;
-                let index_path = layout.root.join("current").join(dir).join("index.html");
-                let meta = fs::metadata(&index_path).map_err(|_| ExecutorError::StepFailed)?;
-                return if meta.is_file() {
-                    Ok(())
-                } else {
-                    Err(ExecutorError::StepFailed)
-                };
+    }
+    if !blue_green_cutover && facts.worker_entrypoint.is_some() {
+        let wstate = provision::output("/usr/bin/systemctl", &["is-active", "--", worker_unit])?;
+        if wstate.trim() != "active" {
+            return Err(ExecutorError::StepFailed);
+        }
+    }
+    let target_port = backend_port_for_slot(facts, spec, target_slot)?;
+    probe_loopback_http(&layout.account, target_port, &release.health_path)?;
+    if is_dual_ssr {
+        let s = spec.ok_or(ExecutorError::BindingDenied)?;
+        let fe_port = frontend_port_for_slot(s, target_slot)?;
+        probe_loopback_http(&layout.account, fe_port, "/")?;
+    }
+    Ok(())
+}
+
+/// The `rollback` step of [`run_deploy_step`].
+fn deploy_rollback(d: &Deploy<'_>) -> Result<(), ExecutorError> {
+    let layout = d.layout;
+    let facts = d.facts;
+    let spec = d.spec;
+    let release = d.release;
+    let previous_release_id = d.previous_release_id;
+    let blue_green_cutover = d.blue_green_cutover;
+    let database = d.database;
+    let is_static = d.is_static;
+    let current_slot = d.current_slot;
+    let is_dual_ssr = d.is_dual_ssr;
+    let data_dir = &d.data_dir;
+    let data_str = &d.data_str;
+    let tmp_dir = &d.tmp_dir;
+    let target_app_unit = &d.target_app_unit;
+    let target_web_unit = &d.target_web_unit;
+    let current_app_unit = &d.current_app_unit;
+    let current_web_unit = &d.current_web_unit;
+    let worker_unit = &d.worker_unit;
+    if is_static {
+        return switch_current_symlink(&layout.root, previous_release_id);
+    }
+    if blue_green_cutover {
+        // Standby slot failed; stop it and keep the live slot untouched.
+        let _ = provision::output("/usr/bin/systemctl", &["stop", "--", target_app_unit]);
+        if is_dual_ssr {
+            let _ = provision::output("/usr/bin/systemctl", &["stop", "--", target_web_unit]);
+        }
+    } else {
+        switch_current_symlink(&layout.root, previous_release_id)?;
+    }
+    if release.migration_entrypoint.is_some() {
+        let snap_dir = tmp_dir.join(format!("pre-migrate-{}", release.release_id));
+        let passwd = provision::read_etc("passwd")?;
+        let uid =
+            provision::account_uid(&passwd, &layout.account).ok_or(ExecutorError::StepFailed)?;
+        match database {
+            AppDatabase::Sqlite => {
+                restore_sqlite_snapshot(&snap_dir, data_dir, Some(uid))?;
+                provision::run("/usr/sbin/restorecon", &["-R", "--", data_str])?;
             }
-            let state =
-                provision::output("/usr/bin/systemctl", &["is-active", "--", &target_app_unit])?;
-            if state.trim() != "active" {
-                return Err(ExecutorError::StepFailed);
+            AppDatabase::Mariadb => restore_mariadb_snapshot(&layout.account, &snap_dir)?,
+            AppDatabase::Postgresql18 => {
+                postgres::restore_database(layout, &snap_dir.join("pre-migrate.dump"))?;
             }
+            AppDatabase::None => {}
+        }
+    }
+    if blue_green_cutover {
+        // Live slot stayed active (or re-verify it if SQLite migration paused it).
+        if database == AppDatabase::Sqlite && previous_release_id.is_some() {
+            provision::output("/usr/bin/systemctl", &["restart", "--", current_app_unit])?;
             if is_dual_ssr {
-                let wstate = provision::output(
-                    "/usr/bin/systemctl",
-                    &["is-active", "--", &target_web_unit],
-                )?;
-                if wstate.trim() != "active" {
-                    return Err(ExecutorError::StepFailed);
-                }
+                provision::output("/usr/bin/systemctl", &["restart", "--", current_web_unit])?;
             }
-            if !blue_green_cutover && facts.worker_entrypoint.is_some() {
-                let wstate =
-                    provision::output("/usr/bin/systemctl", &["is-active", "--", &worker_unit])?;
-                if wstate.trim() != "active" {
-                    return Err(ExecutorError::StepFailed);
-                }
-            }
-            let target_port = backend_port_for_slot(facts, spec, target_slot)?;
-            probe_loopback_http(&layout.account, target_port, &release.health_path)?;
-            if is_dual_ssr {
-                let s = spec.ok_or(ExecutorError::BindingDenied)?;
-                let fe_port = frontend_port_for_slot(s, target_slot)?;
-                probe_loopback_http(&layout.account, fe_port, "/")?;
-            }
-            Ok(())
-        }
-        AppReleaseStep::Rollback => {
-            if is_static {
-                return switch_current_symlink(&layout.root, previous_release_id);
-            }
-            if blue_green_cutover {
-                // Standby slot failed; stop it and keep the live slot untouched.
-                let _ = provision::output("/usr/bin/systemctl", &["stop", "--", &target_app_unit]);
-                if is_dual_ssr {
-                    let _ =
-                        provision::output("/usr/bin/systemctl", &["stop", "--", &target_web_unit]);
-                }
-            } else {
-                switch_current_symlink(&layout.root, previous_release_id)?;
-            }
-            if release.migration_entrypoint.is_some() {
-                let snap_dir = tmp_dir.join(format!("pre-migrate-{}", release.release_id));
-                let passwd = provision::read_etc("passwd")?;
-                let uid = provision::account_uid(&passwd, &layout.account)
-                    .ok_or(ExecutorError::StepFailed)?;
-                match database {
-                    AppDatabase::Sqlite => {
-                        restore_sqlite_snapshot(&snap_dir, &data_dir, Some(uid))?;
-                        provision::run("/usr/sbin/restorecon", &["-R", "--", &data_str])?;
-                    }
-                    AppDatabase::Mariadb => restore_mariadb_snapshot(&layout.account, &snap_dir)?,
-                    AppDatabase::Postgresql18 => {
-                        postgres::restore_database(layout, &snap_dir.join("pre-migrate.dump"))?;
-                    }
-                    AppDatabase::None => {}
-                }
-            }
-            if blue_green_cutover {
-                // Live slot stayed active (or re-verify it if SQLite migration paused it).
-                if database == AppDatabase::Sqlite && previous_release_id.is_some() {
-                    provision::output("/usr/bin/systemctl", &["restart", "--", &current_app_unit])?;
-                    if is_dual_ssr {
-                        provision::output(
-                            "/usr/bin/systemctl",
-                            &["restart", "--", &current_web_unit],
-                        )?;
-                    }
-                    if facts.worker_entrypoint.is_some() {
-                        provision::output("/usr/bin/systemctl", &["restart", "--", &worker_unit])?;
-                    }
-                }
-                if previous_release_id.is_some() {
-                    let live_port = backend_port_for_slot(facts, spec, current_slot)?;
-                    probe_loopback_http(&layout.account, live_port, &facts.health_path)?;
-                }
-                return Ok(());
-            }
-            if previous_release_id.is_some() {
-                provision::output("/usr/bin/systemctl", &["restart", "--", &current_app_unit])?;
-                if is_dual_ssr {
-                    provision::output("/usr/bin/systemctl", &["restart", "--", &current_web_unit])?;
-                }
-                if facts.worker_entrypoint.is_some() {
-                    provision::output("/usr/bin/systemctl", &["restart", "--", &worker_unit])?;
-                }
-                let live_port = backend_port_for_slot(facts, spec, current_slot)?;
-                probe_loopback_http(&layout.account, live_port, &facts.health_path)
-            } else {
-                let _ = provision::output("/usr/bin/systemctl", &["stop", "--", &current_app_unit]);
-                if is_dual_ssr {
-                    let _ =
-                        provision::output("/usr/bin/systemctl", &["stop", "--", &current_web_unit]);
-                }
-                if facts.worker_entrypoint.is_some() {
-                    let _ = provision::output("/usr/bin/systemctl", &["stop", "--", &worker_unit]);
-                }
-                Ok(())
+            if facts.worker_entrypoint.is_some() {
+                provision::output("/usr/bin/systemctl", &["restart", "--", worker_unit])?;
             }
         }
+        if previous_release_id.is_some() {
+            let live_port = backend_port_for_slot(facts, spec, current_slot)?;
+            probe_loopback_http(&layout.account, live_port, &facts.health_path)?;
+        }
+        return Ok(());
+    }
+    if previous_release_id.is_some() {
+        provision::output("/usr/bin/systemctl", &["restart", "--", current_app_unit])?;
+        if is_dual_ssr {
+            provision::output("/usr/bin/systemctl", &["restart", "--", current_web_unit])?;
+        }
+        if facts.worker_entrypoint.is_some() {
+            provision::output("/usr/bin/systemctl", &["restart", "--", worker_unit])?;
+        }
+        let live_port = backend_port_for_slot(facts, spec, current_slot)?;
+        probe_loopback_http(&layout.account, live_port, &facts.health_path)
+    } else {
+        let _ = provision::output("/usr/bin/systemctl", &["stop", "--", current_app_unit]);
+        if is_dual_ssr {
+            let _ = provision::output("/usr/bin/systemctl", &["stop", "--", current_web_unit]);
+        }
+        if facts.worker_entrypoint.is_some() {
+            let _ = provision::output("/usr/bin/systemctl", &["stop", "--", worker_unit]);
+        }
+        Ok(())
     }
 }
 
@@ -1549,7 +1706,7 @@ pub(crate) fn run_lifecycle_for(
     if spec.map(|s| s.topology) == Some(AppTopology::StaticSpa) {
         return Err(ExecutorError::BindingDenied);
     }
-    let slot = spec.map(|s| s.active_slot).unwrap_or(AppSlot::A);
+    let slot = spec.map_or(AppSlot::A, |s| s.active_slot);
     let verb = action.as_str();
     let app_unit = backend_unit_for_slot(account, slot);
     provision::output("/usr/bin/systemctl", &[verb, "--", &app_unit])?;
@@ -1621,39 +1778,7 @@ pub(crate) fn dump_app_external_db(
                 .join("tmp")
                 .join(crate::layout::APP_MARIADB_DUMP_FILE);
             let _ = fs::remove_file(&p);
-            let dump = provision::spawn(
-                "/usr/bin/mariadb-dump",
-                &[
-                    "--socket",
-                    provision::DB_SOCKET,
-                    "--single-transaction",
-                    "--routines",
-                    "--triggers",
-                    "--add-drop-table",
-                    "--",
-                    &layout.account,
-                ],
-                true,
-                None,
-            )?;
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-                .open(&p)
-                .map_err(|_| ExecutorError::StepFailed)?;
-            // W663-E2: fchown the descriptor; tmp/ is site-writable, so a path
-            // chown could follow a symlink swapped in after the create.
-            rustix::fs::fchown(
-                &file,
-                Some(rustix::process::Uid::from_raw(uid)),
-                Some(rustix::process::Gid::from_raw(uid)),
-            )
-            .map_err(|_| ExecutorError::StepFailed)?;
-            file.write_all(dump.as_bytes())
-                .and_then(|()| file.sync_all())
-                .map_err(|_| ExecutorError::StepFailed)?;
+            mariadb_dump_into(&layout.account, &p, Some(uid))?;
             p
         }
         AppDatabase::None | AppDatabase::Sqlite => return Err(ExecutorError::BindingDenied),
@@ -1732,7 +1857,7 @@ with tarfile.open(bundle, "r") as tf:
 /// SQLite Online Backup API as the site account (tested directly in unit tests;
 /// live product captures invoke `capture-manifest app-sqlite-backup`).
 #[cfg(test)]
-pub(crate) fn sqlite_backup_command(root: &str) -> Vec<String> {
+fn sqlite_backup_command(root: &str) -> Vec<String> {
     vec![
         "/usr/bin/python3".to_owned(),
         "-I".to_owned(),
@@ -1747,7 +1872,7 @@ pub(crate) fn sqlite_backup_command(root: &str) -> Vec<String> {
 /// (tested directly in unit tests; live product captures invoke
 /// `capture-manifest app-sqlite-marker`).
 #[cfg(test)]
-pub(crate) fn sqlite_marker_command(root: &str) -> Vec<String> {
+fn sqlite_marker_command(root: &str) -> Vec<String> {
     vec![
         "/usr/bin/python3".to_owned(),
         "-I".to_owned(),
@@ -1759,7 +1884,7 @@ pub(crate) fn sqlite_marker_command(root: &str) -> Vec<String> {
 
 /// Confined command that verifies and restores SQLite databases from `bundle`
 /// into `target_data_dir`.
-pub(crate) fn sqlite_restore_command(bundle: &str, target_data_dir: &str) -> Vec<String> {
+fn sqlite_restore_command(bundle: &str, target_data_dir: &str) -> Vec<String> {
     vec![
         "/usr/bin/python3".to_owned(),
         "-I".to_owned(),

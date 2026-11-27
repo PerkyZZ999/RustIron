@@ -172,7 +172,7 @@ fn concurrent_swapper_never_counts_outside_files() {
     let (flag, dir, out, park) = (
         stop.clone(),
         html.clone(),
-        outside.clone(),
+        outside,
         base.path().join("parked"),
     );
     let swapper = std::thread::spawn(move || {

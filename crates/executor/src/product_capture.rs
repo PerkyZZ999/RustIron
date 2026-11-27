@@ -118,27 +118,13 @@ impl Store for EnrolledStore<'_> {
     }
 }
 
-/// W601 (D-096/P30): runs product capture steps 2 to 10 for the site at
-/// `layout`, handling both WordPress/static sites (`app = None`) and
-/// P27/EmDash apps (`app = Some(facts)` with SQLite online backup + `data/`
-/// uploads).
-#[allow(dead_code)]
-pub(crate) fn capture_site_for(
-    anchor: &TrustAnchor,
-    policy: &ProductBackupPolicy,
-    site: &SiteId,
-    layout: &SiteLayout,
-    operation: &Id,
-    frozen: bool,
-    app: Option<&rustiron_journal::AppFacts>,
-) -> CaptureOutcome {
-    capture_site_for_app_db(anchor, policy, site, layout, operation, frozen, app, None)
-}
-
 /// W658 (D-102 C2): runs product capture for WordPress/static sites or modern
 /// app sites with any enrolled database engine (`none`, `sqlite`, `mariadb`,
 /// `postgresql_18`).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one capture call carries the trust anchor, policy, site, layout, operation, freeze flag, and app facts"
+)]
 pub(crate) fn capture_site_for_app_db(
     anchor: &TrustAnchor,
     policy: &ProductBackupPolicy,

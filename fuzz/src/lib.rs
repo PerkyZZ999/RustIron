@@ -3,7 +3,7 @@
 use rustiron_contracts::approval::{
     AppDeployPlan, AppLifecyclePlan, AppProvisionPlan, ApprovalError, CapturePlan, CertificatePlan,
     CloneScrubPlan, CredentialRotatePlan, DeletePlan, DnsChangePlan, DnsImportPlan, EjectPlan,
-    ImportPlan, MAX_STANDING_RUNS, MAX_STANDING_SITES, OlsPlan, PreparedPlan, ProbePlan,
+    ImportPlan, MAX_STANDING_RUNS, MAX_STANDING_SITES, OlsPlan, PlanKind, PreparedPlan, ProbePlan,
     ProductBackupPlan, ProxyPlan, QuotaPlan, ReadoptForm, ReadoptPlan, RestorePlan, RetirePlan,
     ScrubPlan, SiteClonePlan, SitePlan, SiteQuotaLimits, SiteUpdatePlan, StandingCapturePlan,
     envelope_for_plan,
@@ -17,6 +17,58 @@ fn domain_digest(bytes: &[u8]) -> [u8; 32] {
     hash.update(b"rustiron/plan/v1\0");
     hash.update(bytes);
     hash.finalize().into()
+}
+
+/// One closed plan decoder and the plan kinds it stands for.
+type ClosedDecoder = (fn(&[u8]) -> bool, &'static [PlanKind]);
+
+/// W690: the plan kinds each closed decoder that accepts `input` stands for.
+fn accepting_kinds(input: &[u8]) -> Vec<&'static [PlanKind]> {
+    use PlanKind as K;
+    let decoders: [ClosedDecoder; 25] = [
+        (|b| SitePlan::decode(b).is_ok(), &[K::SiteProvision]),
+        (|b| OlsPlan::decode(b).is_ok(), &[K::ConfigActivate]),
+        (|b| EjectPlan::decode(b).is_ok(), &[K::SiteEject]),
+        (|b| CapturePlan::decode(b).is_ok(), &[K::BackupCapture]),
+        (|b| ProbePlan::decode(b).is_ok(), &[K::RestoreProbe]),
+        (|b| ReadoptPlan::decode(b).is_ok(), &[K::SiteReadopt]),
+        (|b| ImportPlan::decode(b).is_ok(), &[K::SiteImport]),
+        (|b| ScrubPlan::decode(b).is_ok(), &[K::ImportScrub]),
+        (
+            |b| CertificatePlan::decode(b).is_ok(),
+            &[K::CertificateIssue],
+        ),
+        (
+            |b| ProductBackupPlan::decode(b).is_ok(),
+            &[K::BackupCapture, K::RestoreProbe],
+        ),
+        (
+            |b| StandingCapturePlan::decode(b).is_ok(),
+            &[K::BackupCapture],
+        ),
+        (|b| SiteClonePlan::decode(b).is_ok(), &[K::SiteClone]),
+        (|b| RetirePlan::decode(b).is_ok(), &[K::SiteRetire]),
+        (|b| SiteUpdatePlan::decode(b).is_ok(), &[K::SiteUpdate]),
+        (|b| DeletePlan::decode(b).is_ok(), &[K::SiteDelete]),
+        (|b| QuotaPlan::decode(b).is_ok(), &[K::SiteQuota]),
+        (|b| CloneScrubPlan::decode(b).is_ok(), &[K::CloneScrub]),
+        (|b| RestorePlan::decode(b).is_ok(), &[K::SiteRestore]),
+        (|b| DnsImportPlan::decode(b).is_ok(), &[K::DnsZoneImport]),
+        (|b| DnsChangePlan::decode(b).is_ok(), &[K::DnsChange]),
+        (|b| ProxyPlan::decode(b).is_ok(), &[K::ProxySiteProvision]),
+        (|b| AppProvisionPlan::decode(b).is_ok(), &[K::AppProvision]),
+        (|b| AppDeployPlan::decode(b).is_ok(), &[K::AppDeploy]),
+        (|b| AppLifecyclePlan::decode(b).is_ok(), &[K::AppLifecycle]),
+        (
+            |b| CredentialRotatePlan::decode(b).is_ok(),
+            &[K::SiteCredentialRotate],
+        ),
+    ];
+    decoders
+        .iter()
+        .filter(|(accepts, _)| accepts(input))
+        .map(|&(_, kinds)| kinds)
+        .collect()
 }
 
 /// Check bounded shape, value preservation, canonical stability and digest framing.
@@ -57,6 +109,18 @@ pub fn canonical_object(input: &[u8]) -> bool {
 /// Accepted plans are also changed in ways with known valid/invalid outcomes.
 pub fn prepared_plan(input: &[u8]) -> bool {
     let decoded = PreparedPlan::decode(input);
+    // W690: the executor routes a submission by this kind (W688), so every
+    // closed decoder must agree with it: at most one accepts any input, and
+    // whatever one accepts, `PreparedPlan` accepts with that decoder's kind.
+    let accepting = accepting_kinds(input);
+    assert!(accepting.len() <= 1, "decoders overlap: {accepting:?}");
+    if let Some(kinds) = accepting.first() {
+        let kind = decoded
+            .as_ref()
+            .expect("a closed decoder accepted it")
+            .kind();
+        assert!(kinds.contains(&kind), "{kind:?} not in {kinds:?}");
+    }
     if input.len() > MAX_REQUEST_BYTES {
         assert_eq!(decoded.err(), Some(ApprovalError::RequestTooLarge));
         return false;

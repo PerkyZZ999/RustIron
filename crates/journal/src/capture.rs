@@ -8,7 +8,7 @@ use rustiron_contracts::{
     approval::{Sha256Digest, SiteId},
 };
 
-use crate::{FixtureJournal, JournalError, storage};
+use crate::{Admitted, FixtureJournal, JournalError, storage};
 
 const MAX_CAPTURES: i64 = 1000;
 
@@ -443,15 +443,6 @@ fn load_v18(c: &rusqlite::Connection, capture: &mut Capture) -> Result<(), Journ
     Ok(())
 }
 
-/// New durable capture, or status of an exact earlier one.
-#[derive(Debug, Eq, PartialEq)]
-pub enum CaptureResult {
-    /// Intent committed; nonce consumed.
-    New(Capture),
-    /// Status only; never permission to capture again.
-    Existing(Capture),
-}
-
 impl FixtureJournal {
     /// Records a capture intent in one transaction, or returns exact status.
     /// The site needs a succeeded provision; one capture runs at a time.
@@ -467,7 +458,7 @@ impl FixtureJournal {
         method: CaptureMethod,
         retention_days: Option<u32>,
         backup_policy_digest: &Sha256Digest,
-    ) -> Result<CaptureResult, JournalError> {
+    ) -> Result<Admitted<Capture>, JournalError> {
         let signed = self.take_signed(&crate::signed::Expected {
             plan_digest: &intent.plan_digest,
             grant_digest: &intent.grant_digest,
@@ -493,7 +484,7 @@ impl FixtureJournal {
                     .retention_days
                     .is_none_or(|old| retention_days == Some(old))
             {
-                Ok(CaptureResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(JournalError::Conflict)
             };
@@ -581,7 +572,7 @@ impl FixtureJournal {
         crate::signed::insert(&transaction, &intent.operation_id, signed.as_ref())?;
         storage::set_clock(&transaction, now)?;
         transaction.commit().map_err(storage::unavailable)?;
-        Ok(CaptureResult::New(Capture {
+        Ok(Admitted::New(Capture {
             intent: intent.clone(),
             started_at: now,
             state: CaptureState::Running,

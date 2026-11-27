@@ -587,7 +587,7 @@ mod tests {
             &wrong,
             &enrolled
         ));
-        wrong = signed.clone();
+        wrong = signed;
         wrong.state = CaptureState::Failed;
         assert!(!capture_fits(
             &files,
@@ -595,7 +595,7 @@ mod tests {
             &wrong,
             &enrolled
         ));
-        wrong = safety.clone();
+        wrong = safety;
         wrong.snapshot_id = None;
         assert!(!capture_fits(
             &files,

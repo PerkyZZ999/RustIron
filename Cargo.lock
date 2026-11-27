@@ -231,7 +231,7 @@ dependencies = [
 
 [[package]]
 name = "rustiron-cli"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "clap",
  "rustiron-contracts",
@@ -245,7 +245,7 @@ dependencies = [
 
 [[package]]
 name = "rustiron-contracts"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "rustix",
  "serde",
@@ -256,7 +256,7 @@ dependencies = [
 
 [[package]]
 name = "rustiron-control"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "clap",
  "rustiron-contracts",
@@ -267,16 +267,17 @@ dependencies = [
 
 [[package]]
 name = "rustiron-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "rusqlite",
  "rustiron-contracts",
  "rustix",
+ "sha2",
 ]
 
 [[package]]
 name = "rustiron-executor"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "libc",
  "quick-xml",
@@ -291,7 +292,7 @@ dependencies = [
 
 [[package]]
 name = "rustiron-journal"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "rusqlite",
  "rustiron-contracts",

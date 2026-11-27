@@ -19,12 +19,20 @@ struct Fixture {
     socket: PathBuf,
 }
 
+/// W720: a folder-name part that no other test in this process uses. The
+/// clock alone can repeat across parallel tests.
+fn unique_suffix() -> String {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |time| time.as_nanos());
+    let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{nanos}-{next}")
+}
+
 impl Fixture {
     fn new() -> Self {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let suffix = unique_suffix();
         let dir = PathBuf::from("/tmp").join(format!("ri-p19-{}-{suffix}", std::process::id()));
         fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
         let socket = dir.join("control.sock");
@@ -97,14 +105,27 @@ fn rotate_plan_json() -> String {
     .unwrap()
 }
 
+/// W693: a closed `site_credential_rotate` grant for `rotate_plan_json`, so the
+/// MCP gate's strict contract decoder accepts it; `extra` adds members to test refusal.
 fn grant_json(plan_digest: &str, issuer: &str, expires_at: u64, blanket: bool) -> String {
     let mut g = json!({
         "schema_version": 1,
         "grant_id": "grant_p19_1",
-        "issuer": issuer,
+        "nonce": "nonce_p19_1",
+        "plan_id": "plan_p19_1",
         "plan_digest": plan_digest,
+        "host_id": "rustiron_w447_schedule",
+        "host_epoch": "epoch_w447_1",
+        "profile_digest": "1a547a0b9c893a63fd11135e0c92846e400fb9bdd9e7558c6fada6eeeb5db4ab",
+        "issuer": issuer,
+        "requester": "rustiron_coordinator",
+        "signer_policy_epoch": "policy_3",
+        "site_ids": ["cp02"],
+        "verbs": ["site_credential_rotate"],
+        "risk_class": "lab_only",
         "valid_from": 1_795_500_000,
-        "expires_at": expires_at
+        "expires_at": expires_at,
+        "max_operations": 1
     });
     if blanket {
         g["blanket"] = json!(true);
@@ -215,6 +236,13 @@ fn enforces_tiers_no_self_approval_no_blanket_no_budget_expansion_expiry_and_liv
             call_apply(7, "nonproduction", &plan, &wrong_digest_grant),
             // 8. Valid nonproduction call forwards byte-exact to live coordinator -> truthful not_sent (unavailable)
             call_apply(8, "nonproduction", &plan, &valid_grant),
+            // 10. W693 (R13): a grant for another verb is refused
+            call_apply(
+                10,
+                "nonproduction",
+                &plan,
+                &valid_grant.replace("site_credential_rotate", "site_quota"),
+            ),
             // 9. W633 (R13): duplicate-key non-canonical grant JSON refused locally before coordinator
             call_apply(
                 9,
@@ -240,9 +268,11 @@ fn enforces_tiers_no_self_approval_no_blanket_no_budget_expansion_expiry_and_liv
         replies[3]["result"]["structuredContent"]["result"]["error"]["code"],
         "SELF_APPROVAL_REFUSED"
     );
+    // W693: a blanket member is not part of any closed grant, so the strict
+    // decoder refuses it before the policy checks.
     assert_eq!(
         replies[4]["result"]["structuredContent"]["result"]["error"]["code"],
-        "NO_BLANKET_TOKEN"
+        "INVALID_GRANT"
     );
     assert_eq!(
         replies[5]["result"]["structuredContent"]["result"]["error"]["code"],
@@ -262,10 +292,12 @@ fn enforces_tiers_no_self_approval_no_blanket_no_budget_expansion_expiry_and_liv
     assert_eq!(fwd["result"]["verb"], "site_credential_rotate");
     assert_eq!(fwd["result"]["outcome"]["kind"], "not_sent");
     assert_eq!(replies[7]["result"]["isError"], true);
-    assert_eq!(
-        replies[8]["result"]["structuredContent"]["result"]["error"]["code"],
-        "INVALID_GRANT"
-    );
+    for reply in &replies[8..10] {
+        assert_eq!(
+            reply["result"]["structuredContent"]["result"]["error"]["code"],
+            "INVALID_GRANT"
+        );
+    }
 
     // 9. Budget expansion check: max-changes=0 refuses the 1-change plan before coordinator
     let budget_replies = fixture.run_mcp(

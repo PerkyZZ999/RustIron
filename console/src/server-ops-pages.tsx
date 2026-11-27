@@ -1,10 +1,9 @@
 // W632 / W650: Server Operations — Interactive Firewall Rule Builder,
 // Scheduled Jobs & Timers (/host/cron), and Redacted Server Logs Viewer (/host/logs).
+import { consoleRequest } from "./console-request";
 import { Link } from "@tanstack/react-router";
 import {
-  Check,
   Clock,
-  Copy,
   Download,
   FileText,
   Plus,
@@ -17,41 +16,8 @@ import {
 import { useCallback, useEffect, useState } from "react";
 
 import { toastManager } from "@/components/ui/toast";
-import { useData } from "./data";
-import { Crumbs, EmptyState, Glyph, Page, TableScroll } from "./ui";
-
-function CopyTextBtn({
-  text,
-  label,
-  toastTitle = "Copied to clipboard",
-}: {
-  text: string;
-  label: string;
-  toastTitle?: string;
-}) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return undefined;
-    const t = setTimeout(() => setCopied(false), 2000);
-    return () => clearTimeout(t);
-  }, [copied]);
-  return (
-    <button
-      type="button"
-      className="btn quiet sm"
-      aria-label={label}
-      onClick={() =>
-        void navigator.clipboard?.writeText(text).then(() => {
-          setCopied(true);
-          toastManager.add({ id: "clipboard-copy", type: "success", title: toastTitle });
-        })
-      }
-    >
-      <Glyph icon={copied ? Check : Copy} className={copied ? "check-pop list-ok" : undefined} />
-      {copied ? "Copied" : "Copy"}
-    </button>
-  );
-}
+import { isRealHost, useData } from "./data";
+import { CopyButton, Crumbs, EmptyState, Glyph, Page, TableScroll } from "./ui";
 
 type StagedFwRule = {
   id: string;
@@ -115,7 +81,7 @@ export function FirewallRuleBuilderPanel() {
           </p>
         </div>
         {rules.length > 0 ? (
-          <CopyTextBtn
+          <CopyButton
             text={cmd}
             label="Copy firewall commands"
             toastTitle="Firewall commands copied"
@@ -277,7 +243,7 @@ const managedTimers = [
 
 export function HostCronPage() {
   const data = useData();
-  const isLive = data.source.kind === "live";
+  const isLive = isRealHost(data.source);
   const services = data.machine?.services ?? [];
 
   function timerStatus(unit: string): string {
@@ -464,29 +430,20 @@ function downloadLogsFile(unitName: string, lines: string[]) {
 }
 
 async function fetchUnitLogs(unit: string, lines: number): Promise<LogApiReply | null> {
-  try {
-    const res = await fetch(`/api/host/logs?unit=${encodeURIComponent(unit)}&lines=${lines}`, {
-      cache: "no-store",
-      credentials: "same-origin",
-    });
-    if (res.ok) {
-      const body = (await res.json()) as Partial<LogApiReply> | null;
-      if (body && typeof body.unit === "string" && Array.isArray(body.lines)) {
-        return {
-          unitKey: body.unitKey ?? unit,
-          unit: body.unit,
-          available: Boolean(body.available),
-          truncated: Boolean(body.truncated),
-          fetchedAt: typeof body.fetchedAt === "number" ? body.fetchedAt : Date.now(),
-          reason: body.reason ?? null,
-          lines: body.lines,
-        };
-      }
-    }
-  } catch {
-    // Offline fallback.
-  }
-  return null;
+  const reply = await consoleRequest<Partial<LogApiReply> | null>(
+    `/api/host/logs?unit=${encodeURIComponent(unit)}&lines=${lines}`,
+  );
+  const body = reply.ok ? reply.data : null;
+  if (!body || typeof body.unit !== "string" || !Array.isArray(body.lines)) return null;
+  return {
+    unitKey: body.unitKey ?? unit,
+    unit: body.unit,
+    available: Boolean(body.available),
+    truncated: Boolean(body.truncated),
+    fetchedAt: typeof body.fetchedAt === "number" ? body.fetchedAt : Date.now(),
+    reason: body.reason ?? null,
+    lines: body.lines,
+  };
 }
 
 const LOG_SEVERITY_TABS: readonly [LogSeverity, string][] = [
@@ -597,11 +554,7 @@ function LogStreamCard({
             <Glyph icon={WrapText} />
             Wrap
           </button>
-          <CopyTextBtn
-            text={rawText}
-            label="Copy visible log lines"
-            toastTitle="Log lines copied"
-          />
+          <CopyButton text={rawText} label="Copy visible log lines" toastTitle="Log lines copied" />
           <button type="button" className="btn quiet sm" onClick={onDownload}>
             <Glyph icon={Download} />
             Download
@@ -718,12 +671,17 @@ function useUnitLogStream(unit: string, lineCount: number, autoRefreshSec: numbe
     setReply(data);
     setLoading(false);
     if (!notify) return;
+    // W682: a failed read (null) is not "no new entries".
+    if (!data) {
+      toastManager.add({ id: "logs-refresh", type: "warning", title: "Could not load logs" });
+      return;
+    }
     toastManager.add({
       id: "logs-refresh",
-      type: data?.available ? "success" : "info",
-      title: data?.available
+      type: data.available ? "success" : "info",
+      title: data.available
         ? `Loaded ${data.lines.length} lines from ${data.unit}`
-        : `No new entries for ${data?.unit ?? nextUnit}`,
+        : `No new entries for ${data.unit}`,
     });
   }, []);
 
@@ -741,12 +699,17 @@ function useUnitLogStream(unit: string, lineCount: number, autoRefreshSec: numbe
 
   useEffect(() => {
     if (autoRefreshSec <= 0) return undefined;
+    let active = true;
     const timer = setInterval(() => {
       void fetchUnitLogs(unit, lineCount).then((data) => {
-        if (data) setReply(data);
+        // A reply for a unit the viewer has left must not overwrite the current one.
+        if (active && data) setReply(data);
       });
     }, autoRefreshSec * 1000);
-    return () => clearInterval(timer);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
   }, [unit, lineCount, autoRefreshSec]);
 
   return { reply, loading, reload };
@@ -799,7 +762,7 @@ export function HostLogsPage() {
             <Glyph icon={RefreshCw} className={loading ? "animate-spin" : undefined} />
             {loading ? "Refreshing…" : "Refresh"}
           </button>
-          <CopyTextBtn
+          <CopyButton
             text={cliCmd}
             label="Copy journalctl command"
             toastTitle="journalctl command copied"

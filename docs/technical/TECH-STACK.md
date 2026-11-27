@@ -1,10 +1,18 @@
 # Rustiron accepted technology stack
 
-Updated: 2026-11-26.
+Updated: 2026-11-27.
 Selected stack.
 Distinguish implementation from acceptance.
 
-The owner accepted the Rust recommendations, selected Bun and JS quality checks, specified conditional Elysia and Lucide/DevIcons, requested the local Rust-Toolchain gate, and on 2026-11-26 directed migrating the Console UI from Astryx to the refined Tailwind CSS v4 + Coss UI (`@base-ui/react`) + `lucide-animated` + `evlog` stack (`W642`).
+The owner made these stack choices:
+
+- accepted the Rust recommendations;
+- selected Bun and the JS quality checks;
+- specified conditional Elysia and Lucide/DevIcons;
+- requested the local Rust-Toolchain gate;
+- on 2026-11-26, moved the Console UI from Astryx to Tailwind CSS v4 + Coss UI (`@base-ui/react`) + `lucide-animated` + `evlog` (`W642`);
+- on 2026-11-27, replaced `lucide-animated` with the static Lucide icon and a CSS spin (`W696`).
+
 See [D-009 / ADR-007](../decisions/ADR-007-implementation-stack-and-quality-gates.md).
 Six Cargo crates, the console workspace, and Rust/Bun quality gates exist.
 
@@ -21,7 +29,7 @@ Do not float installations merely to appear current.
 Recheck at subsequent dependency work.
 
 An older version needs a recorded compatibility/security constraint and revisit condition.
-Prereleases and major architecture changes are not implied by this rule.
+This rule does not imply prereleases or major architecture changes.
 Historical report versions describe their original environment, not a current dependency recommendation.
 
 Do not rewrite preserved evidence.
@@ -39,13 +47,15 @@ Do not rewrite preserved evidence.
 | Console | React + strict TypeScript | Selected; React/ReactDOM 19 with TanStack Router |
 | JS/TS toolkit | Bun runtime, package manager, script runner, bundler and test runner wherever compatible | Default; `bun.lock`, frozen installs and pinned tools when configured |
 | UI / styling | Tailwind CSS v4 (`bun-plugin-tailwind`, `tw-animate-css`) + Coss UI (`@base-ui/react`, CVA, copy-owned `console/src/components/ui/*`) + scoped `@layer components` CSS | Revised 2026-11-26 per owner direction (`W642`, replacing Astryx/StyleX); implements [DESIGN.md](../DESIGN.md) Matte Charcoal / Royal-Blue tokens |
-| Icons & client telemetry | `lucide-react` + `lucide-animated` (purposeful feedback only) + DevIcons for needed technology/brand marks; `evlog/client` structured console logging | No network log drain and no secret/signature logging |
+| Icons & client telemetry | `lucide-react` (CSS motion for purposeful feedback only) + DevIcons for needed technology/brand marks; `evlog/client` structured console logging | No network log drain and no secret/signature logging |
+| Console request validation | Zod v4, server-side only: one strict schema per JSON route and for coordinator replies | Accepted 2026-11-26 (`W681`); runs after the Host, Origin, CSRF, and size guards; plans and grants stay raw strings for the Rust decoder |
+| Console sign-in | Better Auth with its two-factor plugin (TOTP and encrypted recovery codes); `uqr` draws the setup QR code in the browser | Accepted 2026-11-27 (`W727`, `W729`); Admin accounts need the second factor; `uqr` is MIT and has no dependencies |
 | JS quality | Oxlint, Oxfmt, Fallow | Main lint/format/codebase gates; explicit TypeScript checking, tests and build still required |
 | JS tests | `bun test`; React Testing Library with Happy DOM where appropriate | Replaces Vitest default; DOM emulator is not browser/layout proof |
 | Browser acceptance | Playwright + accessibility checks and manual keyboard/screen-reader review | Separate browser automation; test its execution compatibility rather than assume Bun replaces it |
 | Optional TS backend | Elysia on Bun, only when a TS HTTP/backend layer is needed | Unprivileged adapter to existing core; no alternate approval/executor authority |
 | Routing / server state | TanStack Router installed; Query evaluated only for a concrete server-state need | TanStack Router is installed; evaluate additional server-state tooling only when needed |
-| Charts | Evaluate Astryx's chart facilities before adding a separate library | Recharts is no longer the default recommendation; data/semantics/accessibility remain decisive |
+| Charts | No chart library yet; choose one only for a concrete chart need | Data, semantics, and accessibility decide the choice |
 
 Vite, Node/npm, Vitest, Biome, and Radix are not the default Rustiron Console toolchain.
 A demonstrated compatibility gap can justify a narrow documented exception.
@@ -67,7 +77,7 @@ P27 verifies both runtime profiles.
 Use maintained mail, certificate, transfer, and optional app-platform components instead of replacement protocol implementations.
 Pin versions after host/package compatibility and security checks.
 
-No additional service is installed by this document.
+This document installs no additional service.
 
 ## Rust implementation and local quality ownership
 
@@ -85,44 +95,27 @@ Nextest and separate doctests both remain required.
 No Sonar integration is selected.
 Miri, mutation and feature-powerset/fuzz runs are risk-triggered, not every-edit work.
 
-Native security/recovery proof remains outside the generic quality gate and cannot be replaced by a green doctor run.
+Native security/recovery proof stays outside the generic quality gate. A green doctor run does not replace it.
 
-## Astryx with Bun and the existing design
+## Tailwind and Coss UI with Bun
 
-Read [Astryx's agent index](https://astryx.atmeta.com/llms.txt), then use the scoped CLI package (`@astryxdesign/cli`, not bare `astryx`).
-Reviewed CLI/Core 0.7.4 documentation topics: `getting-started`, `styling-overview`, `use-a-theme` and `icons`.
-Those were the original research versions.
+The Console moved from Astryx and StyleX to this stack in `W642` (owner, 2026-11-26).
 
-The installed versions are pinned in the console package and lockfile.
-The verified core package is `@astryxdesign/core`.
-Do not invent a React package name.
+- `bun-plugin-tailwind` compiles Tailwind CSS v4 in both the development server (`console/bunfig.toml`) and the production build (`console/scripts/build.ts`).
+  The same CSS path must work in both modes.
+- `console/src/styles.css` holds the [DESIGN.md](../DESIGN.md) tokens in `@theme inline`, the dark variant on `data-theme`, and the scoped `@layer` rules.
+  Map new design roles there, and do not add unused font imports.
+- The project owns its copy of the Coss UI components in `console/src/components/ui/`.
+  They use Base UI (`@base-ui/react`) primitives and CVA variants.
+  Change that copy. Do not add a second component library.
+- Lucide (`lucide-react`) owns action and navigation icons.
+  Use DevIcons only for real technologies and brands, respecting logo, contrast, and accessibility needs.
+  Do not add a full icon catalogue or fetch CDN SVGs at runtime.
+- Fallow must recognize the real app, build, and test entry points.
+  Do not delete dynamically used components to get a clean report.
 
-Astryx's documented plain-CSS path loads its prebuilt reset/component CSS and an installed theme's production CSS.
-Consumer components do not need recompiling.
-Use this path with Bun initially, plus the required `@stylexjs/stylex` peer.
-
-Custom application `stylex.create()` source or swizzled components require an additional compiler pipeline.
-Bun compatibility for that pipeline is not proven.
-Avoid introducing it merely for shell blur, layout or straightforward CSS.
-
-Extend a neutral theme into Rustiron's royal-blue/light/dark theme, map the reviewed DESIGN.md roles, and compile custom theme output using Astryx's theme workflow.
-Neutral's bundled typography is not permission to replace our system font candidate silently.
-Explicitly map typography and avoid unused font imports.
-
-Built theme CSS/module wiring must work identically in development and production.
-Keep resets, cascade layers, theme and scoped application overrides deliberate.
-No theme source ejection is selected.
-
-Review generated agent files before merging any setup output so AGENTS.md and its CLAUDE.md import are preserved.
-
-Astryx supports theme-scoped icon overrides: map semantic icons to Lucide so internal close/menu/status controls match our app's action family.
-Use DevIcons only for actual technologies/brands, respecting logo/contrast/accessibility needs.
-Do not add its full catalogue or fetch floating CDN SVGs into the console at runtime.
-
-At P14, verify the Bun dev/production path imports all CSS, preserves theme mode, renders needed components and passes browser/focus/reflow checks in both mockup-derived themes.
-Package metadata and successful CLI documentation queries are not that integration proof.
-Fallow must recognize real app/build/theme/test entrypoints.
-Do not suppress generated theme imports or delete dynamically used components merely to obtain a clean report.
+Package metadata does not prove the integration.
+Browser, focus, and reflow checks in both themes do.
 
 ## Bun tests and JS quality gates
 
@@ -151,7 +144,7 @@ Keep pinned/frozen dependencies, Bun's lifecycle-script trust explicit, and priv
 Fallow auto-fixes require a preview and scope review.
 Findings need investigation, not blanket ignores.
 
-Cloud/beacon uploads or external service enrollment are not selected by choosing the local analyzer.
+Choosing the local analyzer does not select cloud/beacon uploads or external service enrollment.
 
 ## Conditional Elysia boundary
 
@@ -172,7 +165,8 @@ Website serving remains OLS/PHP/MariaDB and independent of console availability.
 
 The owner selected the stack direction and gate ownership.
 Do not ask again for unchanged selections.
-Bun/Astryx/theme integration, runner/browser compatibility, Fallow graph coverage and TS adapter need/authentication await their slices.
+`W642` integrated Bun, Tailwind, and the theme.
+Runner/browser compatibility, Fallow graph coverage and TS adapter need/authentication await their slices.
 
 W001/W006 established the Cargo workspace and Rust-Toolchain integration.
 W002 adds the read contracts.

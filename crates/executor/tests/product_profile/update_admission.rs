@@ -106,7 +106,7 @@ fn a_signed_update_is_checked_against_the_journal_and_records_nothing() {
         let signature = fixture.sign(grant.as_bytes());
         (bytes, grant, signature, operation.to_owned())
     };
-    let mut exact = plan.clone();
+    let mut exact = plan;
     exact["site_id"] = json!("blog9");
     exact["capture_operation_id"] = json!("op_capture1");
     let mut other_capture = exact.clone();
@@ -165,4 +165,90 @@ fn a_signed_update_is_checked_against_the_journal_and_records_nothing() {
     };
     assert!(executor.update_site(&admission).is_err());
     assert_eq!(fixture.replay_state(), before);
+}
+
+/// W700: a stored update answers only an exact replay. A different signed
+/// update that names the same operation is refused (`REPLAY_DENIED`); before,
+/// it got the stored row as if it were a replay.
+#[test]
+fn a_different_update_naming_a_stored_operation_is_refused() {
+    use rustiron_contracts::{
+        CanonicalObject,
+        approval::{ComponentSlug, ComponentVersion, UpdateComponent, UpdateKind},
+    };
+    use rustiron_journal::{SignedAdmission, UpdateIntent};
+    use sha2::{Digest, Sha256};
+    const PLAN: &str = r#"{"plan_id":"plan_stored","schema_version":1,"site_id":"blog9"}"#;
+    const GRANT: &str = r#"{"grant_id":"grant_stored","issuer":"lab_agent","nonce":"nonce_stored","signer_policy_epoch":"policy_3"}"#;
+    let fixture = BackupFixture::new();
+    seed(&fixture);
+    let mut journal = FixtureJournal::open_as_process_owner(
+        &fixture.anchor.journal_dir,
+        identifier("host_lab"),
+        identifier("epoch_1"),
+    )
+    .unwrap();
+    journal.stage_signed(SignedAdmission {
+        plan: PLAN.as_bytes().to_vec(),
+        grant: GRANT.as_bytes().to_vec(),
+        issuer: identifier("lab_agent"),
+        signer_policy_epoch: identifier("policy_3"),
+    });
+    let stored = UpdateIntent {
+        operation_id: identifier("op_site_update"),
+        idempotency_key: identifier("key_stored_update"),
+        grant_id: identifier("grant_stored"),
+        nonce: identifier("nonce_stored"),
+        plan_digest: Sha256Digest::from_bytes(
+            CanonicalObject::decode(PLAN.as_bytes())
+                .unwrap()
+                .plan_domain_digest(),
+        ),
+        grant_digest: Sha256Digest::from_bytes(Sha256::digest(GRANT.as_bytes()).into()),
+        host_id: identifier("host_lab"),
+        host_epoch: identifier("epoch_1"),
+        site_id: "blog9".to_owned().try_into().unwrap(),
+        capture_operation_id: identifier("op_capture1"),
+        recipe_digest: Sha256Digest::from_bytes([9; 32]),
+        components: vec![UpdateComponent {
+            kind: UpdateKind::Plugin,
+            slug: ComponentSlug::try_from("hello-dolly".to_owned()).unwrap(),
+            from_version: ComponentVersion::try_from("1.7.1".to_owned()).unwrap(),
+            to_version: ComponentVersion::try_from("1.7.2".to_owned()).unwrap(),
+        }],
+        expires_at: time(1400),
+    };
+    journal.record_update(&stored, time(1150)).unwrap();
+    drop(journal);
+
+    let mut executor = Executor::open(fixture.anchor.clone()).unwrap();
+    let mut plan: Value = serde_json::from_slice(include_bytes!(
+        "../../../contracts/tests/fixtures/update-plan.json"
+    ))
+    .unwrap();
+    plan["site_id"] = json!("blog9");
+    plan["capture_operation_id"] = json!("op_capture1");
+    let bytes = plan.to_string();
+    let parsed = SiteUpdatePlan::decode(bytes.as_bytes()).unwrap();
+    let mut grant: Value = serde_json::from_slice(include_bytes!(
+        "../../../contracts/tests/fixtures/update-grant.json"
+    ))
+    .unwrap();
+    grant["site_ids"] = json!(["blog9"]);
+    grant["plan_digest"] = json!(parsed.digest());
+    let grant = grant.to_string();
+    let signature = fixture.sign(grant.as_bytes());
+    let admission = AdmissionRequest {
+        peer_uid: 4242,
+        plan: bytes.as_bytes(),
+        grant: grant.as_bytes(),
+        signature: &signature,
+        operation_id: identifier("op_site_update"),
+        idempotency_key: identifier("key_site_update"),
+        now: Some(time(1200)),
+    };
+    assert_eq!(
+        executor.update_site(&admission).err(),
+        Some(ExecutorError::ReplayDenied)
+    );
 }

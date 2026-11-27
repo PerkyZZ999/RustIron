@@ -179,3 +179,14 @@ test("settings theme choice matches the top bar toggle", async () => {
   fireEvent.click(screen.getByRole("radio", { name: /Match system/ }));
   expect(localStorage.getItem("ri-theme")).toBeNull();
 });
+
+test("an unknown address shows a not-found page inside the shell (W718)", async () => {
+  const router = createRouter({
+    routeTree,
+    history: createMemoryHistory({ initialEntries: ["/no-such-page"] }),
+  });
+  render(<RouterProvider router={router} />);
+  expect(await screen.findByRole("heading", { level: 1, name: "Page not found" })).toBeTruthy();
+  expect(screen.getByRole("navigation", { name: "Primary" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Go to Host overview" }).getAttribute("href")).toBe("/");
+});

@@ -447,7 +447,7 @@ fn abuse_is_refused_without_writes(verb: Verb) {
     let other_host = SignedBackup::new(&setup.fixture, &other_plan, other_grant);
     let reply = setup.refuse(&other_host, &operation, &key, ExecutorError::BindingDenied);
     assert_eq!(reply.state, None);
-    let (mut rotated_plan, mut rotated_grant) = (setup.plan.clone(), grant.clone());
+    let (mut rotated_plan, mut rotated_grant) = (setup.plan.clone(), grant);
     for record in [&mut rotated_plan, &mut rotated_grant] {
         record["host_epoch"] = json!("epoch_2");
     }

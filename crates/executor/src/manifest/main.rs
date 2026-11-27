@@ -3,6 +3,12 @@
 //! Starts the one fixed `restic dump` of that snapshot (repository and
 //! read-only identity come from the unit environment), hashes the stream and
 //! writes closed JSON lines to stdout. Nothing reaches argv or logs.
+#![warn(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "W672: production code returns errors; tests may unwrap (clippy.toml)"
+)]
 use std::{
     io::{BufReader, BufWriter, Write},
     process::{Command, ExitCode, Stdio},

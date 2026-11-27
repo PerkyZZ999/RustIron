@@ -1,6 +1,6 @@
 // W612 (P29 Slice 4 / CP04): Unit & Unix-socket integration tests for the D-090
 // read-only Console backend adapter, coordinator IPC framing, and live app mapping.
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, test } from "bun:test";
 import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
@@ -10,11 +10,13 @@ import {
   allowedLoopbackHosts,
   type BackendStatus,
   checkD090Request,
+  consolePort,
   createProdDistHandler,
   createReadOnlyBackendHandlers,
   D090_CSP,
   D090_SECURITY_HEADERS,
   jsonReply,
+  replyErrorStatus,
   withD090Headers,
 } from "./backend-server";
 import {
@@ -276,6 +278,16 @@ describe("backend-server (D-090 loopback hardening)", () => {
     expect(malformed).toEqual(allowedLoopbackHosts(4319));
   });
 
+  it("reads the Console port, with an empty value as unset (W723)", () => {
+    expect(consolePort(undefined)).toBe(4319);
+    expect(consolePort("")).toBe(4319);
+    expect(consolePort("  ")).toBe(4319);
+    expect(consolePort("8443")).toBe(8443);
+    expect(consolePort(" 8443 ")).toBe(8443);
+    expect(consolePort("0")).toBe(0);
+    for (const bad of ["65536", "-1", "80.5", "eighty"]) expect(consolePort(bad)).toBe(4319);
+  });
+
   it("serves production SPA HTML & chunks with CSP, HSTS, Host guard, and symlink/traversal refusal (W651)", async () => {
     const dir = await mkdtemp("/tmp/ri-dist-");
     cleanupDirs.push(dir);
@@ -304,10 +316,45 @@ describe("backend-server (D-090 loopback hardening)", () => {
     const chunkRes = handler(makeReq("/chunk-abc123.js", "GET", { host: "console.example.test" }));
     expect(chunkRes.status).toBe(200);
     expect(chunkRes.headers.get("cache-control")).toContain("immutable");
+    expect(chunkRes.headers.get("content-encoding")).toBeNull();
 
-    // Symlink and path traversal never leak files outside dist/.
+    // W683: a gzip sidecar is served only to clients that accept gzip.
+    await writeFile(join(dir, "chunk-abc123.js.gz"), Bun.gzipSync("console.log('ok');"));
+    const gzReq = (encoding: string) =>
+      handler(
+        makeReq("/chunk-abc123.js", "GET", {
+          host: "console.example.test",
+          "accept-encoding": encoding,
+        }),
+      );
+    const gzRes = gzReq("br, gzip");
+    expect(gzRes.headers.get("content-encoding")).toBe("gzip");
+    expect(gzRes.headers.get("content-type")).toContain("text/javascript");
+    expect(gzRes.headers.get("vary")).toBe("accept-encoding");
+    expect(
+      new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(await gzRes.arrayBuffer()))),
+    ).toBe("console.log('ok');");
+    expect(gzReq("gzip;q=0, br").headers.get("content-encoding")).toBeNull();
+    expect(gzReq("identity").headers.get("content-encoding")).toBeNull();
+
+    // Symlink and path traversal never leak files outside dist/. W719: a
+    // top-level asset that is not a regular dist file is 404, not the app.
     const symlinkRes = handler(makeReq("/leak.txt", "GET", { host: "console.example.test" }));
-    expect(await symlinkRes.text()).toContain("RustIron");
+    expect(symlinkRes.status).toBe(404);
+    expect(await symlinkRes.text()).not.toContain("localhost");
+
+    // W719: an old chunk after an update is 404 with the D-090 headers; page
+    // addresses, also nested ones with a dot, still get the app.
+    const staleChunk = handler(
+      makeReq("/chunk-old999.js", "GET", { host: "console.example.test" }),
+    );
+    expect(staleChunk.status).toBe(404);
+    expect(staleChunk.headers.get("content-security-policy")).toBe(D090_CSP);
+    for (const page of ["/domains/lab.test", "/help/how-rustiron-works", "/no-such-page"]) {
+      const res = handler(makeReq(page, "GET", { host: "console.example.test" }));
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("RustIron");
+    }
     const travRes = handler(makeReq("/../etc/passwd", "GET", { host: "console.example.test" }));
     expect(await travRes.text()).toContain("RustIron");
   });
@@ -463,6 +510,28 @@ describe("backend-server (D-090 loopback hardening)", () => {
     expect(badIdRes.ok).toBe(false);
     if (!badIdRes.ok) expect(badIdRes.code).toBe("INVALID_RESPONSE");
 
+    // W680/W681: an error reply without a string code, or with an extra field, is not the wire shape.
+    const noCodeSock = await startMockCoordinator((req) => ({
+      schema_version: 1,
+      request_id: req.request_id,
+      status: "error",
+      data: null,
+      error: { message: "no code" },
+    }));
+    expect(await coordinatorDoctor(noCodeSock)).toEqual({ ok: false, code: "INVALID_RESPONSE" });
+    const extraFieldSock = await startMockCoordinator((req) => ({
+      schema_version: 1,
+      request_id: req.request_id,
+      status: "ok",
+      data: { kind: "doctor", value: {} },
+      error: null,
+      debug: "unexpected",
+    }));
+    expect(await coordinatorDoctor(extraFieldSock)).toEqual({
+      ok: false,
+      code: "INVALID_RESPONSE",
+    });
+
     // H-03: failed site_list must fail closed (not 200 empty), and canonical items without state stay unknown.
     const failingSitesSock = await startMockCoordinator((req) => {
       if (req.method === "doctor") {
@@ -479,7 +548,13 @@ describe("backend-server (D-090 loopback hardening)", () => {
         request_id: req.request_id,
         status: "error",
         data: null,
-        error: { code: "DEPENDENCY_UNAVAILABLE", message: "db offline" },
+        error: {
+          code: "DEPENDENCY_UNAVAILABLE",
+          message: "db offline",
+          retryable: true,
+          operation_id: null,
+          details: [],
+        },
       };
     });
     const hosts = allowedLoopbackHosts(4319);
@@ -489,7 +564,8 @@ describe("backend-server (D-090 loopback hardening)", () => {
       allowFixture: false,
     });
     const failLive = await failApi.coordinatorLive(makeReq("/api/coordinator/live"));
-    expect(failLive.status).toBe(400);
+    // W739 (QA-08): a dependency outage inside the reply is a 503, not a client 400.
+    expect(failLive.status).toBe(503);
 
     // M-17: publicStatus never calls doctor or exposes host OS/kernel metadata.
     const pubRes = await failApi.publicStatus(makeReq("/api/backend/status"));
@@ -561,4 +637,16 @@ describe("liveApps (v43/v44 journal app derivation)", () => {
     expect(apps[1]?.kind).toBe("Bun app");
     expect(apps[1]?.port).toBe(43187);
   });
+});
+
+test("W739 (QA-08): every coordinator reply error code has a deliberate HTTP status", () => {
+  expect(replyErrorStatus("NOT_FOUND")).toBe(404);
+  expect(replyErrorStatus("CURSOR_EXPIRED")).toBe(404);
+  expect(replyErrorStatus("INVALID_REQUEST")).toBe(400);
+  expect(replyErrorStatus("REQUEST_TOO_LARGE")).toBe(400);
+  expect(replyErrorStatus("UNAUTHORIZED_PEER")).toBe(403);
+  expect(replyErrorStatus("DEPENDENCY_UNAVAILABLE")).toBe(503);
+  expect(replyErrorStatus("UNSUPPORTED_VERSION")).toBe(502);
+  expect(replyErrorStatus("RESPONSE_TOO_LARGE")).toBe(502);
+  expect(replyErrorStatus("SOMETHING_NEW")).toBe(502);
 });

@@ -367,9 +367,8 @@ hunting, and inspect technical evidence without being overwhelmed by it.
 visual contract; the prose defines their usage. Read the [design brief](DESIGN-BRIEF.md)
 and [information architecture](INFORMATION-ARCHITECTURE.md) alongside it. The
 refined mockup is the first implementation target, not permission to modify the
-production Console. The original document identifies Astryx as the existing
-component foundation; the refined prototype uses the separately requested Coss
-UI stack. Existing production implementation and light-theme compatibility are
+production Console. The production Console moved from Astryx to the Coss UI
+stack in W642, as the owner directed on 2026-11-26. Light-theme compatibility is
 not removed by this document. Resolve discrepancies with the project owner
 before migrating production or changing product capabilities.
 
@@ -624,12 +623,9 @@ library styling unchanged. Use the required frontend, iconography, and web desig
 Agent Skills from the redesign task. Evlog integration belongs in the prototype
 implementation, not the visual token schema.
 
-The existing Astryx production implementation and its
-[technical stack](technical/TECH-STACK.md) are historical/current-code context;
-this design document authorizes the requested prototype stack only. If the
-technical documentation still prohibits Tailwind, record the discrepancy and
-reconcile it before any production migration. Do not silently rewrite unrelated
-architecture or security requirements.
+The production Console uses this stack since W642, and the
+[technical stack](technical/TECH-STACK.md) records it. Do not silently rewrite
+unrelated architecture or security requirements.
 
 The wordmark is RustIron; a final logo is unselected. Use one provisional server
 glyph. Use `lucide-react` for navigation and actions, with consistent 1.75–2px

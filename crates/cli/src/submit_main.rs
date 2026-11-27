@@ -2,6 +2,12 @@
 //!
 //! Sends one signed submission and prints the executor's reply. It holds no
 //! signing key and grants nothing; the executor decides from its own policy.
+#![warn(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "W672: production code returns errors; tests may unwrap (clippy.toml)"
+)]
 
 use std::{
     io::{Read, Write},

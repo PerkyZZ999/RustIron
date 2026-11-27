@@ -1,12 +1,14 @@
 // One data source for every screen: the live read-only observation when the
 // server has one, otherwise the mockup fixture. Screens never mix the two
 // silently; the shell labels which one is showing and how old it is.
+import { consoleRequest } from "./console-request";
 import {
   createContext,
   type ReactNode,
   useCallback,
-  useContext,
+  use,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -61,10 +63,11 @@ type Data = {
   /** True while an on-demand refresh is in flight. */
   refreshing: boolean;
   /** Re-reads /api/observation (or /api/coordinator/live). */
-  refresh: () => Promise<void>;
+  /** Resolves true when a live or fixture observation arrived, false when it did not. */
+  refresh: () => Promise<boolean>;
 };
 
-const noopRefresh = async () => {};
+const noopRefresh = async () => false;
 
 const fixture: Data = {
   source: { kind: "fixture" },
@@ -80,10 +83,39 @@ const fixture: Data = {
   refresh: noopRefresh,
 };
 
+const loadingData: Data = {
+  source: { kind: "loading" },
+  sites: [],
+  operations: [],
+  recovery: [],
+  siteSnapshots: {},
+  services: [],
+  machine: null,
+  observation: null,
+  backend: null,
+  refreshing: false,
+  refresh: noopRefresh,
+};
+
 const DataContext = createContext<Data>(fixture);
 
+/**
+ * W732 (QA-01): true unless the Console runs on its sample data. Loading and
+ * unavailable sources are the real host with nothing known yet, so they never
+ * fall back to sample content.
+ */
+export function isRealHost(source: Source): boolean {
+  return source.kind !== "fixture";
+}
+
+/** The host's name for headings: the observed ID, the sample host, or "this host". */
+export function hostLabel(source: Source): string {
+  if (source.kind === "live") return source.host.host_id;
+  return source.kind === "fixture" ? "lab-01" : "this host";
+}
+
 export function useData() {
-  return useContext(DataContext);
+  return use(DataContext);
 }
 
 type Reply =
@@ -94,28 +126,47 @@ type Reply =
 /** W347: the executor answered EXECUTOR_NOT_ENROLLED; there is no journal to show. */
 const notEnrolled: Reply = {
   kind: "unavailable",
-  reason: "the executor is installed but not enrolled (EXECUTOR_NOT_ENROLLED)",
+  reason: "The executor is installed but not enrolled (EXECUTOR_NOT_ENROLLED)",
   notEnrolled: true,
 };
 
+/** W745 (QA-14): what failed and what to check, per server code (Runbook 38). */
+const UNAVAILABLE_REASONS: Record<string, string> = {
+  LIVE_SOURCE_NOT_CONFIGURED:
+    "No observation file is configured; set RUSTIRON_OBSERVATION and enable rustiron-console-observe.timer (Runbook 38)",
+  UNAUTHORIZED_PEER:
+    "The coordinator refused the Console's user; run the Console as rustiron-coordinator (Runbook 38)",
+  COORDINATOR_NOT_CONFIGURED: "No coordinator socket is configured (RUSTIRON_COORDINATOR_SOCKET)",
+  DEPENDENCY_UNAVAILABLE:
+    "The coordinator's inventory or executor is not answering; check rustiron-coordinator and rustiron-executor",
+};
+
+export function unavailableReason(status: number | null, code: string | null): string {
+  if (status === null) return "The Console server did not answer";
+  const reason = code === null ? undefined : UNAVAILABLE_REASONS[code];
+  if (reason) return reason;
+  return code ? `The server answered ${status} (${code})` : `The server answered ${status}`;
+}
+
 async function loadFromEndpoint(endpoint: string): Promise<Reply> {
-  try {
-    const response = await fetch(endpoint, { cache: "no-store" });
-    if (!response.ok) return { kind: "unavailable", reason: `server answered ${response.status}` };
-    const body = (await response.json()) as {
-      source?: string;
-      observed_at?: number;
-      observation?: unknown;
-    };
-    if (body.source === "fixture") return { kind: "fixture" };
-    if (isExecutorRefusal(body.observation)) return notEnrolled;
-    if (typeof body.observed_at !== "number" || !isObservation(body.observation)) {
-      return { kind: "unavailable", reason: "unrecognised observation" };
-    }
-    return { kind: "live", observation: body.observation, observedAt: body.observed_at };
-  } catch {
-    return { kind: "unavailable", reason: "console server unreachable" };
+  const reply = await consoleRequest<{
+    source?: string;
+    observed_at?: number;
+    observation?: unknown;
+  } | null>(endpoint);
+  if (!reply.ok) {
+    return { kind: "unavailable", reason: unavailableReason(reply.status, reply.code) };
   }
+  const body = reply.data ?? {};
+  if (body.source === "fixture") return { kind: "fixture" };
+  if (isExecutorRefusal(body.observation)) return notEnrolled;
+  if (typeof body.observed_at !== "number" || !isObservation(body.observation)) {
+    return {
+      kind: "unavailable",
+      reason: "The server sent an observation this Console does not recognise",
+    };
+  }
+  return { kind: "live", observation: body.observation, observedAt: body.observed_at };
 }
 
 async function load(backend: BackendStatus | null): Promise<Reply> {
@@ -128,15 +179,9 @@ async function load(backend: BackendStatus | null): Promise<Reply> {
 }
 
 async function loadBackendStatus(): Promise<BackendStatus | null> {
-  try {
-    const response = await fetch("/api/backend/status", { cache: "no-store" });
-    if (!response.ok) return null;
-    const body = (await response.json()) as Partial<BackendStatus> | null;
-    if (body?.schema !== "rustiron-console-backend/1") return null;
-    return body as BackendStatus;
-  } catch {
-    return null;
-  }
+  const reply = await consoleRequest<Partial<BackendStatus> | null>("/api/backend/status");
+  if (!reply.ok || reply.data?.schema !== "rustiron-console-backend/1") return null;
+  return reply.data as BackendStatus;
 }
 
 function toData(
@@ -166,17 +211,19 @@ function toData(
 }
 
 export function DataProvider({ children }: { children: ReactNode }) {
-  const [data, setData] = useState<Data>({ ...fixture, source: { kind: "loading" } });
+  // W736 (QA-05): nothing is known before the first reply; the sample data
+  // appears only when the server says the Console runs on it.
+  const [data, setData] = useState<Data>(loadingData);
   const [refreshing, setRefreshing] = useState(false);
   const apply = useRef(noopRefresh);
   useEffect(() => {
     let active = true;
     let last: { observation: Observation; observedAt: number } | null = null;
-    async function refresh(manual = false) {
+    async function refresh(manual = false): Promise<boolean> {
       if (manual && active) setRefreshing(true);
       const backend = await loadBackendStatus();
       const reply = await load(backend);
-      if (!active) return;
+      if (!active) return false;
       setRefreshing(false);
       if (reply.kind === "fixture") setData({ ...fixture, backend });
       else if (reply.kind === "live") {
@@ -202,6 +249,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
           refresh: noopRefresh,
         });
       }
+      return reply.kind !== "unavailable";
     }
     apply.current = () => refresh(true);
     void refresh(false);
@@ -213,7 +261,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
     };
   }, []);
   const refresh = useCallback(() => apply.current(), []);
-  return (
-    <DataContext.Provider value={{ ...data, refreshing, refresh }}>{children}</DataContext.Provider>
-  );
+  const value = useMemo(() => ({ ...data, refreshing, refresh }), [data, refreshing, refresh]);
+  return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
 }

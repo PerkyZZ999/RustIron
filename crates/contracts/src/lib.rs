@@ -1,6 +1,12 @@
 //! Shared wire contracts for Rustiron's local, versioned interfaces.
 //!
 //! This crate defines data contracts, not authorization or privileged effects.
+#![warn(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "W672: production code returns errors; tests may unwrap (clippy.toml)"
+)]
 
 use std::error::Error;
 use std::fmt;

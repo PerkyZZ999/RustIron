@@ -5,7 +5,6 @@
 //! from enrolled policy and provision records; nothing comes from a request.
 
 use std::{
-    collections::BTreeMap,
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
     os::fd::OwnedFd,
@@ -148,7 +147,7 @@ fn vhssl(account: &str) -> String {
 pub const EJECTED_DIR: &str = crate::layout::OLS_EJECTED_DIR;
 
 /// Rendered generation: file name → bytes, in name order.
-pub type Generation = BTreeMap<String, Vec<u8>>;
+pub type Generation = crate::generation::Files;
 
 /// Renders the complete listener include for adopted plus provisioned sites.
 pub fn render(
@@ -1351,13 +1350,12 @@ pub fn adopted_vhosts_pinned(names: &[&str]) -> bool {
 
 fn pinned_path(path: &str) -> bool {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-    let file = match std::fs::OpenOptions::new()
+    let Ok(file) = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags((OFlags::NOFOLLOW | OFlags::CLOEXEC).bits() as i32)
         .open(path)
-    {
-        Ok(file) => file,
-        Err(_) => return false,
+    else {
+        return false;
     };
     let Ok(metadata) = file.metadata() else {
         return false;
@@ -1523,17 +1521,7 @@ pub fn config_test() -> Result<(), ExecutorError> {
 }
 
 /// Atomically repoints `current` (temporary symlink + `renameat` + fsync).
-pub fn switch(include: &OwnedFd, id: &Id) -> Result<(), ExecutorError> {
-    let temporary = format!("current.next-{}", stage::random_hex()?);
-    let link = format!("generations/{}", id.as_str());
-    fs::symlinkat(link.as_str(), include, temporary.as_str())
-        .map_err(|_| ExecutorError::StepFailed)?;
-    if fs::renameat(include, temporary.as_str(), include, "current").is_err() {
-        let _ = fs::unlinkat(include, temporary.as_str(), AtFlags::empty());
-        return Err(ExecutorError::StepFailed);
-    }
-    fs::fsync(include).map_err(|_| ExecutorError::StepFailed)
-}
+pub use crate::generation::switch;
 
 /// Opens the include directory: root-owned, not group/other-writable.
 pub fn open_include() -> Result<OwnedFd, ExecutorError> {

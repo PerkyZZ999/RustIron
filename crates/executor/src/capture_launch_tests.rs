@@ -129,7 +129,7 @@ fn only_the_fixed_marker_query_for_the_site_may_run() {
     other_sql[n - 2] = "DROP DATABASE rs_blog13".to_owned();
     let mut other_db = good.clone();
     other_db[n - 1] = "rs_blog5".to_owned();
-    let mut extra = good.clone();
+    let mut extra = good;
     extra.push("--execute=SELECT 1".to_owned());
     for bad in [other_sql, other_db, extra] {
         assert_eq!(
@@ -270,9 +270,9 @@ fn manifest_launches_only_the_fixed_worker_for_one_snapshot() {
         vec![worker.clone(), "dump".to_owned()],
         vec![worker.clone(), "dump".to_owned(), "A".repeat(64)],
         vec![
-            worker.clone(),
+            worker,
             "dump".to_owned(),
-            snapshot.clone(),
+            snapshot,
             "--repo=s3:http://x/other".to_owned(),
         ],
     ] {

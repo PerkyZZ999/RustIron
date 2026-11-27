@@ -6,6 +6,12 @@
 //! journal [`Intent`] only. It records nothing, consumes no nonce, reserves no
 //! resource and performs no effect. [`Executor::submit`] adds the durable step:
 //! one journal transaction that consumes the grant/nonce and records intent.
+#![warn(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "W672: production code returns errors; tests may unwrap (clippy.toml)"
+)]
 
 use std::path::PathBuf;
 
@@ -40,6 +46,7 @@ mod dns_import;
 mod durable;
 pub mod ejection;
 mod files;
+mod generation;
 mod import;
 pub mod layout;
 mod manifest;
@@ -167,6 +174,10 @@ pub enum ExecutorError {
     /// that the standing grant derives for a site it names; refused
     /// before intent.
     RunMismatch,
+    /// W674: an activation failed and restoring the previous generation also
+    /// failed, so the live state is not known to match the journal. The
+    /// operation is never recorded as rolled back.
+    RollbackFailed,
 }
 
 impl ExecutorError {
@@ -204,11 +215,12 @@ impl ExecutorError {
             Self::ReadoptMismatch => "READOPT_MISMATCH",
             Self::WindowClosed => "STANDING_WINDOW_CLOSED",
             Self::RunMismatch => "STANDING_RUN_MISMATCH",
+            Self::RollbackFailed => "ACTIVATION_ROLLBACK_FAILED",
         }
     }
 
     /// Every error, for mapping a stable code back (admin helper replies).
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 32] = [
         Self::AccessDenied,
         Self::Unavailable,
         Self::PeerDenied,
@@ -240,6 +252,7 @@ impl ExecutorError {
         Self::ReadoptMismatch,
         Self::WindowClosed,
         Self::RunMismatch,
+        Self::RollbackFailed,
     ];
 
     /// The error whose stable code is `code`.
@@ -323,7 +336,7 @@ impl TrustAnchor {
 
     /// The compiled profile's locations; no helper socket. In the product
     /// profile the fixture registry is the empty path, which no trusted
-    /// open accepts, and [`verified_intent`] refuses the fixture verb first.
+    /// open accepts, and `verified_intent` refuses the fixture verb first.
     pub fn host() -> Self {
         Self {
             owner_uid: 0,
@@ -357,6 +370,44 @@ pub struct AdmissionRequest<'a> {
     pub now: Option<Timestamp>,
 }
 
+/// W710 (pass 33, fix 3): the shared opening of every signed request. It
+/// reads the enrolled policy from the trusted folder, requires the kernel
+/// peer to be the enrolled requester, and keeps the plan, grant, and
+/// signature within their byte limits. Each verb then checks its own
+/// enrollment, decodes, and binds.
+pub(crate) fn open_signed(
+    anchor: &TrustAnchor,
+    request: &AdmissionRequest<'_>,
+) -> Result<policy::LoadedPolicy, ExecutorError> {
+    let owner = anchor.owner_uid;
+    let loaded = policy::load(
+        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
+        owner,
+    )?;
+    if request.peer_uid != loaded.policy.requester_uid {
+        return Err(ExecutorError::PeerDenied);
+    }
+    if request.plan.len() > MAX_REQUEST_BYTES
+        || request.grant.len() > MAX_REQUEST_BYTES
+        || request.signature.len() > MAX_SIGNATURE_BYTES
+    {
+        return Err(ExecutorError::InvalidRequest);
+    }
+    Ok(loaded)
+}
+
+/// W710: the SSHSIG check over the exact grant bytes, with the enrolled
+/// verifier, in the trusted scratch folder.
+pub(crate) fn verify_grant(
+    anchor: &TrustAnchor,
+    loaded: &policy::LoadedPolicy,
+    grant: &[u8],
+    signature: &[u8],
+) -> Result<(), ExecutorError> {
+    let scratch = files::open_trusted_directory(&anchor.scratch_dir, anchor.owner_uid)?;
+    signature::verify(grant, signature, loaded, &anchor.scratch_dir, &scratch)
+}
+
 /// Runs every pre-journal check in a fixed order and returns the bound intent.
 pub fn admit(
     anchor: &TrustAnchor,
@@ -378,21 +429,8 @@ pub(crate) fn verified_intent(
     if layout::FIXTURE_REGISTRY_DIR.is_none() {
         return Err(ExecutorError::InvalidRequest);
     }
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
-    }
     let plan = FixturePlan::decode(request.plan)?;
     let grant = FixtureGrant::decode(request.grant)?;
     check_fixture_binding(
@@ -408,14 +446,7 @@ pub(crate) fn verified_intent(
             now: request.now,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     let activation = plan.activation();
     Ok(Intent {
         operation_id: request.operation_id.clone(),
@@ -453,25 +484,12 @@ pub(crate) fn verified_site(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
 ) -> Result<VerifiedSite, ExecutorError> {
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
     let provisioning = enrolled
         .provisioning
         .clone()
         .ok_or(ExecutorError::Unavailable)?;
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
-    }
     let plan = SitePlan::decode(request.plan)?;
     let grant = SiteGrant::decode(request.grant)?;
     // The product profile enrolls a quota (policy::ProvisioningPolicy::valid)
@@ -504,14 +522,7 @@ pub(crate) fn verified_site(
             quota_cap,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     Ok(VerifiedSite {
         intent: ProvisionIntent {
             operation_id: request.operation_id.clone(),
@@ -549,26 +560,13 @@ pub(crate) fn verified_proxy(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
 ) -> Result<VerifiedProxy, ExecutorError> {
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
     let provisioning = enrolled
         .provisioning
         .clone()
         .ok_or(ExecutorError::Unavailable)?;
     let ols = enrolled.ols.as_ref().ok_or(ExecutorError::Unavailable)?;
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
-    }
     let plan = rustiron_contracts::approval::ProxyPlan::decode(request.plan)?;
     let grant = rustiron_contracts::approval::ProxyGrant::decode(request.grant)?;
     rustiron_contracts::approval::check_proxy_binding(
@@ -589,14 +587,7 @@ pub(crate) fn verified_proxy(
     if !proxy_site::ports_free(&reserved, &plan.ports()) {
         return Err(ExecutorError::BindingDenied);
     }
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     Ok(VerifiedProxy {
         intent: ProvisionIntent {
             operation_id: request.operation_id.clone(),
@@ -639,26 +630,13 @@ pub(crate) fn verified_app_provision(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
 ) -> Result<VerifiedAppProvision, ExecutorError> {
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
     let provisioning = enrolled
         .provisioning
         .clone()
         .ok_or(ExecutorError::Unavailable)?;
     let ols = enrolled.ols.as_ref().ok_or(ExecutorError::Unavailable)?;
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
-    }
     let plan = rustiron_contracts::approval::AppProvisionPlan::decode(request.plan)?;
     if plan.ingress() == rustiron_contracts::approval::IngressEngine::Caddy
         && enrolled.caddy.is_none()
@@ -683,12 +661,8 @@ pub(crate) fn verified_app_provision(
     reserved.extend(enrolled.firewall.as_ref().map(|firewall| firewall.ssh_port));
     if let Some(caddy) = &enrolled.caddy {
         reserved.push(caddy::CADDY_ADMIN_PORT);
-        if let Ok(addr) = caddy.http_address.parse::<std::net::SocketAddr>() {
-            reserved.push(addr.port());
-        }
-        if let Ok(addr) = caddy.https_address.parse::<std::net::SocketAddr>() {
-            reserved.push(addr.port());
-        }
+        // W672: the policy's own port reader; an unparsable address fails closed.
+        reserved.extend(caddy.reserved_ports()?);
         if let Some(ols_up) = &caddy.ols_upstream
             && let Ok(addr) = ols_up.parse::<std::net::SocketAddr>()
         {
@@ -706,14 +680,7 @@ pub(crate) fn verified_app_provision(
     {
         return Err(ExecutorError::BindingDenied);
     }
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     let fullstack = (plan.schema_version() == 2).then(|| rustiron_journal::AppFullstackSpec {
         ingress: plan.ingress(),
         topology: plan.topology(),
@@ -770,21 +737,8 @@ pub(crate) fn verified_app_deploy(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
 ) -> Result<VerifiedAppDeploy, ExecutorError> {
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
-    }
     let plan = rustiron_contracts::approval::AppDeployPlan::decode(request.plan)?;
     let grant = rustiron_contracts::approval::AppDeployGrant::decode(request.grant)?;
     rustiron_contracts::approval::check_app_deploy_binding(
@@ -800,14 +754,7 @@ pub(crate) fn verified_app_deploy(
             now: request.now,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     Ok(VerifiedAppDeploy {
         intent: rustiron_journal::AppReleaseIntent {
             operation_id: request.operation_id.clone(),
@@ -840,21 +787,8 @@ pub(crate) fn verified_app_lifecycle(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
 ) -> Result<rustiron_journal::AppLifecycleIntent, ExecutorError> {
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
-    }
     let plan = rustiron_contracts::approval::AppLifecyclePlan::decode(request.plan)?;
     let grant = rustiron_contracts::approval::AppLifecycleGrant::decode(request.grant)?;
     rustiron_contracts::approval::check_app_lifecycle_binding(
@@ -870,14 +804,7 @@ pub(crate) fn verified_app_lifecycle(
             now: request.now,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     Ok(rustiron_journal::AppLifecycleIntent {
         operation_id: request.operation_id.clone(),
         idempotency_key: request.idempotency_key.clone(),
@@ -919,26 +846,13 @@ pub(crate) fn verified_import(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
 ) -> Result<VerifiedImport, ExecutorError> {
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
     let (Some(provisioning), Some(migration)) =
         (enrolled.provisioning.clone(), enrolled.migration.as_ref())
     else {
         return Err(ExecutorError::Unavailable);
     };
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
-    }
     let plan = ImportPlan::decode(request.plan)?;
     let grant = ImportGrant::decode(request.grant)?;
     let quota_cap = match provisioning.quota {
@@ -960,14 +874,7 @@ pub(crate) fn verified_import(
             quota_cap,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     if let Some(alias) = plan.alias_hostname() {
         let ols = enrolled
             .ols
@@ -1016,27 +923,14 @@ pub(crate) fn verified_certificate(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
 ) -> Result<rustiron_journal::CertificateIntent, ExecutorError> {
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
     let tls_enrolled = enrolled
         .ols
         .as_ref()
         .is_some_and(|ols| ols.tls_address.is_some());
     if enrolled.acme.is_none() || !tls_enrolled {
         return Err(ExecutorError::Unavailable);
-    }
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
     }
     let plan = CertificatePlan::decode(request.plan)?;
     let grant = CertificateGrant::decode(request.grant)?;
@@ -1053,14 +947,7 @@ pub(crate) fn verified_certificate(
             now: request.now,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     if plan.alias_hostname().is_some() && !enrolled.alias_certificate_enabled() {
         return Err(ExecutorError::Unavailable);
     }
@@ -1088,23 +975,10 @@ pub(crate) fn verified_scrub(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
 ) -> Result<rustiron_journal::ScrubIntent, ExecutorError> {
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
     if enrolled.migration.is_none() {
         return Err(ExecutorError::Unavailable);
-    }
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
     }
     let plan = ScrubPlan::decode(request.plan)?;
     let grant = ScrubGrant::decode(request.grant)?;
@@ -1121,14 +995,7 @@ pub(crate) fn verified_scrub(
             now: request.now,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     Ok(rustiron_journal::ScrubIntent {
         operation_id: request.operation_id.clone(),
         idempotency_key: request.idempotency_key.clone(),
@@ -1150,23 +1017,10 @@ pub(crate) fn verified_retire(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
 ) -> Result<rustiron_journal::RetireIntent, ExecutorError> {
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
     if enrolled.provisioning.is_none() {
         return Err(ExecutorError::Unavailable);
-    }
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
     }
     let plan = rustiron_contracts::approval::RetirePlan::decode(request.plan)?;
     let grant = rustiron_contracts::approval::RetireGrant::decode(request.grant)?;
@@ -1183,14 +1037,7 @@ pub(crate) fn verified_retire(
             now: request.now,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     Ok(rustiron_journal::RetireIntent {
         operation_id: request.operation_id.clone(),
         idempotency_key: request.idempotency_key.clone(),
@@ -1211,23 +1058,10 @@ pub(crate) fn verified_delete(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
 ) -> Result<rustiron_journal::DeleteIntent, ExecutorError> {
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
     if enrolled.provisioning.is_none() {
         return Err(ExecutorError::Unavailable);
-    }
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
     }
     let plan = rustiron_contracts::approval::DeletePlan::decode(request.plan)?;
     let grant = rustiron_contracts::approval::DeleteGrant::decode(request.grant)?;
@@ -1244,14 +1078,7 @@ pub(crate) fn verified_delete(
             now: request.now,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     Ok(rustiron_journal::DeleteIntent {
         operation_id: request.operation_id.clone(),
         idempotency_key: request.idempotency_key.clone(),
@@ -1290,23 +1117,10 @@ pub(crate) fn verified_clone_scrub(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
 ) -> Result<rustiron_journal::CloneScrubIntent, ExecutorError> {
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
     if enrolled.provisioning.is_none() {
         return Err(ExecutorError::Unavailable);
-    }
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
     }
     let plan = rustiron_contracts::approval::CloneScrubPlan::decode(request.plan)?;
     let grant = rustiron_contracts::approval::CloneScrubGrant::decode(request.grant)?;
@@ -1323,14 +1137,7 @@ pub(crate) fn verified_clone_scrub(
             now: request.now,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     Ok(rustiron_journal::CloneScrubIntent {
         operation_id: request.operation_id.clone(),
         idempotency_key: request.idempotency_key.clone(),
@@ -1352,23 +1159,10 @@ pub(crate) fn verified_restore(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
 ) -> Result<(rustiron_journal::RestoreIntent, Sha256Digest), ExecutorError> {
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
     if enrolled.provisioning.is_none() {
         return Err(ExecutorError::Unavailable);
-    }
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
     }
     let plan = rustiron_contracts::approval::RestorePlan::decode(request.plan)?;
     let grant = rustiron_contracts::approval::RestoreGrant::decode(request.grant)?;
@@ -1385,14 +1179,7 @@ pub(crate) fn verified_restore(
             now: request.now,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     // The pins name the destination as it is enrolled now.
     let source = plan.source();
     let destination = loaded
@@ -1433,23 +1220,10 @@ pub(crate) fn verified_quota(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
 ) -> Result<rustiron_journal::QuotaChangeIntent, ExecutorError> {
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
     if enrolled.provisioning.is_none() {
         return Err(ExecutorError::Unavailable);
-    }
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
     }
     let plan = rustiron_contracts::approval::QuotaPlan::decode(request.plan)?;
     let grant = rustiron_contracts::approval::QuotaGrant::decode(request.grant)?;
@@ -1466,14 +1240,7 @@ pub(crate) fn verified_quota(
             now: request.now,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     Ok(rustiron_journal::QuotaChangeIntent {
         operation_id: request.operation_id.clone(),
         idempotency_key: request.idempotency_key.clone(),
@@ -1496,21 +1263,8 @@ pub(crate) fn verified_credential_rotate(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
 ) -> Result<rustiron_journal::CredentialRotateIntent, ExecutorError> {
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
-    }
     let plan = rustiron_contracts::approval::CredentialRotatePlan::decode(request.plan)?;
     let grant = rustiron_contracts::approval::CredentialRotateGrant::decode(request.grant)?;
     rustiron_contracts::approval::check_credential_rotate_binding(
@@ -1526,14 +1280,7 @@ pub(crate) fn verified_credential_rotate(
             now: request.now,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     Ok(rustiron_journal::CredentialRotateIntent {
         operation_id: request.operation_id.clone(),
         idempotency_key: request.idempotency_key.clone(),
@@ -1556,22 +1303,9 @@ pub(crate) fn verified_dns_import(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
 ) -> Result<(rustiron_journal::DnsImportIntent, dns::DnsPolicy), ExecutorError> {
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
     let dns = enrolled.dns.clone().ok_or(ExecutorError::Unavailable)?;
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
-    }
     let plan = rustiron_contracts::approval::DnsImportPlan::decode(request.plan)?;
     let grant = rustiron_contracts::approval::DnsImportGrant::decode(request.grant)?;
     rustiron_contracts::approval::check_dns_import_binding(
@@ -1587,14 +1321,7 @@ pub(crate) fn verified_dns_import(
             now: request.now,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     Ok((
         rustiron_journal::DnsImportIntent {
             operation_id: request.operation_id.clone(),
@@ -1626,23 +1353,10 @@ pub(crate) fn verified_dns_change(
     ),
     ExecutorError,
 > {
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
     if enrolled.dns.is_none() {
         return Err(ExecutorError::Unavailable);
-    }
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
     }
     let plan = rustiron_contracts::approval::DnsChangePlan::decode(request.plan)?;
     let grant = rustiron_contracts::approval::DnsChangeGrant::decode(request.grant)?;
@@ -1659,14 +1373,7 @@ pub(crate) fn verified_dns_change(
             now: request.now,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     let intent = rustiron_journal::DnsChangeIntent {
         operation_id: request.operation_id.clone(),
         idempotency_key: request.idempotency_key.clone(),
@@ -1688,23 +1395,10 @@ pub(crate) fn verified_update(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
 ) -> Result<rustiron_journal::UpdateIntent, ExecutorError> {
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
     if enrolled.provisioning.is_none() {
         return Err(ExecutorError::Unavailable);
-    }
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
     }
     let plan = rustiron_contracts::approval::SiteUpdatePlan::decode(request.plan)?;
     let grant = rustiron_contracts::approval::SiteUpdateGrant::decode(request.grant)?;
@@ -1721,14 +1415,7 @@ pub(crate) fn verified_update(
             now: request.now,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     Ok(rustiron_journal::UpdateIntent {
         operation_id: request.operation_id.clone(),
         idempotency_key: request.idempotency_key.clone(),
@@ -1753,23 +1440,10 @@ pub(crate) fn verified_ols(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
 ) -> Result<(OlsPlan, OlsGrant, policy::Policy), ExecutorError> {
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
     if enrolled.ols.is_none() {
         return Err(ExecutorError::Unavailable);
-    }
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
     }
     let plan = OlsPlan::decode(request.plan)?;
     let grant = OlsGrant::decode(request.grant)?;
@@ -1793,14 +1467,7 @@ pub(crate) fn verified_ols(
             now: request.now,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     Ok((plan, grant, loaded.policy))
 }
 
@@ -1811,23 +1478,10 @@ pub(crate) fn verified_capture(
     request: &AdmissionRequest<'_>,
 ) -> Result<(CapturePlan, CaptureGrant, policy::Policy), ExecutorError> {
     policy::require_lab_backup()?;
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
     if enrolled.backup.is_none() || enrolled.provisioning.is_none() {
         return Err(ExecutorError::Unavailable);
-    }
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
     }
     let plan = CapturePlan::decode(request.plan)?;
     let grant = CaptureGrant::decode(request.grant)?;
@@ -1844,14 +1498,7 @@ pub(crate) fn verified_capture(
             now: request.now,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     Ok((plan, grant, loaded.policy))
 }
 
@@ -1862,23 +1509,10 @@ pub(crate) fn verified_probe(
     request: &AdmissionRequest<'_>,
 ) -> Result<(ProbePlan, ProbeGrant, policy::Policy), ExecutorError> {
     policy::require_lab_backup()?;
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
     if enrolled.backup.is_none() || enrolled.provisioning.is_none() {
         return Err(ExecutorError::Unavailable);
-    }
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
     }
     let plan = ProbePlan::decode(request.plan)?;
     let grant = ProbeGrant::decode(request.grant)?;
@@ -1895,14 +1529,7 @@ pub(crate) fn verified_probe(
             now: request.now,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     Ok((plan, grant, loaded.policy))
 }
 
@@ -1912,23 +1539,10 @@ pub(crate) fn verified_eject(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
 ) -> Result<(EjectPlan, EjectGrant, policy::Policy), ExecutorError> {
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
     if enrolled.ols.is_none() || enrolled.provisioning.is_none() {
         return Err(ExecutorError::Unavailable);
-    }
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
     }
     let plan = EjectPlan::decode(request.plan)?;
     let grant = EjectGrant::decode(request.grant)?;
@@ -1945,14 +1559,7 @@ pub(crate) fn verified_eject(
             now: request.now,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     Ok((plan, grant, loaded.policy))
 }
 
@@ -1964,25 +1571,12 @@ pub(crate) fn verified_readopt(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
 ) -> Result<(ReadoptPlan, ReadoptGrant, policy::Policy), ExecutorError> {
-    let owner = anchor.owner_uid;
-    let loaded = policy::load(
-        &files::open_trusted_directory(&anchor.policy_dir, owner)?,
-        owner,
-    )?;
+    let loaded = open_signed(anchor, request)?;
     let enrolled = &loaded.policy;
-    if request.peer_uid != enrolled.requester_uid {
-        return Err(ExecutorError::PeerDenied);
-    }
     let provisioning = enrolled
         .provisioning
         .as_ref()
         .ok_or(ExecutorError::Unavailable)?;
-    if request.plan.len() > MAX_REQUEST_BYTES
-        || request.grant.len() > MAX_REQUEST_BYTES
-        || request.signature.len() > MAX_SIGNATURE_BYTES
-    {
-        return Err(ExecutorError::InvalidRequest);
-    }
     let plan = ReadoptPlan::decode(request.plan)?;
     let grant = ReadoptGrant::decode(request.grant)?;
     if plan.generation().is_some() && enrolled.ols.is_none() {
@@ -2006,14 +1600,7 @@ pub(crate) fn verified_readopt(
             now: request.now,
         },
     )?;
-    let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
-    signature::verify(
-        grant.as_bytes(),
-        request.signature,
-        &loaded,
-        &anchor.scratch_dir,
-        &scratch,
-    )?;
+    verify_grant(anchor, &loaded, grant.as_bytes(), request.signature)?;
     Ok((plan, grant, loaded.policy))
 }
 

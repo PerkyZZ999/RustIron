@@ -4,14 +4,14 @@ use rustiron_contracts::{
     Id,
     approval::{AppDatabase, CredentialTarget},
 };
-use rustiron_journal::{CredentialRotateResult, CredentialRotateState, CredentialRotation};
 
-use super::{Executor, signed_inputs};
+use super::Executor;
 use crate::{
     AdmissionRequest, ExecutorError,
     admin_helper::{self, AdminRequest, AdminStep, Reply},
     credential_rotate::RotateOutcome,
 };
+use rustiron_journal::{Admitted, CredentialRotateState, CredentialRotation};
 
 impl Executor {
     /// Admits one signed `site_credential_rotate` (`mariadb_user_password`)
@@ -26,63 +26,63 @@ impl Executor {
     pub fn rotate_site_credentials(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<CredentialRotateResult, ExecutorError> {
+    ) -> Result<Admitted<CredentialRotation>, ExecutorError> {
         let intent = crate::verified_credential_rotate(&self.anchor, request)?;
-        self.check_identity(&intent.host_id, &intent.host_epoch)?;
-        let now = request.now.ok_or(ExecutorError::TimeDenied)?;
-
-        if self
-            .journal
-            .credential_rotation_status(&intent.operation_id)?
-            .is_none()
-        {
-            let Some(provision) = self.journal.provision_for_site(&intent.site_id)? else {
-                return Err(ExecutorError::PreconditionChanged);
-            };
-            let is_proxy = self
-                .journal
-                .proxy_facts(&provision.intent.operation_id)?
-                .is_some();
-            let is_app = self
-                .journal
-                .app_facts(&provision.intent.operation_id)?
-                .is_some();
-            let is_static = self
-                .journal
-                .import_status(&provision.intent.operation_id)?
-                .is_some_and(|imp| imp.facts.is_static());
-            let app_db = self
-                .journal
-                .app_fullstack_spec(&provision.intent.operation_id)?
-                .map(|spec| spec.database);
-            let target_matches_site = match intent.target {
-                CredentialTarget::MariadbUserPassword => !is_proxy && !is_app && !is_static,
-                CredentialTarget::AppMariadbPassword => {
-                    is_app && app_db == Some(AppDatabase::Mariadb)
+        let rotation = match self.admit_signed(
+            request,
+            (&intent.host_id, &intent.host_epoch),
+            |journal| {
+                Ok(journal
+                    .credential_rotation_status(&intent.operation_id)?
+                    .is_some())
+            },
+            |executor, _now| {
+                let Some(provision) = executor.journal.provision_for_site(&intent.site_id)? else {
+                    return Err(ExecutorError::PreconditionChanged);
+                };
+                let is_proxy = executor
+                    .journal
+                    .proxy_facts(&provision.intent.operation_id)?
+                    .is_some();
+                let is_app = executor
+                    .journal
+                    .app_facts(&provision.intent.operation_id)?
+                    .is_some();
+                let is_static = executor
+                    .journal
+                    .import_status(&provision.intent.operation_id)?
+                    .is_some_and(|imp| imp.facts.is_static());
+                let app_db = executor
+                    .journal
+                    .app_fullstack_spec(&provision.intent.operation_id)?
+                    .map(|spec| spec.database);
+                let target_matches_site = match intent.target {
+                    CredentialTarget::MariadbUserPassword => !is_proxy && !is_app && !is_static,
+                    CredentialTarget::AppMariadbPassword => {
+                        is_app && app_db == Some(AppDatabase::Mariadb)
+                    }
+                    CredentialTarget::AppPostgresql18Password => {
+                        is_app && app_db == Some(AppDatabase::Postgresql18)
+                    }
+                };
+                if !provision.state.is_owned()
+                    || provision.intent.hostname != intent.hostname
+                    || executor.journal.ejected_sites()?.contains(&intent.site_id)
+                    || !target_matches_site
+                {
+                    return Err(ExecutorError::PreconditionChanged);
                 }
-                CredentialTarget::AppPostgresql18Password => {
-                    is_app && app_db == Some(AppDatabase::Postgresql18)
+                if executor.anchor.admin_socket.is_none() {
+                    return Err(ExecutorError::Unavailable);
                 }
-            };
-            if !provision.state.is_owned()
-                || provision.intent.hostname != intent.hostname
-                || self.journal.ejected_sites()?.contains(&intent.site_id)
-                || !target_matches_site
-            {
-                return Err(ExecutorError::PreconditionChanged);
+                Ok(())
+            },
+            |journal, now| journal.record_credential_rotation(&intent, now),
+        )? {
+            Admitted::Existing(existing) => {
+                return Ok(Admitted::Existing(existing));
             }
-            if self.anchor.admin_socket.is_none() {
-                return Err(ExecutorError::Unavailable);
-            }
-        }
-
-        let rotation = match self.admit(signed_inputs(request)?, |journal| {
-            journal.record_credential_rotation(&intent, now)
-        })? {
-            CredentialRotateResult::Existing(existing) => {
-                return Ok(CredentialRotateResult::Existing(existing));
-            }
-            CredentialRotateResult::New(rotation) => rotation,
+            Admitted::New(rotation) => rotation,
         };
 
         let socket = self
@@ -106,7 +106,7 @@ impl Executor {
                     .journal
                     .finish_credential_rotation(&rotation.operation_id, outcome.journal_state())?;
                 match outcome {
-                    RotateOutcome::Done => Ok(CredentialRotateResult::New(recorded)),
+                    RotateOutcome::Done => Ok(Admitted::New(recorded)),
                     RotateOutcome::FailedCompensated
                     | RotateOutcome::NeedsAttention
                     | RotateOutcome::Failed => Err(ExecutorError::StepFailed),
@@ -159,7 +159,7 @@ impl Executor {
             match admin_helper::request(
                 socket,
                 &AdminRequest {
-                    operation_id: row.operation_id.clone(),
+                    operation_id: row.operation_id,
                     step: AdminStep::SiteCredentialVerify,
                 },
             )? {

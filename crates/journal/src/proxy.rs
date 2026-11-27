@@ -15,7 +15,7 @@ use rustiron_contracts::{
 };
 
 use crate::{
-    FixtureJournal, JournalError, ProvisionIntent, ProvisionResult, provision::Origin, storage,
+    Admitted, FixtureJournal, JournalError, Provision, ProvisionIntent, provision::Origin, storage,
 };
 
 /// The signed routes of one proxy site.
@@ -76,7 +76,7 @@ impl FixtureJournal {
         intent: &ProvisionIntent,
         facts: &ProxyFacts,
         now: Timestamp,
-    ) -> Result<ProvisionResult, JournalError> {
+    ) -> Result<Admitted<Provision>, JournalError> {
         if !facts.is_valid() {
             return Err(JournalError::Conflict);
         }

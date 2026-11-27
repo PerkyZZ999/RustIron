@@ -291,6 +291,19 @@ describe("P15 coordinator plan_apply end-to-end outcomes", () => {
         };
       }
       if (req.params.operation_id === "op_disconnect") return null;
+      // W687: a reply for another operation must not be reported as this one's outcome.
+      if (req.params.operation_id === "op_mismatch") {
+        return {
+          schema_version: 1,
+          request_id: req.request_id,
+          status: "ok",
+          data: {
+            kind: "plan_apply",
+            value: { operation_id: "op_other", outcome: { kind: "not_sent", reason: "busy" } },
+          },
+          error: null,
+        };
+      }
       return {
         schema_version: 1,
         request_id: req.request_id,
@@ -338,6 +351,18 @@ describe("P15 coordinator plan_apply end-to-end outcomes", () => {
     expect(revRes.status).toBe(200);
     const revBody = (await revRes.json()) as PlanReviewSummary;
     expect(revBody.plan_digest).toBe(pair.digest);
+
+    // W681: unknown or mistyped fields are refused before any plan or grant parsing.
+    for (const body of [
+      { plan_json: pair.planJson, grant_json: pair.grantJson, signer: "x" },
+      { plan_json: pair.planJson, grant_json: 7 },
+    ]) {
+      const refused = await api.review(makeWriteReq("/api/write/plan/review", body, csrf));
+      expect([refused.status, ((await refused.json()) as { error: string }).error]).toEqual([
+        400,
+        "INVALID_REQUEST",
+      ]);
+    }
 
     // 2. Stale grant refused BEFORE coordinator IPC (409 STALE_GRANT)
     const stale = buildPair({ validFrom: NOW - 500, expiresAt: NOW - 1 });
@@ -400,6 +425,23 @@ describe("P15 coordinator plan_apply end-to-end outcomes", () => {
     expect(((await busyRes.json()) as WriteApplyResult).outcome).toEqual({
       kind: "not_sent",
       reason: "busy",
+    });
+
+    const mismatchRes = await api.apply(
+      makeWriteReq(
+        "/api/write/plan/apply",
+        {
+          operation_id: "op_mismatch",
+          idempotency_key: "idem_mismatch",
+          plan_json: pair.planJson,
+          grant_json: pair.grantJson,
+          signature_text: SAMPLE_SIG,
+        },
+        csrf,
+      ),
+    );
+    expect(((await mismatchRes.json()) as WriteApplyResult).outcome).toEqual({
+      kind: "outcome_unknown",
     });
 
     // 6. Mid-flight disconnect NEVER claims success -> returns 503 with outcome_unknown

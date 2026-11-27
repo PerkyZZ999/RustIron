@@ -16,11 +16,10 @@ use rustiron_contracts::{
     },
 };
 use rustiron_journal::{
-    AppFacts, AppFullstackSpec, AppLifecycleIntent, AppLifecycleResult, AppReleaseIntent,
-    AppReleaseResult, AppReleaseState, AppReleaseStep, AppSlot, CaddyGeneration,
-    CaddyGenerationState, CaddyIngressMode, CaptureIntent, CaptureMethod, DeleteIntent,
-    DeleteResult, FixtureJournal, JournalError, ProvisionIntent, ProvisionResult, ProvisionStep,
-    ProxyFacts, StepState,
+    Admitted, AppFacts, AppFullstackSpec, AppLifecycleIntent, AppReleaseIntent, AppReleaseState,
+    AppReleaseStep, AppSlot, CaddyGeneration, CaddyGenerationState, CaddyIngressMode,
+    CaptureIntent, CaptureMethod, DeleteIntent, FixtureJournal, JournalError, ProvisionIntent,
+    ProvisionStep, ProxyFacts, StepState,
 };
 
 #[expect(
@@ -207,7 +206,7 @@ fn app_provision_records_app_and_proxy_routes_and_enforces_port_uniqueness() {
     let facts = app_facts(AppRuntime::Node22V1, 43187);
     let intent = provision_intent("op_app1", "emdash1", "emdash.example.test");
 
-    let ProvisionResult::New(prov) = journal
+    let Admitted::New(prov) = journal
         .record_app_provision(&intent, &facts, ts(1000))
         .unwrap()
     else {
@@ -228,7 +227,7 @@ fn app_provision_records_app_and_proxy_routes_and_enforces_port_uniqueness() {
         journal
             .record_app_provision(&intent, &facts, ts(1001))
             .unwrap(),
-        ProvisionResult::Existing(_)
+        Admitted::Existing(_)
     ));
     // Retry with altered port is a Conflict.
     assert_eq!(
@@ -249,7 +248,7 @@ fn app_provision_records_app_and_proxy_routes_and_enforces_port_uniqueness() {
         journal
             .record_app_provision(&intent2, &app_facts(AppRuntime::Bun1V1, 43188), ts(1006))
             .unwrap(),
-        ProvisionResult::New(_)
+        Admitted::New(_)
     ));
     finish_provision(&mut journal, "op_app2");
 
@@ -297,13 +296,13 @@ fn app_release_steps_rollback_migration_capture_and_lifecycle_work_durably() {
         None,
         None,
     );
-    let AppReleaseResult::New(r) = journal.record_app_release(&rel1, ts(1010)).unwrap() else {
+    let Admitted::New(r) = journal.record_app_release(&rel1, ts(1010)).unwrap() else {
         panic!("expected new release");
     };
     assert_eq!(r.state, AppReleaseState::Intent);
     assert!(matches!(
         journal.record_app_release(&rel1, ts(1011)).unwrap(),
-        AppReleaseResult::Existing(_)
+        Admitted::Existing(_)
     ));
     assert_eq!(
         journal.record_app_lifecycle(
@@ -392,11 +391,11 @@ fn app_release_steps_rollback_migration_capture_and_lifecycle_work_durably() {
     let lc = lifecycle_intent("op_lc1", "emdash1", AppLifecycleAction::Restart);
     assert!(matches!(
         journal.record_app_lifecycle(&lc, ts(1060)).unwrap(),
-        AppLifecycleResult::New(_)
+        Admitted::New(_)
     ));
     assert!(matches!(
         journal.record_app_lifecycle(&lc, ts(1061)).unwrap(),
-        AppLifecycleResult::Existing(_)
+        Admitted::Existing(_)
     ));
     let lc_done = journal.finish_app_lifecycle(&id("op_lc1"), true).unwrap();
     assert_eq!(lc_done.state, StepState::Done);
@@ -430,7 +429,7 @@ fn app_release_steps_rollback_migration_capture_and_lifecycle_work_durably() {
     };
     assert!(matches!(
         journal.record_deletion(&del_with_cap, ts(1075)).unwrap(),
-        DeleteResult::New(_)
+        Admitted::New(_)
     ));
 
     // Port 43187 is now freed after emdash1 is deleted!
@@ -439,7 +438,7 @@ fn app_release_steps_rollback_migration_capture_and_lifecycle_work_durably() {
         journal
             .record_app_provision(&prov_reuse, &facts, ts(1080))
             .unwrap(),
-        ProvisionResult::New(_)
+        Admitted::New(_)
     ));
 
     let usage = journal.authority_usage(0).unwrap();
@@ -478,7 +477,7 @@ fn a_v42_journal_migrates_cleanly_to_v43_and_preserves_records() {
         migrated
             .record_app_provision(&app, &app_facts(AppRuntime::Bun1V1, 43187), ts(1010))
             .unwrap(),
-        ProvisionResult::New(_)
+        Admitted::New(_)
     ));
 }
 
@@ -524,7 +523,7 @@ fn d102_v45_fullstack_specs_blue_green_slots_port_collisions_caddy_generations_a
         journal
             .record_fullstack_app_provision(&spa_intent, &spa_facts, &spa_spec, ts(1000))
             .unwrap(),
-        ProvisionResult::New(_)
+        Admitted::New(_)
     ));
     finish_provision(&mut journal, "op_spa1");
     assert_eq!(
@@ -537,7 +536,7 @@ fn d102_v45_fullstack_specs_blue_green_slots_port_collisions_caddy_generations_a
         journal
             .record_fullstack_app_provision(&spa2, &spa_facts, &spa_spec, ts(1005))
             .unwrap(),
-        ProvisionResult::New(_)
+        Admitted::New(_)
     ));
     finish_provision(&mut journal, "op_spa2");
 
@@ -584,14 +583,14 @@ fn d102_v45_fullstack_specs_blue_green_slots_port_collisions_caddy_generations_a
         journal
             .record_fullstack_app_provision(&split_intent, &split_facts, &split_spec, ts(1010))
             .unwrap(),
-        ProvisionResult::New(_)
+        Admitted::New(_)
     ));
     // Exact retry returns Existing; mismatching spec returns Conflict.
     assert!(matches!(
         journal
             .record_fullstack_app_provision(&split_intent, &split_facts, &split_spec, ts(1011))
             .unwrap(),
-        ProvisionResult::Existing(_)
+        Admitted::Existing(_)
     ));
     finish_provision(&mut journal, "op_split1");
 

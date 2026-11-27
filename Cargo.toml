@@ -3,7 +3,7 @@ members = ["crates/contracts", "crates/core", "crates/control", "crates/cli", "c
 resolver = "3"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.99.1"
 license = "Apache-2.0"
@@ -13,10 +13,10 @@ publish = false
 clap = { version = "=4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 rustix = { version = "=1.1.5", features = ["net", "process", "event", "system", "fs", "rand", "thread"] }
 rusqlite = { version = "=0.41.0", default-features = false, features = ["bundled"] }
-rustiron-core = { path = "crates/core", version = "=0.1.1" }
-rustiron-contracts = { path = "crates/contracts", version = "=0.1.1" }
-rustiron-control = { path = "crates/control", version = "=0.1.1" }
-rustiron-journal = { path = "crates/journal", version = "=0.1.1" }
+rustiron-core = { path = "crates/core", version = "=0.2.0" }
+rustiron-contracts = { path = "crates/contracts", version = "=0.2.0" }
+rustiron-control = { path = "crates/control", version = "=0.2.0" }
+rustiron-journal = { path = "crates/journal", version = "=0.2.0" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["raw_value"] }
 serde_json_canonicalizer = "=0.4.1"
@@ -32,4 +32,27 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(rustiron_profile, values("
 missing_docs = "warn"
 
 [workspace.lints.clippy]
-all = "warn"
+all = { level = "warn", priority = -1 }
+# W672 (rust-best-practices, Apollo handbook ch. 1-3): objective lints that
+# keep clones, closures, and Option/Result handling idiomatic.
+redundant_clone = "warn"
+redundant_closure_for_method_calls = "warn"
+manual_let_else = "warn"
+map_unwrap_or = "warn"
+implicit_clone = "warn"
+cloned_instead_of_copied = "warn"
+inefficient_to_string = "warn"
+# Handbook ch. 2.4: every lint exception states why.
+allow_attributes_without_reason = "warn"
+# W673 (rust-skills lint-unsafe-doc, doc-panics-section).
+undocumented_unsafe_blocks = "warn"
+missing_panics_doc = "warn"
+
+# W673 (rust-skills perf-release-profile, opt-lto-release, opt-codegen-units):
+# whole-program optimisation for the shipped binaries. overflow-checks keeps
+# debug-build integer semantics in production, so an overflow stops the
+# process instead of wrapping silently (tests already run with it on).
+[profile.release]
+lto = "thin"
+codegen-units = 1
+overflow-checks = true

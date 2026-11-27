@@ -85,7 +85,7 @@ fn load(observation: &Path) -> Result<UninstallPlan, ErrorCode> {
             .and_then(|item| item.as_str())
             .ok_or(ErrorCode::InvalidRequest)?;
         Id::try_from(id.to_owned()).map_err(|_| ErrorCode::InvalidRequest)?;
-        let ejected = site.get("ejected").and_then(|item| item.as_bool()) == Some(true);
+        let ejected = site.get("ejected").and_then(serde_json::Value::as_bool) == Some(true);
         if !ejected {
             still_managed.push(id.to_owned());
         }

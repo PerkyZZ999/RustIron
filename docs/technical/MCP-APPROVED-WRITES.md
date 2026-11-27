@@ -19,8 +19,9 @@ Without `--write-tier`, `rustiron-mcp` exposes ONLY the 7 strictly read-only P17
 
 ## Enforced P19 invariants
 
-- **No self-approval (`SELF_APPROVAL_REFUSED`)**: `grant.issuer` (or `signer_id`) must be non-empty and strictly different from `--agent-id`.
-- **No blanket production tokens (`NO_BLANKET_TOKEN` / `DIGEST_MISMATCH`)**: refuses wildcard or blanket grants and requires exact `grant.plan_digest == canonical_plan_digest`.
+- **Closed grant (`INVALID_GRANT`)**: before any field is read, `grant_json` must decode with the closed contract grant decoder for the plan's verb ([W693](../validation/S10-W693/README.md)). That decoder refuses unknown and duplicate members, non-canonical bytes, `max_operations` other than 1, an issuer equal to the requester, and an over-long window. A blanket or wildcard member is unknown to every closed grant, so a blanket grant is refused here.
+- **No self-approval (`SELF_APPROVAL_REFUSED`)**: `grant.issuer` must be strictly different from `--agent-id`.
+- **Digest binding (`DIGEST_MISMATCH`)**: requires exact `grant.plan_digest == canonical_plan_digest`.
 - **No budget expansion (`BUDGET_EXPANSION_REFUSED`)**: verifies `envelope_for_plan(plan_json)` against configured `--max-changes`, `--max-ols-reloads`, and `max_operations <= 1`.
 - **Prompt-injection resistance**: strict `deny_unknown_fields`, closed canonical plan decoder, no arbitrary tools, no shell execution, and `untrusted_data: true` response framing.
 - **Truthful retry and expiry outcomes**: Checks grant time bounds before forwarding and returns the coordinator `ApplyOutcome` (`executor_reply`, `not_sent`, or `outcome_unknown`). Unknown or unsent attempts never become success.

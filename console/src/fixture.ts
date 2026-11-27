@@ -1,4 +1,11 @@
-import { CircleAlert, CircleCheck, CircleX, LoaderCircle, type LucideIcon } from "lucide-react";
+import {
+  CircleAlert,
+  CircleCheck,
+  CircleX,
+  LoaderCircle,
+  RotateCcw,
+  type LucideIcon,
+} from "lucide-react";
 
 export const fields = [
   "Artifacts complete",
@@ -397,7 +404,7 @@ export const operationRows: OperationRow[] = [
     action: "Config activation",
     outcome: "Failed, compensated",
     kind: "warn",
-    icon: CircleCheck,
+    icon: RotateCcw,
     resources: "shop.lab.test · global OLS",
     requester: "operator (CLI)",
     started: "22 Oct, 13:40",

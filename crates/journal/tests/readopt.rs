@@ -8,8 +8,8 @@ use rustiron_contracts::{
     approval::{Hostname, ReadoptForm, ReadoptPlan, SiteId},
 };
 use rustiron_journal::{
-    FixtureJournal, JournalError, ProvisionIntent, ProvisionState, ProvisionStep, ReadoptOutcome,
-    ReadoptResult, ReadoptState, ReadoptionIntent, RecordResult, SiteAdoption,
+    Admitted, FixtureJournal, JournalError, ProvisionIntent, ProvisionState, ProvisionStep,
+    ReadoptOutcome, ReadoptState, Readoption, ReadoptionIntent, SiteAdoption,
 };
 use std::{
     fs,
@@ -112,7 +112,7 @@ fn readoption(n: u32, plan: &ReadoptPlan) -> ReadoptionIntent {
     }
 }
 
-fn record(ledger: &mut FixtureJournal, intent: &ReadoptionIntent, at: u64) -> ReadoptResult {
+fn record(ledger: &mut FixtureJournal, intent: &ReadoptionIntent, at: u64) -> Admitted<Readoption> {
     ledger.record_readoption(intent, time(at)).unwrap()
 }
 
@@ -209,7 +209,7 @@ fn a_v16_journal_migrates_and_keeps_every_row_and_the_admission_count() {
     assert_eq!(migrated.admission_count().unwrap(), count);
     assert!(matches!(
         migrated.record_intent(&activation, time(1001)).unwrap(),
-        RecordResult::Existing(_)
+        Admitted::Existing(_)
     ));
     let provision = migrated
         .provision_for_site(&site("blog1"))
@@ -264,7 +264,7 @@ fn a_site_readoption_is_verifying_then_adopted_with_an_adopted_provision() {
     let mut ledger = state.init();
     let plan = site_plan("blog1");
     let intent = readoption(1, &plan);
-    let ReadoptResult::New(new) = record(&mut ledger, &intent, 1000) else {
+    let Admitted::New(new) = record(&mut ledger, &intent, 1000) else {
         panic!("first record must be new");
     };
     assert_eq!(new.state, ReadoptState::Verifying);
@@ -273,7 +273,7 @@ fn a_site_readoption_is_verifying_then_adopted_with_an_adopted_provision() {
     // An exact repeat is status only.
     assert!(matches!(
         record(&mut ledger, &intent, 1001),
-        ReadoptResult::Existing(existing) if existing.state == ReadoptState::Verifying
+        Admitted::Existing(existing) if existing.state == ReadoptState::Verifying
     ));
     // Verifying holds the site free and records no provision.
     assert_eq!(ledger.provision_for_site(&site("blog1")).unwrap(), None);
@@ -358,7 +358,7 @@ fn a_refused_readoption_keeps_only_its_row_and_the_site_stays_free() {
     let second = readoption(2, &site_plan("blog1"));
     assert!(matches!(
         record(&mut ledger, &second, 1010),
-        ReadoptResult::New(_)
+        Admitted::New(_)
     ));
     assert_eq!(ledger.admission_count().unwrap(), 2);
 }
@@ -578,7 +578,7 @@ fn ejections_and_page_cache_accept_an_adopted_site() {
                 time(1100)
             )
             .unwrap(),
-        RecordResult::New(_)
+        Admitted::New(_)
     ));
     drop(ledger);
     assert!(state.open().is_ok());

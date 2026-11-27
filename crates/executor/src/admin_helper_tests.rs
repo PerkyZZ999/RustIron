@@ -1004,7 +1004,7 @@ mod authorize {
             );
         }
         // W459: a succeeded import has no automatic scrub; only a signed one.
-        let mut succeeded = quarantined.clone();
+        let mut succeeded = quarantined;
         succeeded.state = ProvisionState::Succeeded;
         assert!(
             authorize(
@@ -1537,7 +1537,7 @@ mod authorize {
                 retain_until: 1_797_183_776,
             }],
         });
-        let outcome = O::Succeeded(snapshot.clone());
+        let outcome = O::Succeeded(snapshot);
         assert_eq!(
             decode_capture(&encode_capture(&outcome), ROOT_FOR_RELAY),
             outcome
@@ -1605,7 +1605,7 @@ mod authorize {
             O::NotStarted(ExecutorError::Unavailable),
             O::Uncertain {
                 error: ExecutorError::StepFailed,
-                snapshot: Some(snap.clone()),
+                snapshot: Some(snap),
             },
             O::Uncertain {
                 error: ExecutorError::Unavailable,
@@ -1800,7 +1800,7 @@ mod authorize {
         );
         let static_eject = OperationRecords {
             static_ejection: Some(Hostname::try_from("static.example.test".to_owned()).unwrap()),
-            ..ejection.clone()
+            ..ejection
         };
         assert!(matches!(
             single_record(&static_eject),
@@ -1816,7 +1816,7 @@ mod authorize {
             "a static ejection hostname without its ejection site"
         );
         let orphan_static = OperationRecords {
-            static_ejection: static_eject.static_ejection.clone(),
+            static_ejection: static_eject.static_ejection,
             ..Default::default()
         };
         assert_eq!(
@@ -1825,8 +1825,8 @@ mod authorize {
             "a static ejection hostname without its operation"
         );
         let mixed = OperationRecords {
-            provision: both.provision.clone(),
-            operation: ols.operation.clone(),
+            provision: both.provision,
+            operation: ols.operation,
             ..Default::default()
         };
         assert_eq!(

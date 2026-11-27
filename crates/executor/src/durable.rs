@@ -4,9 +4,9 @@ use std::collections::HashSet;
 
 use rustiron_contracts::{Id, Timestamp};
 use rustiron_journal::{
-    Capture, CaptureIntent, CaptureMethod, CaptureResult, CaptureState, FixtureJournal,
-    JournalError, Operation, Probe, ProbeIntent, ProbeResult, ProbeState, Provision,
-    ProvisionResult, ProvisionState, ProvisionStep, RecordResult, RecordedState, SignedAdmission,
+    Admitted, Capture, CaptureIntent, CaptureMethod, CaptureState, FixtureJournal, JournalError,
+    Operation, Probe, ProbeIntent, ProbeState, Provision, ProvisionState, ProvisionStep,
+    RecordedState, SignedAdmission,
 };
 
 use crate::{
@@ -241,7 +241,7 @@ pub(crate) fn run_site_step(
 
 /// The executor's sole journal writer, opened only as the anchor's owner.
 ///
-/// `submit` returning `RecordResult::New` means the nonce is consumed and the
+/// `submit` returning `Admitted::New` means the nonce is consumed and the
 /// intent is durable. It is still not proof that any effect happened, and
 /// `Existing` is status only, never permission to repeat an effect.
 pub struct Executor {
@@ -380,8 +380,7 @@ impl Executor {
         if !seen.certificates.is_empty() {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|elapsed| elapsed.as_secs())
-                .unwrap_or(0);
+                .map_or(0, |elapsed| elapsed.as_secs());
             observation["certificates"] = serde_json::Value::Array(
                 seen.certificates
                     .iter()
@@ -420,8 +419,7 @@ impl Executor {
             .map_or(3600_i64, |limits| limits.window_seconds as i64);
         let now_unix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_secs() as i64)
-            .unwrap_or(0);
+            .map_or(0, |elapsed| elapsed.as_secs() as i64);
         let anchor_time = seen.last_time.max(now_unix);
         let window_start = anchor_time.saturating_sub(window_seconds);
         let usage = FixtureJournal::observe_authority_usage_as_process_owner(
@@ -567,6 +565,28 @@ impl Executor {
         Ok(result)
     }
 
+    /// W700 (W689 candidate 3): the shared opening of a signed verb, in one
+    /// fixed order: the enrolled identity, the request time, then the replay
+    /// rule. An operation the journal already holds (`stored`) skips the
+    /// fresh checks and goes to the recording transaction, which returns it
+    /// only for an exact replay and refuses any other request. A new
+    /// operation must pass `fresh` before [`Self::admit`] records it.
+    fn admit_signed<Row>(
+        &mut self,
+        request: &AdmissionRequest<'_>,
+        (host_id, host_epoch): (&Id, &Id),
+        stored: impl FnOnce(&FixtureJournal) -> Result<bool, JournalError>,
+        fresh: impl FnOnce(&Self, Timestamp) -> Result<(), ExecutorError>,
+        record: impl FnOnce(&mut FixtureJournal, Timestamp) -> Result<Admitted<Row>, JournalError>,
+    ) -> Result<Admitted<Row>, ExecutorError> {
+        self.check_identity(host_id, host_epoch)?;
+        let now = request.now.ok_or(ExecutorError::TimeDenied)?;
+        if !stored(&self.journal)? {
+            fresh(self, now)?;
+        }
+        self.admit(signed_inputs(request)?, |journal| record(journal, now))
+    }
+
     /// W594 (P23, D-098) & W633 (M-25): enforces enrolled `blast_radius` limits
     /// durably against the SQLite journal before any new intent is committed.
     /// Only exact replays matching the recorded `operation_id`, plan digest, and
@@ -604,25 +624,25 @@ impl Executor {
         Ok(())
     }
 
-    /// Runs every [`admit`] check and then records intent in one transaction,
+    /// Runs every [`admit`](crate::admit) check and then records intent in one transaction,
     /// consuming the grant, nonce, operation and retry key. An exact verified
     /// repeat returns stored status before the live check, since a completed
     /// effect has moved the predecessor. Policy is re-read on every call.
     pub fn submit(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<RecordResult, ExecutorError> {
+    ) -> Result<Admitted<Operation>, ExecutorError> {
         let intent = verified_intent(&self.anchor, request)?;
         self.check_identity(&intent.host_id, &intent.host_epoch)?;
         if let Some(existing) = self.journal.existing(&intent)? {
-            return Ok(RecordResult::Existing(existing));
+            return Ok(Admitted::Existing(existing));
         }
         check_live(&self.anchor, &intent)?;
         let now = request.now.ok_or(ExecutorError::TimeDenied)?;
         let result = self.admit(signed_inputs(request)?, |journal| {
             journal.record_intent(&intent, now)
         })?;
-        if let RecordResult::New(operation) = &result {
+        if let Admitted::New(operation) = &result {
             self.admitted
                 .insert(operation.intent.operation_id.as_str().to_owned());
         }
@@ -1149,7 +1169,7 @@ impl Executor {
     pub fn provision(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<ProvisionResult, ExecutorError> {
+    ) -> Result<Admitted<Provision>, ExecutorError> {
         let crate::VerifiedSite {
             intent,
             enrolled,
@@ -1165,7 +1185,7 @@ impl Executor {
             let import = self.journal.import_status(&intent.operation_id)?;
             let proxy = self.journal.proxy_facts(&intent.operation_id)?;
             return if existing.intent == intent && import.is_none() && proxy.is_none() {
-                Ok(ProvisionResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(ExecutorError::ReplayDenied)
             };
@@ -1177,8 +1197,8 @@ impl Executor {
         let operation = match self.admit(signed_inputs(request)?, |journal| {
             journal.record_provision(&intent, now)
         })? {
-            ProvisionResult::Existing(existing) => return Ok(ProvisionResult::Existing(existing)),
-            ProvisionResult::New(created) => created.intent.operation_id,
+            Admitted::Existing(existing) => return Ok(Admitted::Existing(existing)),
+            Admitted::New(created) => created.intent.operation_id,
         };
         let quota = crate::quota::QuotaIntent::select(quota_limits, enrolled.quota);
         self.run_provision_steps(
@@ -1197,7 +1217,7 @@ impl Executor {
     pub fn import(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<ProvisionResult, ExecutorError> {
+    ) -> Result<Admitted<Provision>, ExecutorError> {
         let crate::VerifiedImport {
             intent,
             enrolled,
@@ -1228,7 +1248,7 @@ impl Executor {
             return if existing.intent == intent
                 && recorded.is_some_and(|import| import.facts == facts)
             {
-                Ok(ProvisionResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(ExecutorError::ReplayDenied)
             };
@@ -1244,8 +1264,8 @@ impl Executor {
         let operation = match self.admit(signed_inputs(request)?, |journal| {
             journal.record_import(&intent, &facts, now)
         })? {
-            ProvisionResult::Existing(existing) => return Ok(ProvisionResult::Existing(existing)),
-            ProvisionResult::New(created) => created.intent.operation_id,
+            Admitted::Existing(existing) => return Ok(Admitted::Existing(existing)),
+            Admitted::New(created) => created.intent.operation_id,
         };
         let quota = crate::quota::QuotaIntent::select(Some(quota_limits), enrolled.quota);
         self.run_provision_steps(
@@ -1264,7 +1284,7 @@ impl Executor {
     pub fn provision_proxy(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<ProvisionResult, ExecutorError> {
+    ) -> Result<Admitted<Provision>, ExecutorError> {
         let crate::VerifiedProxy {
             intent,
             enrolled,
@@ -1275,7 +1295,7 @@ impl Executor {
         if let Some(existing) = self.journal.provision_status(&intent.operation_id)? {
             let recorded = self.journal.proxy_facts(&intent.operation_id)?;
             return if existing.intent == intent && recorded.as_ref() == Some(&facts) {
-                Ok(ProvisionResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(ExecutorError::ReplayDenied)
             };
@@ -1284,8 +1304,8 @@ impl Executor {
         let operation = match self.admit(signed_inputs(request)?, |journal| {
             journal.record_proxy_provision(&intent, &facts, now)
         })? {
-            ProvisionResult::Existing(existing) => return Ok(ProvisionResult::Existing(existing)),
-            ProvisionResult::New(created) => created.intent.operation_id,
+            Admitted::Existing(existing) => return Ok(Admitted::Existing(existing)),
+            Admitted::New(created) => created.intent.operation_id,
         };
         // The plan signs no quota: the enrolled policy limits apply.
         let quota = crate::quota::QuotaIntent::select(None, enrolled.quota);
@@ -1298,7 +1318,7 @@ impl Executor {
     pub fn provision_app(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<ProvisionResult, ExecutorError> {
+    ) -> Result<Admitted<Provision>, ExecutorError> {
         let crate::VerifiedAppProvision {
             intent,
             enrolled,
@@ -1314,7 +1334,7 @@ impl Executor {
                 && recorded.as_ref() == Some(&facts)
                 && recorded_spec == fullstack
             {
-                Ok(ProvisionResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(ExecutorError::ReplayDenied)
             };
@@ -1337,8 +1357,8 @@ impl Executor {
             Some(spec) => journal.record_fullstack_app_provision(&intent, &facts, spec, now),
             None => journal.record_app_provision(&intent, &facts, now),
         })? {
-            ProvisionResult::Existing(existing) => return Ok(ProvisionResult::Existing(existing)),
-            ProvisionResult::New(created) => created.intent.operation_id,
+            Admitted::Existing(existing) => return Ok(Admitted::Existing(existing)),
+            Admitted::New(created) => created.intent.operation_id,
         };
         let quota = crate::quota::QuotaIntent::select(requested_quota, enrolled.quota);
         self.run_provision_steps(
@@ -1357,7 +1377,7 @@ impl Executor {
     pub fn deploy_app(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<rustiron_journal::AppReleaseResult, ExecutorError> {
+    ) -> Result<Admitted<rustiron_journal::AppRelease>, ExecutorError> {
         let crate::VerifiedAppDeploy {
             intent,
             blue_green_cutover,
@@ -1385,10 +1405,10 @@ impl Executor {
         let release = match self.admit(signed_inputs(request)?, |journal| {
             journal.record_app_release(&intent, now)
         })? {
-            rustiron_journal::AppReleaseResult::Existing(existing) => {
-                return Ok(rustiron_journal::AppReleaseResult::Existing(existing));
+            rustiron_journal::Admitted::Existing(existing) => {
+                return Ok(rustiron_journal::Admitted::Existing(existing));
             }
-            rustiron_journal::AppReleaseResult::New(created) => created,
+            rustiron_journal::Admitted::New(created) => created,
         };
         let facts = self
             .journal
@@ -1542,7 +1562,8 @@ impl Executor {
             })();
             if let Err(err) = cutover_res {
                 if effective_bg {
-                    let _ = self.journal.set_app_active_slot(&prov_op, old_slot);
+                    // W674: an unrecorded slot revert leaves the release open.
+                    self.journal.set_app_active_slot(&prov_op, old_slot)?;
                 }
                 failed_error = Some(err);
             }
@@ -1575,12 +1596,14 @@ impl Executor {
                 rustiron_journal::AppReleaseStep::Rollback,
                 rb.is_ok(),
             )?;
-            if rb.is_ok() {
+            // W674: when Caddy could not be restored, the units are back but
+            // ingress is unknown; the release stays open for reconciliation.
+            if rb.is_ok() && err != ExecutorError::RollbackFailed {
                 let settled = self.journal.finish_app_release(
                     &intent.operation_id,
                     rustiron_journal::AppReleaseState::RolledBack,
                 )?;
-                return Ok(rustiron_journal::AppReleaseResult::New(settled));
+                return Ok(rustiron_journal::Admitted::New(settled));
             }
             return Err(err);
         }
@@ -1588,7 +1611,7 @@ impl Executor {
             &intent.operation_id,
             rustiron_journal::AppReleaseState::Done,
         )?;
-        Ok(rustiron_journal::AppReleaseResult::New(settled))
+        Ok(rustiron_journal::Admitted::New(settled))
     }
 
     /// W598 (D-099) & W659 (D-102): admits one signed `app_lifecycle`
@@ -1596,7 +1619,7 @@ impl Executor {
     pub fn app_lifecycle(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<rustiron_journal::AppLifecycleResult, ExecutorError> {
+    ) -> Result<Admitted<rustiron_journal::AppLifecycle>, ExecutorError> {
         let intent = crate::verified_app_lifecycle(&self.anchor, request)?;
         self.check_identity(&intent.host_id, &intent.host_epoch)?;
         let now = request.now.ok_or(ExecutorError::TimeDenied)?;
@@ -1611,10 +1634,10 @@ impl Executor {
         let lifecycle = match self.admit(signed_inputs(request)?, |journal| {
             journal.record_app_lifecycle(&intent, now)
         })? {
-            rustiron_journal::AppLifecycleResult::Existing(existing) => {
-                return Ok(rustiron_journal::AppLifecycleResult::Existing(existing));
+            rustiron_journal::Admitted::Existing(existing) => {
+                return Ok(rustiron_journal::Admitted::Existing(existing));
             }
-            rustiron_journal::AppLifecycleResult::New(created) => created,
+            rustiron_journal::Admitted::New(created) => created,
         };
         let facts = self
             .journal
@@ -1641,7 +1664,7 @@ impl Executor {
             .journal
             .finish_app_lifecycle(&intent.operation_id, outcome.is_ok())?;
         outcome?;
-        Ok(rustiron_journal::AppLifecycleResult::New(settled))
+        Ok(rustiron_journal::Admitted::New(settled))
     }
 
     /// Stored `app_deploy` release status, if recorded.
@@ -1668,7 +1691,7 @@ impl Executor {
         enrolled: &policy::ProvisioningPolicy,
         quota: crate::quota::QuotaIntent,
         recipe: StepRecipe<'_>,
-    ) -> Result<ProvisionResult, ExecutorError> {
+    ) -> Result<Admitted<Provision>, ExecutorError> {
         let operation = operation.clone();
         let layout = provision::SiteLayout::derive(&intent.site_id);
         let ranges = provision::Ranges {
@@ -1716,8 +1739,9 @@ impl Executor {
                 _ if matches!(recipe, StepRecipe::App(_, _)) && {
                     let db = match recipe {
                         StepRecipe::App(_, spec) => spec
-                            .map(|s| s.database)
-                            .unwrap_or(rustiron_contracts::approval::AppDatabase::Sqlite),
+                            .map_or(rustiron_contracts::approval::AppDatabase::Sqlite, |s| {
+                                s.database
+                            }),
                         _ => rustiron_contracts::approval::AppDatabase::Sqlite,
                     };
                     crate::app_site::skips(step, db)
@@ -1762,9 +1786,9 @@ impl Executor {
                 }
             }
             if let StepRecipe::App(facts, spec) = recipe {
-                let app_db = spec
-                    .map(|s| s.database)
-                    .unwrap_or(rustiron_contracts::approval::AppDatabase::Sqlite);
+                let app_db = spec.map_or(rustiron_contracts::approval::AppDatabase::Sqlite, |s| {
+                    s.database
+                });
                 if crate::app_site::skips(step, app_db) {
                     self.journal.finish_step(&operation, step, true)?;
                     continue;
@@ -1880,7 +1904,7 @@ impl Executor {
         }
         self.journal
             .provision_status(&operation)?
-            .map(ProvisionResult::New)
+            .map(Admitted::New)
             .ok_or(ExecutorError::Unavailable)
     }
 
@@ -1995,17 +2019,17 @@ impl Executor {
     pub fn scrub(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<rustiron_journal::ScrubResult, ExecutorError> {
+    ) -> Result<Admitted<rustiron_journal::ImportScrub>, ExecutorError> {
         let intent = crate::verified_scrub(&self.anchor, request)?;
         self.check_identity(&intent.host_id, &intent.host_epoch)?;
         let now = request.now.ok_or(ExecutorError::TimeDenied)?;
         let scrub = match self.admit(signed_inputs(request)?, |journal| {
             journal.record_scrub(&intent, now)
         })? {
-            rustiron_journal::ScrubResult::Existing(existing) => {
-                return Ok(rustiron_journal::ScrubResult::Existing(existing));
+            rustiron_journal::Admitted::Existing(existing) => {
+                return Ok(rustiron_journal::Admitted::Existing(existing));
             }
-            rustiron_journal::ScrubResult::New(scrub) => scrub,
+            rustiron_journal::Admitted::New(scrub) => scrub,
         };
         let site = admin_helper::route(
             self.anchor.admin_socket.as_deref(),
@@ -2031,7 +2055,7 @@ impl Executor {
             .scrubs
             .into_iter()
             .find(|row| row.operation_id == scrub.operation_id)
-            .map(rustiron_journal::ScrubResult::New)
+            .map(rustiron_journal::Admitted::New)
             .ok_or(ExecutorError::Unavailable)
     }
 
@@ -2044,7 +2068,7 @@ impl Executor {
     pub fn certificate(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<rustiron_journal::CertificateResult, ExecutorError> {
+    ) -> Result<Admitted<rustiron_journal::Certificate>, ExecutorError> {
         let intent = crate::verified_certificate(&self.anchor, request)?;
         self.check_identity(&intent.host_id, &intent.host_epoch)?;
         let now = request.now.ok_or(ExecutorError::TimeDenied)?;
@@ -2082,10 +2106,10 @@ impl Executor {
         let row = match self.admit(signed_inputs(request)?, |journal| {
             journal.record_certificate(&intent, now)
         })? {
-            rustiron_journal::CertificateResult::Existing(existing) => {
-                return Ok(rustiron_journal::CertificateResult::Existing(existing));
+            rustiron_journal::Admitted::Existing(existing) => {
+                return Ok(rustiron_journal::Admitted::Existing(existing));
             }
-            rustiron_journal::CertificateResult::New(row) => row,
+            rustiron_journal::Admitted::New(row) => row,
         };
         let socket = self
             .anchor
@@ -2109,6 +2133,12 @@ impl Executor {
             {
                 return Err(ExecutorError::Drift);
             }
+            // W674: the previous certificate could not be restored, so
+            // `failed` ("nothing new is served") would be unproven; the row
+            // stays `intent` for reconciliation.
+            admin_helper::Reply::Refused(ExecutorError::RollbackFailed) => {
+                return Err(ExecutorError::RollbackFailed);
+            }
             admin_helper::Reply::Refused(error) => {
                 self.journal
                     .finish_certificate(&row.intent.operation_id, None)?;
@@ -2119,7 +2149,7 @@ impl Executor {
             &row.intent.operation_id,
             installed.as_ref().map(|(sha, not_after)| (sha, *not_after)),
         )?;
-        Ok(rustiron_journal::CertificateResult::New(finished))
+        Ok(rustiron_journal::Admitted::New(finished))
     }
 
     /// W464 (D-060): renews every due site under its issuance's standing
@@ -2265,12 +2295,12 @@ impl Executor {
     pub fn activate_ols(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<RecordResult, ExecutorError> {
+    ) -> Result<Admitted<Operation>, ExecutorError> {
         let (plan, grant, enrolled) = verified_ols(&self.anchor, request)?;
         self.check_enrolled_identity(&enrolled)?;
         let digests = (plan.digest(), grant_digest(grant.as_bytes()));
         if let Some(existing) = self.replay_status(request, &digests)? {
-            return Ok(RecordResult::Existing(existing));
+            return Ok(Admitted::Existing(existing));
         }
         let ejected = self.journal.ejected_sites()?;
         if plan.site_ids().iter().any(|site| ejected.contains(site)) {
@@ -2343,12 +2373,12 @@ impl Executor {
     pub fn eject_site(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<RecordResult, ExecutorError> {
+    ) -> Result<Admitted<Operation>, ExecutorError> {
         let (plan, grant, enrolled) = verified_eject(&self.anchor, request)?;
         self.check_enrolled_identity(&enrolled)?;
         let digests = (plan.digest(), grant_digest(grant.as_bytes()));
         if let Some(existing) = self.replay_status(request, &digests)? {
-            return Ok(RecordResult::Existing(existing));
+            return Ok(Admitted::Existing(existing));
         }
         let site = plan.site_id().clone();
         let mut ejected = self.journal.ejected_sites()?;
@@ -2482,7 +2512,7 @@ impl Executor {
     pub fn backup_capture(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<CaptureResult, ExecutorError> {
+    ) -> Result<Admitted<Capture>, ExecutorError> {
         let (plan, grant, enrolled) = verified_capture(&self.anchor, request)?;
         self.check_enrolled_identity(&enrolled)?;
         let backup = enrolled.backup.clone().ok_or(ExecutorError::Unavailable)?;
@@ -2495,7 +2525,7 @@ impl Executor {
             plan_digest: plan.digest(),
             grant_digest: grant_digest(grant.as_bytes()),
             host_id: enrolled.host_id.clone(),
-            host_epoch: enrolled.host_epoch.clone(),
+            host_epoch: enrolled.host_epoch,
             site_id: site.clone(),
             expires_at: grant.expires_at(),
         };
@@ -2504,7 +2534,7 @@ impl Executor {
             if let Some(existing) = self.journal.capture_status(&intent.operation_id)?
                 && existing.intent == intent
             {
-                return Ok(CaptureResult::Existing(existing));
+                return Ok(Admitted::Existing(existing));
             }
             return Err(ExecutorError::PreconditionChanged);
         }
@@ -2526,7 +2556,7 @@ impl Executor {
             CaptureRecipe::SiteFilesDbFrozenV1 => CaptureMethod::SiteFilesDbFrozenV1,
         };
         let backup_digest = backup.digest()?;
-        let CaptureResult::New(_) = self.admit(signed_inputs(request)?, |journal| {
+        let Admitted::New(_) = self.admit(signed_inputs(request)?, |journal| {
             journal.record_capture(&intent, now, method, backup.retention_days, &backup_digest)
         })?
         else {
@@ -2534,7 +2564,7 @@ impl Executor {
                 .journal
                 .capture_status(&intent.operation_id)?
                 .ok_or(ExecutorError::Unavailable)?;
-            return Ok(CaptureResult::Existing(existing));
+            return Ok(Admitted::Existing(existing));
         };
         let is_app = self
             .journal
@@ -2604,7 +2634,7 @@ impl Executor {
         outcome: capture::CaptureOutcome,
         finished: rustiron_contracts::Timestamp,
         scope: &str,
-    ) -> Result<CaptureResult, ExecutorError> {
+    ) -> Result<Admitted<Capture>, ExecutorError> {
         match outcome {
             capture::CaptureOutcome::Succeeded(snapshot) => {
                 // W203: the file is stored before the row; any failure only
@@ -2625,7 +2655,7 @@ impl Executor {
                         }
                     }
                 });
-                Ok(CaptureResult::New(self.journal.finish_capture_succeeded(
+                Ok(Admitted::New(self.journal.finish_capture_succeeded(
                     operation_id,
                     finished,
                     rustiron_journal::CaptureSuccess {
@@ -2738,7 +2768,7 @@ impl Executor {
     pub fn restore_probe(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<ProbeResult, ExecutorError> {
+    ) -> Result<Admitted<Probe>, ExecutorError> {
         let (plan, grant, enrolled) = verified_probe(&self.anchor, request)?;
         self.check_enrolled_identity(&enrolled)?;
         let backup = enrolled.backup.clone().ok_or(ExecutorError::Unavailable)?;
@@ -2750,7 +2780,7 @@ impl Executor {
                 && existing.intent.plan_digest == digests.0
                 && existing.intent.grant_digest == digests.1
             {
-                Ok(ProbeResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(ExecutorError::ReplayDenied)
             };
@@ -2783,14 +2813,14 @@ impl Executor {
             plan_digest: digests.0,
             grant_digest: digests.1,
             host_id: enrolled.host_id.clone(),
-            host_epoch: enrolled.host_epoch.clone(),
+            host_epoch: enrolled.host_epoch,
             site_id: site,
             snapshot_id: plan.snapshot_id().clone(),
             probe_account,
             expires_at: grant.expires_at(),
         };
         let backup_digest = backup.digest()?;
-        let ProbeResult::New(_) = self.admit(signed_inputs(request)?, |journal| {
+        let Admitted::New(_) = self.admit(signed_inputs(request)?, |journal| {
             journal.record_probe(&intent, now, &backup_digest)
         })?
         else {
@@ -2824,7 +2854,7 @@ impl Executor {
             None => restore::run_probe(&target, &lab, now.get()),
         };
         let finished = system_now().filter(|t| t.get() >= now.get()).unwrap_or(now);
-        Ok(ProbeResult::New(self.journal.finish_probe(
+        Ok(Admitted::New(self.journal.finish_probe(
             &intent.operation_id,
             state,
             &receipt.to_string(),
@@ -2980,7 +3010,7 @@ impl Executor {
         base: IntentBase,
         mut sites: Vec<ols::ServedSite>,
         change: Change<'_>,
-    ) -> Result<RecordResult, ExecutorError> {
+    ) -> Result<Admitted<Operation>, ExecutorError> {
         let ols_policy = enrolled.ols.clone().ok_or(ExecutorError::Unavailable)?;
         for site in &sites {
             if site.tls_alias.is_some() && !enrolled.alias_certificate_enabled() {
@@ -3065,7 +3095,7 @@ impl Executor {
             compensation_valid_until: base.compensation_valid_until,
         };
         if let Some(existing) = self.journal.existing(&intent)? {
-            return Ok(RecordResult::Existing(existing));
+            return Ok(Admitted::Existing(existing));
         }
         // W355: no `current` is the bootstrap state only for a plan that
         // names the bootstrap predecessor; it then starts instead of reloads.
@@ -3081,7 +3111,7 @@ impl Executor {
         // judge the `current` that `activation_mode` matched to the plan
         // predecessor (one read), so the predecessor the intent records is
         // the one checked; a second read could see another generation.
-        let predecessor = (current.clone(), current_digest.clone());
+        let predecessor = (current.clone(), current_digest);
         if socket.is_some() && mode == ols::ActivationMode::Running {
             let established = self.ols_established()?;
             if let Some(checks) = ols::generation_refusal(&predecessor, established.as_ref()) {
@@ -3152,7 +3182,7 @@ impl Executor {
                 (None, None) => journal.record_intent(&intent, now),
             }
         })?;
-        let RecordResult::New(_) = recorded else {
+        let Admitted::New(_) = recorded else {
             return Err(ExecutorError::ReplayDenied);
         };
         self.fault(Fault::AfterOlsIntent)?;
@@ -3357,10 +3387,9 @@ impl Executor {
                 None => Ok(()),
             });
         let observed = ols::observe(&include).ok();
-        if activated.is_ok() && observed.as_ref() == Some(&(target.clone(), target_digest.clone()))
-        {
+        if activated.is_ok() && observed.as_ref() == Some(&(target, target_digest)) {
             let (id, digest) = observed.unwrap_or_else(|| unreachable!());
-            return Ok(RecordResult::New(self.journal.record_observation(
+            return Ok(Admitted::New(self.journal.record_observation(
                 &operation,
                 Some(&id),
                 Some(&digest),
@@ -4126,8 +4155,7 @@ fn observation_json(
         receipt
             .as_deref()
             .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
-            .map(|value| value["fields"].clone())
-            .unwrap_or(serde_json::Value::Null)
+            .map_or(serde_json::Value::Null, |value| value["fields"].clone())
     };
     json!({
         "schema": "rustiron-lab-observation/1",
@@ -4142,7 +4170,7 @@ fn observation_json(
                 migration
                     .php_versions
                     .iter()
-                    .map(|version| version.as_str())
+                    .map(rustiron_contracts::migration::PhpVersion::as_str)
                     .collect::<Vec<_>>()
             }),
             "adopted_sites": policy.ols.as_ref().map(|ols| ols.adopted.iter().map(|site| json!({

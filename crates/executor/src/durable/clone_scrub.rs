@@ -1,13 +1,12 @@
 //! D-078 signed clone scrub (W538): admission of a signed `clone_scrub` of
 //! a quarantined clone and its removal through the admin helper.
 
-use rustiron_journal::{CloneScrubGrant, CloneScrubResult, ProvisionState};
-
-use super::{Executor, signed_inputs};
+use super::Executor;
 use crate::{
     AdmissionRequest, ExecutorError,
     admin_helper::{self, AdminRequest, AdminStep},
 };
+use rustiron_journal::{Admitted, CloneScrubGrant, ProvisionState};
 
 impl Executor {
     /// Admits one signed scrub of a quarantined clone and asks the admin
@@ -19,37 +18,35 @@ impl Executor {
     pub fn scrub_clone(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<CloneScrubResult, ExecutorError> {
+    ) -> Result<Admitted<CloneScrubGrant>, ExecutorError> {
         let intent = crate::verified_clone_scrub(&self.anchor, request)?;
-        self.check_identity(&intent.host_id, &intent.host_epoch)?;
-        let now = request.now.ok_or(ExecutorError::TimeDenied)?;
-        if self
-            .journal
-            .clone_scrub_status(&intent.operation_id)?
-            .is_none()
-        {
-            let quarantined = self
-                .journal
-                .provision_status(&intent.clone_operation_id)?
-                .is_some_and(|provision| {
-                    provision.intent.site_id == intent.site_id
-                        && provision.state == ProvisionState::Quarantined
-                });
-            let clone = self.journal.clone_status(&intent.clone_operation_id)?;
-            if !quarantined || clone.is_none() {
-                return Err(ExecutorError::PreconditionChanged);
+        let grant = match self.admit_signed(
+            request,
+            (&intent.host_id, &intent.host_epoch),
+            |journal| Ok(journal.clone_scrub_status(&intent.operation_id)?.is_some()),
+            |executor, _now| {
+                let quarantined = executor
+                    .journal
+                    .provision_status(&intent.clone_operation_id)?
+                    .is_some_and(|provision| {
+                        provision.intent.site_id == intent.site_id
+                            && provision.state == ProvisionState::Quarantined
+                    });
+                let clone = executor.journal.clone_status(&intent.clone_operation_id)?;
+                if !quarantined || clone.is_none() {
+                    return Err(ExecutorError::PreconditionChanged);
+                }
+                if executor.anchor.admin_socket.is_none() {
+                    return Err(ExecutorError::Unavailable);
+                }
+                Ok(())
+            },
+            |journal, now| journal.record_clone_scrub(&intent, now),
+        )? {
+            Admitted::Existing(existing) => {
+                return Ok(Admitted::Existing(existing));
             }
-            if self.anchor.admin_socket.is_none() {
-                return Err(ExecutorError::Unavailable);
-            }
-        }
-        let grant = match self.admit(signed_inputs(request)?, |journal| {
-            journal.record_clone_scrub(&intent, now)
-        })? {
-            CloneScrubResult::Existing(existing) => {
-                return Ok(CloneScrubResult::Existing(existing));
-            }
-            CloneScrubResult::New(grant) => grant,
+            Admitted::New(grant) => grant,
         };
         let site = intent.site_id.clone();
         let outcome = admin_helper::route(
@@ -64,7 +61,7 @@ impl Executor {
             .journal
             .finish_signed_clone_scrub(&grant.operation_id, outcome.is_ok())?;
         outcome?;
-        Ok(CloneScrubResult::New(recorded))
+        Ok(Admitted::New(recorded))
     }
 
     /// W538: a stored signed clone scrub, for status.

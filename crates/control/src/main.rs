@@ -1,4 +1,10 @@
 //! Local unprivileged coordinator and offline inventory metadata maintenance.
+#![warn(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "W672: production code returns errors; tests may unwrap (clippy.toml)"
+)]
 
 mod delegation;
 mod diagnose;

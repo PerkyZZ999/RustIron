@@ -68,7 +68,7 @@ fn read_attribute(dir: &OwnedFd, name: &std::ffi::CStr, attribute: &str) -> Opti
     Some(buffer)
 }
 
-/// [`census`] that also checks every directory and regular file carries
+/// `census` (test builds) that also checks every directory and regular file carries
 /// `want` (the label the job's context gives at creation, W213), counting
 /// the rest in [`Census::mislabelled`]. Nothing is relabelled.
 pub(crate) fn census_labelled(

@@ -6,9 +6,7 @@ import { Link } from "@tanstack/react-router";
 import {
   AlertCircle,
   ArrowLeft,
-  Check,
   ChevronDown,
-  Copy,
   Download,
   Globe,
   Layers,
@@ -19,7 +17,7 @@ import {
   Trash2,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 
 import {
   type AppDatabaseEngine,
@@ -36,9 +34,8 @@ import {
   renderCanonicalZone,
   renderDnsOperationsJson,
 } from "./cli-commands";
-import { toastManager } from "./components/ui/toast";
 import { useData } from "./data";
-import { Crumbs, Glyph, Page, TableScroll } from "./ui";
+import { CopyButton, Crumbs, Glyph, Page, TableScroll } from "./ui";
 import { SeparateCustodyApplyPanel } from "./write-panel";
 
 type WebsiteKind = "wordpress" | "emdash" | "app" | "proxy";
@@ -83,31 +80,6 @@ function downloadTextFile(filename: string, content: string, mime = "text/plain;
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
-}
-
-function CopySnippetButton({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return undefined;
-    const t = setTimeout(() => setCopied(false), 2000);
-    return () => clearTimeout(t);
-  }, [copied]);
-  return (
-    <button
-      type="button"
-      className="btn quiet sm"
-      aria-label={label}
-      onClick={() =>
-        void navigator.clipboard?.writeText(text).then(() => {
-          setCopied(true);
-          toastManager.add({ id: `copy-${label}`, type: "success", title: "Command copied" });
-        })
-      }
-    >
-      <Glyph icon={copied ? Check : Copy} className={copied ? "check-pop" : undefined} />
-      {copied ? "Copied" : "Copy"}
-    </button>
-  );
 }
 
 function InlineErr({ id, message }: { id: string; message: string | null }) {
@@ -388,6 +360,44 @@ const websiteCmdMap: Record<WebsiteKind, (f: WebsiteFormState, s: string, h: str
       summary: `Loopback reverse proxy site ${s} (${h}) -> 127.0.0.1:${Number.parseInt(f.port, 10) || 8080}`,
     }),
 };
+
+/**
+ * W749 (QA-18): a command is shown only for valid input. Before that the
+ * builders fill in defaults or drop characters, so the text would not match
+ * the form.
+ */
+function SignCommandPanel({
+  title,
+  copyLabel,
+  valid,
+  text,
+  extra,
+}: {
+  title: string;
+  copyLabel: string;
+  valid: boolean;
+  text: string;
+  extra?: ReactNode;
+}) {
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <h2>{title}</h2>
+        {valid ? (
+          <div className="row" style={{ gap: 6 }}>
+            <CopyButton text={text} label={copyLabel} />
+            {extra}
+          </div>
+        ) : null}
+      </div>
+      {valid ? (
+        <pre className="code signed-bytes">{text}</pre>
+      ) : (
+        <p className="cap">Fix the highlighted fields to see the command.</p>
+      )}
+    </section>
+  );
+}
 
 function buildWebsiteCommand(form: WebsiteFormState): string {
   return websiteCmdMap[form.kind](
@@ -960,35 +970,34 @@ function WebsiteSummaryAside({
         </p>
       </section>
 
-      <section className="panel">
-        <div className="panel-head">
-          <h2>Create &amp; sign command</h2>
-          <div className="row" style={{ gap: 6 }}>
-            <CopySnippetButton text={signCmd} label="Copy create website commands" />
-            <button
-              type="button"
-              className="btn quiet sm"
-              onClick={() =>
-                downloadTextFile(
-                  `${accountId}-draft.json`,
-                  draftPayload,
-                  "application/json;charset=utf-8",
-                )
-              }
-            >
-              <Glyph icon={Download} />
-              JSON
-            </button>
-          </div>
-        </div>
-        <pre className="code signed-bytes">{signCmd}</pre>
-      </section>
+      <SignCommandPanel
+        title="Create & sign command"
+        copyLabel="Copy create website commands"
+        valid={valid}
+        text={signCmd}
+        extra={
+          <button
+            type="button"
+            className="btn quiet sm"
+            onClick={() =>
+              downloadTextFile(
+                `${accountId}-draft.json`,
+                draftPayload,
+                "application/json;charset=utf-8",
+              )
+            }
+          >
+            <Glyph icon={Download} />
+            JSON
+          </button>
+        }
+      />
 
-      {packCmd ? (
+      {packCmd && valid ? (
         <section className="panel">
           <div className="panel-head">
             <h2>Off-host release pack command</h2>
-            <CopySnippetButton text={packCmd} label="Copy app pack command" />
+            <CopyButton text={packCmd} label="Copy app pack command" />
           </div>
           <p className="cap" style={{ marginBottom: 8 }}>
             Build locally or in CI, then pack a deterministic tarball with SHA-256 manifest before
@@ -1028,7 +1037,8 @@ export function CreateWebsitePage() {
     stripApiPrefix: true,
     healthPath: "/api/health",
   });
-  const [siteIdEdited, setSiteIdEdited] = useState(false);
+  // Read only in handlers: a ref avoids a re-render when it flips.
+  const siteIdEdited = useRef(false);
 
   const patch = (p: Partial<WebsiteFormState>) => setForm((prev) => ({ ...prev, ...p }));
   const existingHosts = new Set(data.sites.map((s) => s.domain.toLowerCase()));
@@ -1114,7 +1124,7 @@ export function CreateWebsitePage() {
                   onChange={(e) => {
                     const next = e.target.value;
                     patch(
-                      siteIdEdited
+                      siteIdEdited.current
                         ? { hostname: next }
                         : { hostname: next, siteId: slugFromDomain(next) },
                     );
@@ -1131,7 +1141,7 @@ export function CreateWebsitePage() {
                   aria-invalid={errs.idErr ? "true" : "false"}
                   aria-describedby={errs.idErr ? "ws-id-err" : undefined}
                   onChange={(e) => {
-                    setSiteIdEdited(true);
+                    siteIdEdited.current = true;
                     patch({ siteId: e.target.value });
                   }}
                 />
@@ -1290,6 +1300,7 @@ export function AddDomainPage() {
           summary: `HTTP-01 TLS certificate for ${safeZone}${form.aliasHost.trim() ? ` + alias ${form.aliasHost.trim()}` : ""}`,
         });
   const signCmd = `${cli}\n${INSPECT_AND_SIGN_STEPS}`;
+  const valid = !zoneErr && !ipErr;
 
   return (
     <Page live>
@@ -1398,13 +1409,12 @@ export function AddDomainPage() {
             </section>
           ) : null}
 
-          <section className="panel">
-            <div className="panel-head">
-              <h2>Sign &amp; apply command</h2>
-              <CopySnippetButton text={signCmd} label="Copy domain setup commands" />
-            </div>
-            <pre className="code signed-bytes">{signCmd}</pre>
-          </section>
+          <SignCommandPanel
+            title="Sign & apply command"
+            copyLabel="Copy domain setup commands"
+            valid={valid}
+            text={signCmd}
+          />
         </aside>
       </div>
     </Page>
@@ -1647,7 +1657,7 @@ function StagedDnsSection({
           <Glyph icon={Download} />
           Download operations JSON
         </button>
-        <CopySnippetButton text={cli} label="Copy DNS change commands" />
+        <CopyButton text={cli} label="Copy DNS change commands" />
         <button type="button" className="btn quiet sm" onClick={onClear}>
           Clear all
         </button>
@@ -1787,7 +1797,7 @@ export function SslActionPanel({ hostname }: { hostname: string }) {
           <Glyph icon={Server} />
           <h2>Issue or renew SSL</h2>
         </div>
-        <CopySnippetButton text={cmd} label="Copy SSL certificate command" />
+        <CopyButton text={cmd} label="Copy SSL certificate command" />
       </div>
       <div className="form-row" style={{ marginBottom: 10 }}>
         <label htmlFor="ssl-alias">Optional alias hostname</label>

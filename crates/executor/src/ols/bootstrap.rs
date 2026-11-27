@@ -116,18 +116,7 @@ pub fn observe_current(include: &OwnedFd) -> Result<Option<(Id, Sha256Digest)>, 
 
 /// The bootstrap compensation's restore: removes `current` when it is a
 /// symlink. Absent is already restored; any other file type is drift.
-pub fn clear_current(include: &OwnedFd) -> Result<(), ExecutorError> {
-    match fs::statat(include, "current", AtFlags::SYMLINK_NOFOLLOW) {
-        Err(rustix::io::Errno::NOENT) => return Ok(()),
-        Ok(stat) if fs::FileType::from_raw_mode(stat.st_mode) == fs::FileType::Symlink => {}
-        _ => return Err(ExecutorError::Drift),
-    }
-    match fs::unlinkat(include, "current", AtFlags::empty()) {
-        Ok(()) | Err(rustix::io::Errno::NOENT) => {}
-        Err(_) => return Err(ExecutorError::StepFailed),
-    }
-    fs::fsync(include).map_err(|_| ExecutorError::StepFailed)
-}
+pub use crate::generation::clear_current;
 
 /// `ActiveState` values of a server that is not running: never started or
 /// stopped (`inactive`), or `failed`: a failed start (the package unit after

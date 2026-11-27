@@ -22,12 +22,43 @@ const ASSERTED_CAPTURE: &str =
 const ASSERTED_PROBE: &str =
     "operator-named snapshot; Rustiron did not restore it or touch the source site";
 
-pub(crate) struct SiteProvision {
+/// W716 (pass 33, fix 9): the header flags that every plan names. Each create
+/// command flattens them, and [`PlanHeader::draft`] writes them into the plan.
+#[derive(clap::Args)]
+pub(crate) struct PlanHeader {
+    #[arg(long)]
     pub plan_id: String,
+    #[arg(long)]
     pub host_id: String,
+    #[arg(long)]
     pub host_epoch: String,
+    #[arg(long)]
     pub profile_digest: String,
+    #[arg(long)]
     pub requester: String,
+}
+
+impl PlanHeader {
+    /// A plan draft: this header, its `schema_version`, and the verb's own
+    /// `fields`. The canonical encoding orders the keys.
+    fn draft(&self, schema_version: u8, fields: serde_json::Value) -> serde_json::Value {
+        let mut draft = serde_json::json!({
+            "schema_version": schema_version,
+            "plan_id": self.plan_id,
+            "host_id": self.host_id,
+            "host_epoch": self.host_epoch,
+            "profile_digest": self.profile_digest,
+            "requester": self.requester,
+        });
+        if let (Some(draft), serde_json::Value::Object(fields)) = (draft.as_object_mut(), fields) {
+            draft.extend(fields);
+        }
+        draft
+    }
+}
+
+pub(crate) struct SiteProvision {
+    pub header: PlanHeader,
     pub site_id: String,
     pub hostname: String,
     pub recipe: String,
@@ -47,36 +78,33 @@ pub(crate) fn site_provision(request: SiteProvision) -> ExitCode {
     } else {
         request.limitations
     };
-    let mut draft = serde_json::json!({
-        "schema_version": 1,
-        "plan_id": request.plan_id,
-        "host_id": request.host_id,
-        "host_epoch": request.host_epoch,
-        "profile_digest": request.profile_digest,
-        "requester": request.requester,
-        "verb": "site_provision",
-        "site_id": request.site_id,
-        "hostname": request.hostname,
-        "recipe_id": request.recipe,
-        "recipe_digest": request.recipe_digest,
-        "observations": [{
-            "state": "absent",
+    let mut draft = request.header.draft(
+        1,
+        serde_json::json!({
+            "verb": "site_provision",
             "site_id": request.site_id,
             "hostname": request.hostname,
-            "observed_at": request.observed_at,
-            "source": "reported_registry",
-        }],
-        "expected_effects": {
-            "creates_account": true,
-            "creates_database": true,
-            "traffic_activation": false,
-            "network_access": false,
-        },
-        "risk_class": "lab_only",
-        "valid_from": request.valid_from,
-        "expires_at": request.expires_at,
-        "limitations": limitations,
-    });
+            "recipe_id": request.recipe,
+            "recipe_digest": request.recipe_digest,
+            "observations": [{
+                "state": "absent",
+                "site_id": request.site_id,
+                "hostname": request.hostname,
+                "observed_at": request.observed_at,
+                "source": "reported_registry",
+            }],
+            "expected_effects": {
+                "creates_account": true,
+                "creates_database": true,
+                "traffic_activation": false,
+                "network_access": false,
+            },
+            "risk_class": "lab_only",
+            "valid_from": request.valid_from,
+            "expires_at": request.expires_at,
+            "limitations": limitations,
+        }),
+    );
     if let Some((block_hard_kib, inode_hard)) = request.quota {
         draft["schema_version"] = 2.into();
         draft["expected_effects"]["sets_quota"] = true.into();
@@ -89,11 +117,7 @@ pub(crate) fn site_provision(request: SiteProvision) -> ExitCode {
 }
 
 pub(crate) struct SiteEject {
-    pub plan_id: String,
-    pub host_id: String,
-    pub host_epoch: String,
-    pub profile_digest: String,
-    pub requester: String,
+    pub header: PlanHeader,
     pub site_id: String,
     pub hostname: Option<String>,
     pub alias_hostname: Option<String>,
@@ -114,35 +138,32 @@ pub(crate) fn site_eject(request: SiteEject) -> ExitCode {
     };
     let generation = request.expected_generation;
     let digest = request.expected_digest;
-    let mut draft = serde_json::json!({
-        "schema_version": 1,
-        "plan_id": request.plan_id,
-        "host_id": request.host_id,
-        "host_epoch": request.host_epoch,
-        "profile_digest": request.profile_digest,
-        "requester": request.requester,
-        "verb": "site_eject",
-        "target": "ols_lab_listener",
-        "site_id": request.site_id,
-        "expected_generation": generation,
-        "expected_digest": digest,
-        "observations": [{
-            "state": "observed",
-            "generation": generation.clone(),
-            "content_digest": digest.clone(),
-            "observed_at": request.observed_at,
-            "source": "reported_registry",
-        }],
-        "risk_class": "lab_only",
-        "valid_from": request.valid_from,
-        "expires_at": request.expires_at,
-        "compensation": {
-            "recipe": "ols_restore_lkg_v1",
-            "max_attempts": 1,
-            "valid_until": request.compensation_until,
-        },
-        "limitations": limitations,
-    });
+    let mut draft = request.header.draft(
+        1,
+        serde_json::json!({
+            "verb": "site_eject",
+            "target": "ols_lab_listener",
+            "site_id": request.site_id,
+            "expected_generation": generation,
+            "expected_digest": digest,
+            "observations": [{
+                "state": "observed",
+                "generation": generation,
+                "content_digest": digest,
+                "observed_at": request.observed_at,
+                "source": "reported_registry",
+            }],
+            "risk_class": "lab_only",
+            "valid_from": request.valid_from,
+            "expires_at": request.expires_at,
+            "compensation": {
+                "recipe": "ols_restore_lkg_v1",
+                "max_attempts": 1,
+                "valid_until": request.compensation_until,
+            },
+            "limitations": limitations,
+        }),
+    );
     match (request.hostname, request.alias_hostname) {
         (Some(hostname), Some(alias)) => {
             draft["schema_version"] = 2.into();
@@ -160,11 +181,7 @@ pub(crate) fn site_eject(request: SiteEject) -> ExitCode {
 }
 
 pub(crate) struct ConfigActivate {
-    pub plan_id: String,
-    pub host_id: String,
-    pub host_epoch: String,
-    pub profile_digest: String,
-    pub requester: String,
+    pub header: PlanHeader,
     pub site_ids: Vec<String>,
     pub expected_generation: String,
     pub expected_digest: String,
@@ -183,44 +200,37 @@ pub(crate) fn config_activate(request: ConfigActivate) -> ExitCode {
     };
     let generation = request.expected_generation;
     let digest = request.expected_digest;
-    let draft = serde_json::json!({
-        "schema_version": 1,
-        "plan_id": request.plan_id,
-        "host_id": request.host_id,
-        "host_epoch": request.host_epoch,
-        "profile_digest": request.profile_digest,
-        "requester": request.requester,
-        "verb": "config_activate",
-        "target": "ols_lab_listener",
-        "site_ids": request.site_ids,
-        "expected_generation": generation,
-        "expected_digest": digest,
-        "observations": [{
-            "state": "observed",
-            "generation": generation.clone(),
-            "content_digest": digest.clone(),
-            "observed_at": request.observed_at,
-            "source": "reported_registry",
-        }],
-        "risk_class": "lab_only",
-        "valid_from": request.valid_from,
-        "expires_at": request.expires_at,
-        "compensation": {
-            "recipe": "ols_restore_lkg_v1",
-            "max_attempts": 1,
-            "valid_until": request.compensation_until,
-        },
-        "limitations": limitations,
-    });
+    let draft = request.header.draft(
+        1,
+        serde_json::json!({
+            "verb": "config_activate",
+            "target": "ols_lab_listener",
+            "site_ids": request.site_ids,
+            "expected_generation": generation,
+            "expected_digest": digest,
+            "observations": [{
+                "state": "observed",
+                "generation": generation,
+                "content_digest": digest,
+                "observed_at": request.observed_at,
+                "source": "reported_registry",
+            }],
+            "risk_class": "lab_only",
+            "valid_from": request.valid_from,
+            "expires_at": request.expires_at,
+            "compensation": {
+                "recipe": "ols_restore_lkg_v1",
+                "max_attempts": 1,
+                "valid_until": request.compensation_until,
+            },
+            "limitations": limitations,
+        }),
+    );
     emit_canonical(&draft)
 }
 
 pub(crate) struct BackupCapture {
-    pub plan_id: String,
-    pub host_id: String,
-    pub host_epoch: String,
-    pub profile_digest: String,
-    pub requester: String,
+    pub header: PlanHeader,
     pub site_id: String,
     pub valid_from: u64,
     pub expires_at: u64,
@@ -233,31 +243,24 @@ pub(crate) fn backup_capture(request: BackupCapture) -> ExitCode {
     } else {
         request.limitations
     };
-    let draft = serde_json::json!({
-        "schema_version": 1,
-        "plan_id": request.plan_id,
-        "host_id": request.host_id,
-        "host_epoch": request.host_epoch,
-        "profile_digest": request.profile_digest,
-        "requester": request.requester,
-        "verb": "backup_capture",
-        "site_id": request.site_id,
-        "destination_id": "lab_pc_store",
-        "recipe_id": "site_files_db_v1",
-        "risk_class": "lab_only",
-        "valid_from": request.valid_from,
-        "expires_at": request.expires_at,
-        "limitations": limitations,
-    });
+    let draft = request.header.draft(
+        1,
+        serde_json::json!({
+            "verb": "backup_capture",
+            "site_id": request.site_id,
+            "destination_id": "lab_pc_store",
+            "recipe_id": "site_files_db_v1",
+            "risk_class": "lab_only",
+            "valid_from": request.valid_from,
+            "expires_at": request.expires_at,
+            "limitations": limitations,
+        }),
+    );
     emit_canonical(&draft)
 }
 
 pub(crate) struct RestoreProbe {
-    pub plan_id: String,
-    pub host_id: String,
-    pub host_epoch: String,
-    pub profile_digest: String,
-    pub requester: String,
+    pub header: PlanHeader,
     pub site_id: String,
     pub snapshot_id: String,
     pub valid_from: u64,
@@ -271,37 +274,26 @@ pub(crate) fn restore_probe(request: RestoreProbe) -> ExitCode {
     } else {
         request.limitations
     };
-    let draft = serde_json::json!({
-        "schema_version": 1,
-        "plan_id": request.plan_id,
-        "host_id": request.host_id,
-        "host_epoch": request.host_epoch,
-        "profile_digest": request.profile_digest,
-        "requester": request.requester,
-        "verb": "restore_probe",
-        "site_id": request.site_id,
-        "snapshot_id": request.snapshot_id,
-        "profile_id": "local_no_egress_v1",
-        "risk_class": "lab_only",
-        "valid_from": request.valid_from,
-        "expires_at": request.expires_at,
-        "limitations": limitations,
-    });
+    let draft = request.header.draft(
+        1,
+        serde_json::json!({
+            "verb": "restore_probe",
+            "site_id": request.site_id,
+            "snapshot_id": request.snapshot_id,
+            "profile_id": "local_no_egress_v1",
+            "risk_class": "lab_only",
+            "valid_from": request.valid_from,
+            "expires_at": request.expires_at,
+            "limitations": limitations,
+        }),
+    );
     emit_canonical(&draft)
 }
 
 #[derive(clap::Args)]
 pub(crate) struct ProductBackup {
-    #[arg(long)]
-    plan_id: String,
-    #[arg(long)]
-    host_id: String,
-    #[arg(long)]
-    host_epoch: String,
-    #[arg(long)]
-    profile_digest: String,
-    #[arg(long)]
-    requester: String,
+    #[command(flatten)]
+    header: PlanHeader,
     #[arg(long)]
     site_id: String,
     /// Destination ID from the operator-reviewed enrollment.
@@ -330,21 +322,18 @@ pub(crate) enum ProductTarget {
 
 pub(crate) fn product_backup(request: ProductBackup, target: ProductTarget) -> ExitCode {
     let use_default_limitation = request.limitation.is_empty();
-    let mut draft = serde_json::json!({
-        "schema_version": 2,
-        "plan_id": request.plan_id,
-        "host_id": request.host_id,
-        "host_epoch": request.host_epoch,
-        "profile_digest": request.profile_digest,
-        "requester": request.requester,
-        "site_id": request.site_id,
-        "destination_id": request.destination_id,
-        "destination_policy_digest": request.destination_policy_digest,
-        "risk_class": "production",
-        "valid_from": request.valid_from,
-        "expires_at": request.expires_at,
-        "limitations": request.limitation,
-    });
+    let mut draft = request.header.draft(
+        2,
+        serde_json::json!({
+            "site_id": request.site_id,
+            "destination_id": request.destination_id,
+            "destination_policy_digest": request.destination_policy_digest,
+            "risk_class": "production",
+            "valid_from": request.valid_from,
+            "expires_at": request.expires_at,
+            "limitations": request.limitation,
+        }),
+    );
     let default_limitation = match target {
         ProductTarget::Capture { recipe_id } => {
             draft["verb"] = serde_json::json!("backup_capture");
@@ -373,16 +362,8 @@ const ASSERTED_STANDING: &str =
 /// D-035 (W386): the fields of a standing capture plan.
 #[derive(clap::Args)]
 pub(crate) struct StandingCapture {
-    #[arg(long)]
-    plan_id: String,
-    #[arg(long)]
-    host_id: String,
-    #[arg(long)]
-    host_epoch: String,
-    #[arg(long)]
-    profile_digest: String,
-    #[arg(long)]
-    requester: String,
+    #[command(flatten)]
+    header: PlanHeader,
     /// A named site; repeat for 1 to 16 sites. The plan lists them sorted.
     #[arg(long, required = true)]
     site_id: Vec<String>,
@@ -424,47 +405,36 @@ pub(crate) fn standing_capture(request: StandingCapture) -> ExitCode {
     } else {
         request.limitation
     };
-    let draft = serde_json::json!({
-        "schema_version": 3,
-        "plan_id": request.plan_id,
-        "host_id": request.host_id,
-        "host_epoch": request.host_epoch,
-        "profile_digest": request.profile_digest,
-        "requester": request.requester,
-        "verb": "backup_capture",
-        "site_ids": sites,
-        "destination_id": request.destination_id,
-        "destination_policy_digest": request.destination_policy_digest,
-        "recipe_id": request.recipe_id,
-        "first_window_start": request.first_window_start,
-        "period_seconds": request.period_seconds,
-        "window_seconds": request.window_seconds,
-        "max_runs": request.max_runs,
-        "risk_class": "production",
-        "valid_from": request.valid_from,
-        "expires_at": request.expires_at,
-        "limitations": limitations,
-    });
+    let draft = request.header.draft(
+        3,
+        serde_json::json!({
+            "verb": "backup_capture",
+            "site_ids": sites,
+            "destination_id": request.destination_id,
+            "destination_policy_digest": request.destination_policy_digest,
+            "recipe_id": request.recipe_id,
+            "first_window_start": request.first_window_start,
+            "period_seconds": request.period_seconds,
+            "window_seconds": request.window_seconds,
+            "max_runs": request.max_runs,
+            "risk_class": "production",
+            "valid_from": request.valid_from,
+            "expires_at": request.expires_at,
+            "limitations": limitations,
+        }),
+    );
     emit_canonical(&draft)
 }
 
 const ASSERTED_READOPT: &str =
     "operator-supplied facts from the pre-rotation export; the executor verifies the host";
 
-/// W372: the fields both `site_readopt` forms share.
+/// W372: the fields both `site_readopt` forms share. `--host-epoch` is the
+/// current (new) epoch.
 #[derive(clap::Args)]
 pub(crate) struct Readopt {
-    #[arg(long)]
-    plan_id: String,
-    #[arg(long)]
-    host_id: String,
-    /// The current (new) epoch.
-    #[arg(long)]
-    host_epoch: String,
-    #[arg(long)]
-    profile_digest: String,
-    #[arg(long)]
-    requester: String,
+    #[command(flatten)]
+    header: PlanHeader,
     /// The archived journal's epoch (evidence for the review only).
     #[arg(long)]
     previous_epoch: String,
@@ -522,21 +492,18 @@ pub(crate) fn site_readopt(request: Readopt, target: ReadoptTarget) -> ExitCode 
         effects[record] = true.into();
         effects
     };
-    let mut draft = serde_json::json!({
-        "schema_version": 1,
-        "plan_id": request.plan_id,
-        "host_id": request.host_id,
-        "host_epoch": request.host_epoch,
-        "profile_digest": request.profile_digest,
-        "requester": request.requester,
-        "verb": "site_readopt",
-        "previous_epoch": request.previous_epoch,
-        "evidence_sha256": request.evidence_sha256,
-        "risk_class": "lab_only",
-        "valid_from": request.valid_from,
-        "expires_at": request.expires_at,
-        "limitations": limitations,
-    });
+    let mut draft = request.header.draft(
+        1,
+        serde_json::json!({
+            "verb": "site_readopt",
+            "previous_epoch": request.previous_epoch,
+            "evidence_sha256": request.evidence_sha256,
+            "risk_class": "lab_only",
+            "valid_from": request.valid_from,
+            "expires_at": request.expires_at,
+            "limitations": limitations,
+        }),
+    );
     if let Some((uid, category)) = request.floor_uid.zip(request.floor_category) {
         draft["allocation_floor"] = serde_json::json!({"uid": uid, "category": category});
     }
@@ -589,16 +556,8 @@ pub(crate) fn site_readopt(request: Readopt, target: ReadoptTarget) -> ExitCode 
 /// Fields shared by the two schema 1 DNS plans.
 #[derive(clap::Args)]
 pub(crate) struct DnsPlan {
-    #[arg(long)]
-    plan_id: String,
-    #[arg(long)]
-    host_id: String,
-    #[arg(long)]
-    host_epoch: String,
-    #[arg(long)]
-    profile_digest: String,
-    #[arg(long)]
-    requester: String,
+    #[command(flatten)]
+    header: PlanHeader,
     /// Lowercase zone name without a final dot.
     #[arg(long)]
     zone: String,
@@ -617,20 +576,17 @@ impl DnsPlan {
         } else {
             self.limitation
         };
-        serde_json::json!({
-            "schema_version": 1,
-            "plan_id": self.plan_id,
-            "host_id": self.host_id,
-            "host_epoch": self.host_epoch,
-            "profile_digest": self.profile_digest,
-            "requester": self.requester,
-            "verb": verb,
-            "zone": self.zone,
-            "risk_class": "lab_only",
-            "valid_from": self.valid_from,
-            "expires_at": self.expires_at,
-            "limitations": limitations,
-        })
+        self.header.draft(
+            1,
+            serde_json::json!({
+                "verb": verb,
+                "zone": self.zone,
+                "risk_class": "lab_only",
+                "valid_from": self.valid_from,
+                "expires_at": self.expires_at,
+                "limitations": limitations,
+            }),
+        )
     }
 }
 
@@ -692,16 +648,8 @@ pub(crate) fn dns_change(request: DnsPlan, operations_file: &Path) -> ExitCode {
 /// Shared envelope fields for P27 modern app hosting plans (D-099).
 #[derive(clap::Args)]
 pub(crate) struct AppCommon {
-    #[arg(long)]
-    plan_id: String,
-    #[arg(long)]
-    host_id: String,
-    #[arg(long)]
-    host_epoch: String,
-    #[arg(long)]
-    profile_digest: String,
-    #[arg(long)]
-    requester: String,
+    #[command(flatten)]
+    header: PlanHeader,
     #[arg(long)]
     site_id: String,
     #[arg(long)]
@@ -845,38 +793,35 @@ pub(crate) fn app_provision(request: AppProvisionArgs) -> ExitCode {
             .into_iter()
             .map(|prefix| serde_json::json!({ "prefix": prefix, "port": request.port }))
             .collect();
-        let mut draft = serde_json::json!({
-            "schema_version": 1,
-            "plan_id": request.common.plan_id,
-            "host_id": request.common.host_id,
-            "host_epoch": request.common.host_epoch,
-            "profile_digest": request.common.profile_digest,
-            "requester": request.common.requester,
-            "verb": "app_provision",
-            "site_id": request.common.site_id,
-            "hostname": request.hostname,
-            "runtime": request.runtime,
-            "port": request.port,
-            "routes": routes,
-            "websockets": websockets,
-            "entrypoint": request.entrypoint,
-            "health_path": request.health_path,
-            "env_keys": env_keys,
-            "memory_max_mib": request.memory_max_mib,
-            "tasks_max": request.tasks_max,
-            "quota_mib": request.quota_mib,
-            "expected_effects": {
-                "creates_account": true,
-                "forwards_to_loopback": true,
-                "installs_app_unit": true,
-                "traffic_activation": false,
-                "runs_package_scripts": false,
-            },
-            "risk_class": "lab_only",
-            "valid_from": request.common.valid_from,
-            "expires_at": request.common.expires_at,
-            "limitations": limitations,
-        });
+        let mut draft = request.common.header.draft(
+            1,
+            serde_json::json!({
+                "verb": "app_provision",
+                "site_id": request.common.site_id,
+                "hostname": request.hostname,
+                "runtime": request.runtime,
+                "port": request.port,
+                "routes": routes,
+                "websockets": websockets,
+                "entrypoint": request.entrypoint,
+                "health_path": request.health_path,
+                "env_keys": env_keys,
+                "memory_max_mib": request.memory_max_mib,
+                "tasks_max": request.tasks_max,
+                "quota_mib": request.quota_mib,
+                "expected_effects": {
+                    "creates_account": true,
+                    "forwards_to_loopback": true,
+                    "installs_app_unit": true,
+                    "traffic_activation": false,
+                    "runs_package_scripts": false,
+                },
+                "risk_class": "lab_only",
+                "valid_from": request.common.valid_from,
+                "expires_at": request.common.expires_at,
+                "limitations": limitations,
+            }),
+        );
         if let Some(worker) = request.worker_entrypoint {
             draft["worker_entrypoint"] = worker.into();
         }
@@ -945,44 +890,41 @@ pub(crate) fn app_provision(request: AppProvisionArgs) -> ExitCode {
         .collect();
     let has_runtime = topology != "static_spa";
     let creates_database = matches!(database.as_str(), "mariadb" | "postgresql_18");
-    let mut draft = serde_json::json!({
-        "schema_version": 2,
-        "plan_id": request.common.plan_id,
-        "host_id": request.common.host_id,
-        "host_epoch": request.common.host_epoch,
-        "profile_digest": request.common.profile_digest,
-        "requester": request.common.requester,
-        "verb": "app_provision",
-        "site_id": request.common.site_id,
-        "hostname": request.hostname,
-        "runtime": request.runtime,
-        "port": request.port,
-        "routes": routes,
-        "websockets": websockets,
-        "entrypoint": request.entrypoint,
-        "health_path": request.health_path,
-        "env_keys": env_keys,
-        "memory_max_mib": request.memory_max_mib,
-        "tasks_max": request.tasks_max,
-        "quota_mib": request.quota_mib,
-        "ingress": ingress,
-        "topology": topology,
-        "database": database,
-        "blue_green": request.blue_green,
-        "spa_fallback": request.spa_fallback,
-        "expected_effects": {
-            "creates_account": true,
-            "forwards_to_loopback": has_runtime,
-            "installs_app_unit": has_runtime,
-            "creates_database": creates_database,
-            "traffic_activation": false,
-            "runs_package_scripts": false,
-        },
-        "risk_class": "lab_only",
-        "valid_from": request.common.valid_from,
-        "expires_at": request.common.expires_at,
-        "limitations": limitations,
-    });
+    let mut draft = request.common.header.draft(
+        2,
+        serde_json::json!({
+            "verb": "app_provision",
+            "site_id": request.common.site_id,
+            "hostname": request.hostname,
+            "runtime": request.runtime,
+            "port": request.port,
+            "routes": routes,
+            "websockets": websockets,
+            "entrypoint": request.entrypoint,
+            "health_path": request.health_path,
+            "env_keys": env_keys,
+            "memory_max_mib": request.memory_max_mib,
+            "tasks_max": request.tasks_max,
+            "quota_mib": request.quota_mib,
+            "ingress": ingress,
+            "topology": topology,
+            "database": database,
+            "blue_green": request.blue_green,
+            "spa_fallback": request.spa_fallback,
+            "expected_effects": {
+                "creates_account": true,
+                "forwards_to_loopback": has_runtime,
+                "installs_app_unit": has_runtime,
+                "creates_database": creates_database,
+                "traffic_activation": false,
+                "runs_package_scripts": false,
+            },
+            "risk_class": "lab_only",
+            "valid_from": request.common.valid_from,
+            "expires_at": request.common.expires_at,
+            "limitations": limitations,
+        }),
+    );
     if let Some(worker) = request.worker_entrypoint {
         draft["worker_entrypoint"] = worker.into();
     }
@@ -1057,67 +999,61 @@ pub(crate) fn app_deploy(request: AppDeployArgs) -> ExitCode {
     let is_v2 = request.blue_green_cutover || request.runtime == "static_v1";
     let has_runtime = request.runtime != "static_v1";
     let mut draft = if is_v2 {
-        serde_json::json!({
-            "schema_version": 2,
-            "plan_id": request.common.plan_id,
-            "host_id": request.common.host_id,
-            "host_epoch": request.common.host_epoch,
-            "profile_digest": request.common.profile_digest,
-            "requester": request.common.requester,
-            "verb": "app_deploy",
-            "site_id": request.common.site_id,
-            "release_id": request.release_id,
-            "runtime": request.runtime,
-            "artifact_sha256": request.artifact_sha256,
-            "manifest_sha256": request.manifest_sha256,
-            "file_count": request.file_count,
-            "total_bytes": request.total_bytes,
-            "health_path": request.health_path,
-            "blue_green_cutover": request.blue_green_cutover,
-            "expected_effects": {
-                "unpacks_as_site": true,
-                "switches_release": true,
-                "restarts_app_unit": has_runtime,
-                "rolls_back_on_failed_health": true,
-                "runs_package_scripts": false,
-                "traffic_activation": false,
-                "reloads_caddy": has_runtime && request.blue_green_cutover,
-            },
-            "risk_class": "lab_only",
-            "valid_from": request.common.valid_from,
-            "expires_at": request.common.expires_at,
-            "limitations": limitations,
-        })
+        request.common.header.draft(
+            2,
+            serde_json::json!({
+                "verb": "app_deploy",
+                "site_id": request.common.site_id,
+                "release_id": request.release_id,
+                "runtime": request.runtime,
+                "artifact_sha256": request.artifact_sha256,
+                "manifest_sha256": request.manifest_sha256,
+                "file_count": request.file_count,
+                "total_bytes": request.total_bytes,
+                "health_path": request.health_path,
+                "blue_green_cutover": request.blue_green_cutover,
+                "expected_effects": {
+                    "unpacks_as_site": true,
+                    "switches_release": true,
+                    "restarts_app_unit": has_runtime,
+                    "rolls_back_on_failed_health": true,
+                    "runs_package_scripts": false,
+                    "traffic_activation": false,
+                    "reloads_caddy": has_runtime && request.blue_green_cutover,
+                },
+                "risk_class": "lab_only",
+                "valid_from": request.common.valid_from,
+                "expires_at": request.common.expires_at,
+                "limitations": limitations,
+            }),
+        )
     } else {
-        serde_json::json!({
-            "schema_version": 1,
-            "plan_id": request.common.plan_id,
-            "host_id": request.common.host_id,
-            "host_epoch": request.common.host_epoch,
-            "profile_digest": request.common.profile_digest,
-            "requester": request.common.requester,
-            "verb": "app_deploy",
-            "site_id": request.common.site_id,
-            "release_id": request.release_id,
-            "runtime": request.runtime,
-            "artifact_sha256": request.artifact_sha256,
-            "manifest_sha256": request.manifest_sha256,
-            "file_count": request.file_count,
-            "total_bytes": request.total_bytes,
-            "health_path": request.health_path,
-            "expected_effects": {
-                "unpacks_as_site": true,
-                "switches_release": true,
-                "restarts_app_unit": true,
-                "rolls_back_on_failed_health": true,
-                "runs_package_scripts": false,
-                "traffic_activation": false,
-            },
-            "risk_class": "lab_only",
-            "valid_from": request.common.valid_from,
-            "expires_at": request.common.expires_at,
-            "limitations": limitations,
-        })
+        request.common.header.draft(
+            1,
+            serde_json::json!({
+                "verb": "app_deploy",
+                "site_id": request.common.site_id,
+                "release_id": request.release_id,
+                "runtime": request.runtime,
+                "artifact_sha256": request.artifact_sha256,
+                "manifest_sha256": request.manifest_sha256,
+                "file_count": request.file_count,
+                "total_bytes": request.total_bytes,
+                "health_path": request.health_path,
+                "expected_effects": {
+                    "unpacks_as_site": true,
+                    "switches_release": true,
+                    "restarts_app_unit": true,
+                    "rolls_back_on_failed_health": true,
+                    "runs_package_scripts": false,
+                    "traffic_activation": false,
+                },
+                "risk_class": "lab_only",
+                "valid_from": request.common.valid_from,
+                "expires_at": request.common.expires_at,
+                "limitations": limitations,
+            }),
+        )
     };
     if let Some(migration) = request.migration_entrypoint {
         draft["migration_entrypoint"] = migration.into();
@@ -1144,26 +1080,23 @@ pub(crate) fn app_lifecycle(request: AppLifecycleArgs) -> ExitCode {
     } else {
         request.common.limitation
     };
-    let draft = serde_json::json!({
-        "schema_version": 1,
-        "plan_id": request.common.plan_id,
-        "host_id": request.common.host_id,
-        "host_epoch": request.common.host_epoch,
-        "profile_digest": request.common.profile_digest,
-        "requester": request.common.requester,
-        "verb": "app_lifecycle",
-        "site_id": request.common.site_id,
-        "action": request.action,
-        "expected_effects": {
-            "changes_app_unit_state": true,
-            "reloads_ols": false,
-            "changes_files": false,
-        },
-        "risk_class": "lab_only",
-        "valid_from": request.common.valid_from,
-        "expires_at": request.common.expires_at,
-        "limitations": limitations,
-    });
+    let draft = request.common.header.draft(
+        1,
+        serde_json::json!({
+            "verb": "app_lifecycle",
+            "site_id": request.common.site_id,
+            "action": request.action,
+            "expected_effects": {
+                "changes_app_unit_state": true,
+                "reloads_ols": false,
+                "changes_files": false,
+            },
+            "risk_class": "lab_only",
+            "valid_from": request.common.valid_from,
+            "expires_at": request.common.expires_at,
+            "limitations": limitations,
+        }),
+    );
     emit_canonical(&draft)
 }
 
@@ -1195,65 +1128,58 @@ pub(crate) fn site_credential_rotate(request: SiteCredentialRotateArgs) -> ExitC
         request.common.limitation
     };
     let draft = if is_app_target {
-        serde_json::json!({
-            "schema_version": 2,
-            "plan_id": request.common.plan_id,
-            "host_id": request.common.host_id,
-            "host_epoch": request.common.host_epoch,
-            "profile_digest": request.common.profile_digest,
-            "requester": request.common.requester,
-            "verb": "site_credential_rotate",
-            "site_id": request.common.site_id,
-            "hostname": request.hostname,
-            "target": request.target,
-            "expected_effects": {
-                "rotates_db_password": true,
-                "updates_db_cnf": false,
-                "restarts_site_php": false,
-                "updates_app_env": true,
-                "restarts_app_unit": true,
-                "traffic_activation": false,
-                "network_access": false,
-                "secret_in_plan": false,
-            },
-            "risk_class": "lab_only",
-            "valid_from": request.common.valid_from,
-            "expires_at": request.common.expires_at,
-            "limitations": limitations,
-        })
+        request.common.header.draft(
+            2,
+            serde_json::json!({
+                "verb": "site_credential_rotate",
+                "site_id": request.common.site_id,
+                "hostname": request.hostname,
+                "target": request.target,
+                "expected_effects": {
+                    "rotates_db_password": true,
+                    "updates_db_cnf": false,
+                    "restarts_site_php": false,
+                    "updates_app_env": true,
+                    "restarts_app_unit": true,
+                    "traffic_activation": false,
+                    "network_access": false,
+                    "secret_in_plan": false,
+                },
+                "risk_class": "lab_only",
+                "valid_from": request.common.valid_from,
+                "expires_at": request.common.expires_at,
+                "limitations": limitations,
+            }),
+        )
     } else {
-        serde_json::json!({
-            "schema_version": 1,
-            "plan_id": request.common.plan_id,
-            "host_id": request.common.host_id,
-            "host_epoch": request.common.host_epoch,
-            "profile_digest": request.common.profile_digest,
-            "requester": request.common.requester,
-            "verb": "site_credential_rotate",
-            "site_id": request.common.site_id,
-            "hostname": request.hostname,
-            "target": request.target,
-            "expected_effects": {
-                "rotates_db_password": true,
-                "updates_db_cnf": true,
-                "restarts_site_php": true,
-                "traffic_activation": false,
-                "network_access": false,
-                "secret_in_plan": false,
-            },
-            "risk_class": "lab_only",
-            "valid_from": request.common.valid_from,
-            "expires_at": request.common.expires_at,
-            "limitations": limitations,
-        })
+        request.common.header.draft(
+            1,
+            serde_json::json!({
+                "verb": "site_credential_rotate",
+                "site_id": request.common.site_id,
+                "hostname": request.hostname,
+                "target": request.target,
+                "expected_effects": {
+                    "rotates_db_password": true,
+                    "updates_db_cnf": true,
+                    "restarts_site_php": true,
+                    "traffic_activation": false,
+                    "network_access": false,
+                    "secret_in_plan": false,
+                },
+                "risk_class": "lab_only",
+                "valid_from": request.common.valid_from,
+                "expires_at": request.common.expires_at,
+                "limitations": limitations,
+            }),
+        )
     };
     emit_canonical(&draft)
 }
 
 fn emit_canonical(draft: &serde_json::Value) -> ExitCode {
-    let prepared = match PreparedPlan::decode(draft.to_string().as_bytes()) {
-        Ok(prepared) => prepared,
-        Err(_) => return fail(ErrorCode::InvalidRequest.exit_code(), "INVALID_PLAN"),
+    let Ok(prepared) = PreparedPlan::decode(draft.to_string().as_bytes()) else {
+        return fail(ErrorCode::InvalidRequest.exit_code(), "INVALID_PLAN");
     };
     if io::stdout().lock().write_all(prepared.as_bytes()).is_ok() {
         ExitCode::SUCCESS

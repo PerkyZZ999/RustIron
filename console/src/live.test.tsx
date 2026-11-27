@@ -3,10 +3,12 @@ import { readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CircleCheck, RotateCcw } from "lucide-react";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { createMemoryHistory, createRouter, RouterProvider } from "@tanstack/react-router";
 
 import {
+  serviceFactLines,
   signerFacts,
   captureRetentionEvidence,
   consistencyText,
@@ -40,7 +42,7 @@ import {
   type Observation,
   packagePins,
 } from "./live";
-import { packageRows, signerRows } from "./pages";
+import { packageRows, signerRows } from "./settings-pages";
 import { observationResponse, observationRoute } from "./observation-route";
 import { routeTree } from "./router";
 
@@ -201,6 +203,12 @@ function only<T>(rows: T[], index: number): T {
   const row = rows[index];
   if (row === undefined) throw new Error(`missing row ${index}`);
   return row;
+}
+
+/** The fixture observation's machine block, which these tests require. */
+function fixtureMachine() {
+  if (!observation.machine) throw new Error("fixture observation has no machine block");
+  return observation.machine;
 }
 
 test("host history needs two timed samples and keeps them in order", () => {
@@ -588,7 +596,7 @@ test("a capture older than 24 h is attention, still not an independent-copy RPO"
 
 test("a log timer shows its last trigger and an unset trigger stays unrecorded", () => {
   const timer = liveServices({
-    ...observation.machine!,
+    ...fixtureMachine(),
     services: [
       {
         unit: "logrotate.timer",
@@ -603,7 +611,7 @@ test("a log timer shows its last trigger and an unset trigger stays unrecorded",
   expect(timer[0]?.since).toBe("Last trigger 28 Oct, 23:00 UTC");
   expect(timer[0]?.role).toBe("Log rotation");
   const unset = liveServices({
-    ...observation.machine!,
+    ...fixtureMachine(),
     services: [
       {
         unit: "logrotate.timer",
@@ -1343,6 +1351,158 @@ test("a site with only an unclaimed snapshot says so in its snapshot table", asy
       "No snapshot of record · 1 unclaimed, not a backup of record",
     );
     expect(table.textContent).not.toContain("No snapshots recorded for this site.");
+  } finally {
+    globalThis.fetch = original;
+    await rm(directory, { recursive: true });
+  }
+});
+
+test("W702: the Services fact lines keep their order and skip unreported facts", () => {
+  const machine = {
+    ...fixtureMachine(),
+    tls: { listeners_443: 2 },
+    firewall: { readable: true, state: "running", default_zone: "public", services: ["ssh"] },
+    failed_units: { readable: true, units: [] },
+  };
+  expect(serviceFactLines(machine, observation.sites)).toEqual([
+    "2 TLS listeners on port 443. Certificate expiry was not read.",
+    "Firewall running · zone public · services ssh",
+    "No failed units",
+  ]);
+  expect(serviceFactLines({ ...machine, firewall: undefined }, observation.sites)).toEqual([
+    "2 TLS listeners on port 443. Certificate expiry was not read.",
+    "No failed units",
+  ]);
+  expect(serviceFactLines(null, observation.sites)).toEqual([]);
+});
+
+test("W737 (QA-06): a live site's HTTP card names its observation, not a fixed time", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ri-http-time-"));
+  const file = join(directory, "observation.json");
+  await writeFile(file, JSON.stringify(observation));
+  const route = observationRoute(file);
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    route(new Request("http://console.test/api/observation"))) as unknown as typeof fetch;
+  try {
+    const router = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ["/sites/blog13"] }),
+    });
+    render(<RouterProvider router={router} />);
+    const card = await screen.findByLabelText("Site HTTP observation");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(card.textContent).toMatch(/HTTP 200 · observed \d\d:\d\d UTC · \d+ (s|min|h) ago/);
+    expect(document.body.textContent).not.toContain("16:41 UTC");
+    expect(document.body.textContent).toContain("HTTP comes from the host status");
+  } finally {
+    globalThis.fetch = original;
+    await rm(directory, { recursive: true });
+  }
+});
+
+test("W750 (QA-19): the site header chips name their facts", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ri-site-chips-"));
+  const file = join(directory, "observation.json");
+  await writeFile(file, JSON.stringify(observation));
+  const route = observationRoute(file);
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    route(new Request("http://console.test/api/observation"))) as unknown as typeof fetch;
+  try {
+    const router = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ["/sites/blog13"] }),
+    });
+    render(<RouterProvider router={router} />);
+    expect(await screen.findByText(/^Serving: /)).toBeDefined();
+    expect(screen.getByText(/^Runtime: /)).toBeDefined();
+  } finally {
+    globalThis.fetch = original;
+    await rm(directory, { recursive: true });
+  }
+});
+
+test("W751 (QA-20): a compensated failure is not shown with a check mark", () => {
+  const row = must(liveOperations(observation).find((item) => item.id === "op_ej1"));
+  expect(row.outcome).toBe("Failed, compensated");
+  expect(row.icon).toBe(RotateCcw);
+  expect(row.icon).not.toBe(CircleCheck);
+});
+
+test("W752 (QA-21): an unknown domain gets a not-found state, a served one renders", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ri-domain-404-"));
+  const file = join(directory, "observation.json");
+  await writeFile(file, JSON.stringify(observation));
+  const route = observationRoute(file);
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    route(new Request("http://console.test/api/observation"))) as unknown as typeof fetch;
+  try {
+    const router = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ["/domains/nope.example.org"] }),
+    });
+    render(<RouterProvider router={router} />);
+    expect(await screen.findByText("Domain not found on this host")).toBeDefined();
+    expect(screen.queryByRole("button", { name: /Manage DNS records/ })).toBeNull();
+    await act(() =>
+      router.navigate({ to: "/domains/$hostname", params: { hostname: "blog13.example.test" } }),
+    );
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "blog13.example.test" }),
+    ).toBeDefined();
+    expect(screen.queryByText("Domain not found on this host")).toBeNull();
+  } finally {
+    globalThis.fetch = original;
+    await rm(directory, { recursive: true });
+  }
+});
+
+test("W754 (QA-23): pages ask the coordinator for evidence and site records only on demand", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ri-on-demand-"));
+  const file = join(directory, "observation.json");
+  await writeFile(file, JSON.stringify(observation));
+  const route = observationRoute(file);
+  const asked: string[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.includes("/api/backend/status")) {
+      return Response.json({
+        schema: "rustiron-console-backend/1",
+        mode: "read_only",
+        d090_hardened: true,
+        write_workflows_enabled: false,
+        observation_configured: true,
+        coordinator_configured: true,
+        coordinator_reachable: true,
+        doctor: null,
+      });
+    }
+    if (url.includes("/api/coordinator/")) {
+      asked.push(new URL(url, "http://console.test").pathname);
+      return Response.json({ schema_version: 1, status: "ok", data: null });
+    }
+    return route(new Request("http://console.test/api/observation"));
+  }) as unknown as typeof fetch;
+  try {
+    const router = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ["/operations/op_ej1"] }),
+    });
+    render(<RouterProvider router={router} />);
+    await screen.findByRole("button", { name: /Query coordinator/ });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(asked.some((path) => path.startsWith("/api/coordinator/evidence/"))).toBe(false);
+    expect(asked).toContain("/api/coordinator/operations/op_ej1");
+    await act(() => router.navigate({ to: "/sites/$siteId", params: { siteId: "blog13" } }));
+    await screen.findByText(/Live coordinator record/);
+    expect(asked.some((path) => path.startsWith("/api/coordinator/sites/"))).toBe(false);
   } finally {
     globalThis.fetch = original;
     await rm(directory, { recursive: true });

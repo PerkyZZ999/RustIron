@@ -3,23 +3,18 @@
 //! provision steps with the clone steps inside the Recipe step. A lab
 //! profile build keeps the W497 preflight, which stops before intent.
 
-use rustiron_contracts::{
-    MAX_REQUEST_BYTES,
-    approval::{
-        CloneSource, ProductBackupBindingContext, SiteCloneGrant, SiteClonePlan,
-        check_site_clone_binding,
-    },
+use rustiron_contracts::approval::{
+    CloneSource, ProductBackupBindingContext, SiteCloneGrant, SiteClonePlan,
+    check_site_clone_binding,
 };
 use rustiron_journal::{
-    Capture, CaptureConsistency, CaptureState, CloneFacts, Provision, ProvisionIntent,
-    ProvisionResult, ProvisionState, ProvisionStep, StepState,
+    Admitted, Capture, CaptureConsistency, CaptureState, CloneFacts, Provision, ProvisionIntent,
+    ProvisionState, ProvisionStep, StepState,
 };
 use sha2::{Digest, Sha256};
 
 use super::{Executor, StepRecipe, signed_inputs};
-use crate::{
-    AdmissionRequest, ExecutorError, MAX_SIGNATURE_BYTES, files, policy, provision, signature,
-};
+use crate::{AdmissionRequest, ExecutorError, files, policy, provision};
 
 /// A clone request whose signature, scope and source capture are verified.
 struct VerifiedClone {
@@ -48,7 +43,7 @@ impl Executor {
     pub fn site_clone(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<ProvisionResult, ExecutorError> {
+    ) -> Result<Admitted<Provision>, ExecutorError> {
         let verified = self.verify_site_clone(request)?;
         let now = request.now.ok_or(ExecutorError::TimeDenied)?;
         let VerifiedClone {
@@ -61,7 +56,7 @@ impl Executor {
             return if existing.intent == *intent
                 && recorded.is_some_and(|clone| clone.facts == *facts)
             {
-                Ok(ProvisionResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(ExecutorError::ReplayDenied)
             };
@@ -70,8 +65,8 @@ impl Executor {
         let operation = match self.admit(signed_inputs(request)?, |journal| {
             journal.record_clone(intent, facts, now)
         })? {
-            ProvisionResult::Existing(existing) => return Ok(ProvisionResult::Existing(existing)),
-            ProvisionResult::New(created) => created.intent.operation_id,
+            Admitted::Existing(existing) => return Ok(Admitted::Existing(existing)),
+            Admitted::New(created) => created.intent.operation_id,
         };
         // D-078 signs no limits: the enrolled policy limits apply.
         let quota = crate::quota::QuotaIntent::select(None, enrolled.quota);
@@ -111,19 +106,8 @@ impl Executor {
         &self,
         request: &AdmissionRequest<'_>,
     ) -> Result<VerifiedClone, ExecutorError> {
-        if request.plan.len() > MAX_REQUEST_BYTES
-            || request.grant.len() > MAX_REQUEST_BYTES
-            || request.signature.len() > MAX_SIGNATURE_BYTES
-        {
-            return Err(ExecutorError::InvalidRequest);
-        }
-        let owner = self.anchor.owner_uid;
-        let directory = files::open_trusted_directory(&self.anchor.policy_dir, owner)?;
-        let loaded = policy::load(&directory, owner)?;
+        let loaded = crate::open_signed(&self.anchor, request)?;
         let enrolled = &loaded.policy;
-        if enrolled.requester_uid != request.peer_uid {
-            return Err(ExecutorError::PeerDenied);
-        }
         self.check_identity(&enrolled.host_id, &enrolled.host_epoch)?;
         let plan = SiteClonePlan::decode(request.plan)?;
         let grant = SiteCloneGrant::decode(request.grant)?;
@@ -140,14 +124,7 @@ impl Executor {
                 now: request.now,
             },
         )?;
-        let scratch = files::open_trusted_directory(&self.anchor.scratch_dir, owner)?;
-        signature::verify(
-            grant.as_bytes(),
-            request.signature,
-            &loaded,
-            &self.anchor.scratch_dir,
-            &scratch,
-        )?;
+        crate::verify_grant(&self.anchor, &loaded, grant.as_bytes(), request.signature)?;
 
         enrolled
             .ols

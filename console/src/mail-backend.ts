@@ -7,7 +7,10 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { z } from "zod";
+
 import { checkD090Request, checkSameOriginMutation, jsonReply } from "./backend-server";
+import { parseBody, readJsonBody } from "./request-body";
 
 export type MailDomainRow = {
   domain: string;
@@ -132,31 +135,6 @@ function checkWriteOrigin(
   return checkSameOriginMutation(req, allowedHosts);
 }
 
-async function readMailJson(req: Request): Promise<Record<string, unknown> | Response> {
-  const ct = req.headers.get("content-type")?.toLowerCase() ?? "";
-  if (!ct.includes("application/json")) {
-    return jsonReply(415, { error: "UNSUPPORTED_MEDIA_TYPE" });
-  }
-  const raw = typeof req.text === "function" ? await req.text() : JSON.stringify(await req.json());
-  if (Buffer.byteLength(raw, "utf8") > MAX_MAIL_BODY_BYTES) {
-    return jsonReply(413, { error: "PAYLOAD_TOO_LARGE" });
-  }
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return jsonReply(400, { error: "INVALID_JSON" });
-    }
-    return parsed as Record<string, unknown>;
-  } catch {
-    return jsonReply(400, { error: "INVALID_JSON" });
-  }
-}
-
-function strVal(obj: Record<string, unknown> | null, key: string): string {
-  const v = obj?.[key];
-  return typeof v === "string" ? v : "";
-}
-
 function extractTailId(url: string, prefix: string): string | null {
   const path = new URL(url).pathname;
   if (!path.startsWith(prefix)) return null;
@@ -270,42 +248,52 @@ function renderPostfixDovecotBundle(state: MailStatePayload) {
   };
 }
 
-function parseQuotaMb(raw: unknown): number | null {
-  const q = Number(raw);
-  return Number.isInteger(q) && q >= 50 && q <= 102400 ? q : null;
-}
-
-type NewMailboxInput = {
-  localPart: string;
-  domain: string;
-  password: string;
-  quotaMb: number;
+const MAILBOX_ADDRESS_REFUSAL = {
+  error: "INVALID_MAILBOX_ADDRESS",
+  message: "Provide a valid mailbox name and domain.",
+};
+const WEAK_PASSWORD_REFUSAL = {
+  error: "WEAK_PASSWORD",
+  message: "Mailbox password must be between 8 and 128 characters.",
+};
+const QUOTA_REFUSAL = { error: "INVALID_QUOTA", message: "Quota must be 50–102400 MiB." };
+const MAIL_REQUEST_REFUSAL = {
+  error: "INVALID_REQUEST",
+  message: "Unexpected or malformed field.",
 };
 
-function validateNewMailbox(body: Record<string, unknown> | null): NewMailboxInput | Response {
-  const localPart = strVal(body, "localPart").trim().toLowerCase();
-  const domain = strVal(body, "domain").trim().toLowerCase();
-  const password = strVal(body, "password");
-  const quotaMb = parseQuotaMb(body?.quotaMb ?? 1024);
-  if (!LOCAL_PART_RE.test(localPart) || !DOMAIN_RE.test(domain)) {
-    return jsonReply(400, {
-      error: "INVALID_MAILBOX_ADDRESS",
-      message: "Provide a valid mailbox name and domain.",
-    });
-  }
-  if (password.length < 8 || password.length > MAX_MAIL_PASSWORD_LENGTH) {
-    return jsonReply(400, {
-      error: "WEAK_PASSWORD",
-      message: "Mailbox password must be between 8 and 128 characters.",
-    });
-  }
-  if (quotaMb === null) {
-    return jsonReply(400, {
-      error: "INVALID_QUOTA",
-      message: "Quota must be between 50 and 102400 MiB.",
-    });
-  }
-  return { localPart, domain, password, quotaMb };
+const mailPassword = z.string().min(8).max(MAX_MAIL_PASSWORD_LENGTH);
+const quotaMbSchema = z.int().min(50).max(102400);
+const mailAddress = z.string().trim().toLowerCase().regex(EMAIL_RE);
+
+/** W681: unknown fields are refused; each field keeps its own refusal code. */
+const newMailboxBody = z.strictObject({
+  localPart: z.string().trim().toLowerCase().regex(LOCAL_PART_RE),
+  domain: z.string().trim().toLowerCase().regex(DOMAIN_RE),
+  password: mailPassword,
+  quotaMb: quotaMbSchema.default(1024),
+});
+
+/** W681: a non-boolean `enabled` is now refused instead of ignored. */
+const mailboxPatchBody = z.strictObject({
+  quotaMb: quotaMbSchema.optional(),
+  enabled: z.boolean().optional(),
+  password: mailPassword.optional(),
+});
+
+const aliasBody = z.strictObject({ source: mailAddress, destination: mailAddress });
+
+function mailboxRefusal(field: string | undefined) {
+  if (field === "localPart" || field === "domain") return MAILBOX_ADDRESS_REFUSAL;
+  if (field === "password") return WEAK_PASSWORD_REFUSAL;
+  if (field === "quotaMb") return QUOTA_REFUSAL;
+  return MAIL_REQUEST_REFUSAL;
+}
+
+async function readMailBody<T>(req: Request, schema: z.ZodType<T>): Promise<T | Response> {
+  const payload = await readJsonBody(req, MAX_MAIL_BODY_BYTES);
+  if (payload instanceof Response) return payload;
+  return parseBody(schema, payload, mailboxRefusal);
 }
 
 export function createMailBackend(options: {
@@ -337,9 +325,7 @@ export function createMailBackend(options: {
   async function createMailbox(req: Request): Promise<Response> {
     const guard = checkWriteOrigin(req, options.getAllowedHosts(), writesEnabled);
     if (guard) return guard;
-    const body = await readMailJson(req);
-    if (body instanceof Response) return body;
-    const parsed = validateNewMailbox(body);
+    const parsed = await readMailBody(req, newMailboxBody);
     if (parsed instanceof Response) return parsed;
     const { localPart, domain, password, quotaMb } = parsed;
 
@@ -348,6 +334,13 @@ export function createMailBackend(options: {
       return jsonReply(409, {
         error: "MAILBOX_EXISTS",
         message: `Mailbox ${email} already exists.`,
+      });
+    }
+    // W740 (QA-09): Postfix delivers a virtual alias first, so the mailbox would get nothing.
+    if (db.query("SELECT id FROM mail_aliases WHERE source = ?").get(email)) {
+      return jsonReply(409, {
+        error: "ADDRESS_IS_FORWARDER",
+        message: `${email} is a forwarder. Remove the forwarder first, or choose another mailbox name.`,
       });
     }
 
@@ -378,26 +371,11 @@ export function createMailBackend(options: {
 
   // W635 (M-03): validate every patch field and hash password BEFORE committing in one transaction.
   async function patchMailbox(req: Request, id: string): Promise<Response> {
-    const body = await readMailJson(req);
+    const body = await readMailBody(req, mailboxPatchBody);
     if (body instanceof Response) return body;
-    let nextQuota: number | null = null;
-    if (body.quotaMb !== undefined) {
-      nextQuota = parseQuotaMb(body.quotaMb);
-      if (nextQuota === null) {
-        return jsonReply(400, { error: "INVALID_QUOTA", message: "Quota must be 50–102400 MiB." });
-      }
-    }
-    const nextEnabled = typeof body.enabled === "boolean" ? body.enabled : null;
-    const nextPassword = strVal(body, "password");
-    if (
-      nextPassword &&
-      (nextPassword.length < 8 || nextPassword.length > MAX_MAIL_PASSWORD_LENGTH)
-    ) {
-      return jsonReply(400, {
-        error: "WEAK_PASSWORD",
-        message: "Password must be between 8 and 128 characters.",
-      });
-    }
+    const nextQuota = body.quotaMb ?? null;
+    const nextEnabled = body.enabled ?? null;
+    const nextPassword = body.password;
     const nextHash = nextPassword
       ? await Bun.password.hash(nextPassword, { algorithm: "argon2id" })
       : null;
@@ -448,14 +426,25 @@ export function createMailBackend(options: {
   async function createAlias(req: Request): Promise<Response> {
     const guard = checkWriteOrigin(req, options.getAllowedHosts(), writesEnabled);
     if (guard) return guard;
-    const body = await readMailJson(req);
+    const payload = await readJsonBody(req, MAX_MAIL_BODY_BYTES);
+    if (payload instanceof Response) return payload;
+    const body = parseBody(aliasBody, payload, {
+      error: "INVALID_ALIAS",
+      message: "Provide valid source and destination email addresses.",
+    });
     if (body instanceof Response) return body;
-    const source = strVal(body, "source").trim().toLowerCase();
-    const destination = strVal(body, "destination").trim().toLowerCase();
-    if (!EMAIL_RE.test(source) || !EMAIL_RE.test(destination)) {
+    const { source, destination } = body;
+    // W740 (QA-09): a forwarder to itself loops, and one over a mailbox takes its mail.
+    if (source === destination) {
       return jsonReply(400, {
-        error: "INVALID_ALIAS",
-        message: "Provide valid source and destination email addresses.",
+        error: "ALIAS_LOOP",
+        message: "A forwarder cannot point to its own address. Choose another destination.",
+      });
+    }
+    if (db.query("SELECT id FROM mailboxes WHERE email = ?").get(source)) {
+      return jsonReply(409, {
+        error: "ADDRESS_IS_MAILBOX",
+        message: `${source} is a mailbox. A forwarder with this address would take its mail; choose another source.`,
       });
     }
     if (db.query("SELECT id FROM mail_aliases WHERE source = ?").get(source)) {

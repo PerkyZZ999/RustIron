@@ -3,9 +3,7 @@
 // Password Rotation, Restore, and Eject/Delete).
 import { Link } from "@tanstack/react-router";
 import {
-  Check,
   ChevronDown,
-  Copy,
   Database,
   Download,
   HardDrive,
@@ -15,9 +13,8 @@ import {
   TriangleAlert,
   Wrench,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
-import { toastManager } from "@/components/ui/toast";
 import {
   buildConfigActivateCmd,
   buildManualVerbPlanNote,
@@ -27,10 +24,10 @@ import {
   INSPECT_AND_SIGN_STEPS,
   shellQuote,
 } from "./cli-commands";
-import { useData } from "./data";
+import { isRealHost, useData } from "./data";
 import { type AppRecord, fixtureApps, liveApps } from "./platform-data";
-import { InspectorPanel } from "./platform-pages";
-import { Crumbs, EmptyState, Glyph, Page, TableScroll } from "./ui";
+import { InspectorPanel, useDrawerSelection } from "./inspector";
+import { CopyButton, Crumbs, EmptyState, Glyph, Page, TableScroll } from "./ui";
 import { SeparateCustodyApplyPanel } from "./write-panel";
 
 type DatabaseEngineLabel = "MariaDB" | "PostgreSQL 18" | "SQLite";
@@ -47,31 +44,6 @@ type DatabaseEntry = {
   rotateTarget?: CredentialRotateTarget;
   isAppDatabase: boolean;
 };
-
-function CopyBtn({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return undefined;
-    const t = setTimeout(() => setCopied(false), 2000);
-    return () => clearTimeout(t);
-  }, [copied]);
-  return (
-    <button
-      type="button"
-      className="btn quiet sm"
-      aria-label={label}
-      onClick={() =>
-        void navigator.clipboard?.writeText(text).then(() => {
-          setCopied(true);
-          toastManager.add({ id: "clipboard-copy", type: "success", title: "Command copied" });
-        })
-      }
-    >
-      <Glyph icon={copied ? Check : Copy} className={copied ? "check-pop list-ok" : undefined} />
-      {copied ? "Copied" : "Copy"}
-    </button>
-  );
-}
 
 function isWordPressSite(s: { runtime?: string; servingKind?: string }): boolean {
   const rt = (s.runtime ?? "").toLowerCase();
@@ -211,7 +183,7 @@ function DatabaseActionDrawer({
             Rotate database password
           </strong>
           {selected.canRotatePassword ? (
-            <CopyBtn text={rotateCmd} label="Copy password rotation command" />
+            <CopyButton text={rotateCmd} label="Copy password rotation command" />
           ) : null}
         </div>
         {selected.canRotatePassword ? (
@@ -247,7 +219,7 @@ function DatabaseActionDrawer({
             <Glyph icon={Download} />
             Export database dump safely
           </strong>
-          <CopyBtn text={exportCmd} label="Copy database export command" />
+          <CopyButton text={exportCmd} label="Copy database export command" />
         </div>
         <div className="form-row">
           <label htmlFor="db-snap">Snapshot ID (optional — defaults to latest)</label>
@@ -304,10 +276,10 @@ function dbExposureLabel(
 
 export function DatabasesPage() {
   const data = useData();
-  const isLive = data.source.kind === "live";
+  const isLive = isRealHost(data.source);
   const apps = isLive ? (data.observation ? liveApps(data.observation) : []) : fixtureApps;
   const entries = buildDatabaseEntries(data.sites, apps);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useDrawerSelection<string>();
   const [engineFilter, setEngineFilter] = useState<"all" | DatabaseEngineLabel>("all");
   const visible =
     engineFilter === "all" ? entries : entries.filter((e) => e.engine === engineFilter);
@@ -653,7 +625,7 @@ export function SiteActionsConsole({ siteId, domain }: { siteId: string; domain:
           <Glyph icon={Wrench} />
           <h2 id="site-ctrl-t">Website controls</h2>
         </div>
-        <CopyBtn text={cmd} label="Copy website action command" />
+        <CopyButton text={cmd} label="Copy website action command" />
       </div>
 
       <div

@@ -3,7 +3,7 @@
 //! the snapshot ID only as unclaimed evidence. Real SQLite; no host effects.
 use rustiron_contracts::approval::{Hostname, SiteId};
 use rustiron_journal::{
-    CaptureIntent, CaptureMethod, CaptureResult, CaptureState, FixtureJournal, JournalError,
+    Admitted, CaptureIntent, CaptureMethod, CaptureState, FixtureJournal, JournalError,
     ProvisionIntent, ProvisionStep,
 };
 use std::{
@@ -185,7 +185,7 @@ fn a_settled_capture_is_failed_keeps_the_snapshot_unclaimed_and_frees_admission(
     // The original admission replays as stored status, never a new run.
     assert!(matches!(
         ledger.record_capture(&first, time(1007), CaptureMethod::SiteFilesDbV1, Some(30), &digest('e')),
-        Ok(CaptureResult::Existing(existing)) if existing.state == CaptureState::Failed
+        Ok(Admitted::Existing(existing)) if existing.state == CaptureState::Failed
     ));
     assert!(matches!(
         ledger.record_capture(
@@ -195,7 +195,7 @@ fn a_settled_capture_is_failed_keeps_the_snapshot_unclaimed_and_frees_admission(
             Some(30),
             &digest('e')
         ),
-        Ok(CaptureResult::New(_))
+        Ok(Admitted::New(_))
     ));
 }
 

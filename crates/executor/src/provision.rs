@@ -24,6 +24,8 @@ pub(crate) mod skeleton;
 const SITES_ROOT: &str = crate::layout::SITES_ROOT;
 pub(crate) const OLS_GROUP: &str = "nobody";
 pub(crate) const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+/// W675: how long one database dump or restore may run.
+pub(crate) const DUMP_TIMEOUT: Duration = Duration::from_secs(1800);
 /// W280: CPU weight of capture and restore-probe job units. They sit in
 /// `system.slice` beside the site-PHP slice (default weight 100), so at the
 /// default they took an equal share from all pools together (W279). Under
@@ -64,7 +66,7 @@ impl SiteLayout {
 }
 
 /// Next id in range above every UID in `passwd`, GID in `group` and id in
-/// `retired` (see [`next_above`]).
+/// `retired` (see `next_above`).
 pub fn allocate_id(
     passwd: &str,
     group: &str,
@@ -88,7 +90,7 @@ pub fn name_taken(passwd: &str, group: &str, name: &str) -> bool {
 }
 
 /// Next category in range above every one used by a local file-context rule
-/// or recorded for an earlier provision (see [`next_above`]).
+/// or recorded for an earlier provision (see `next_above`).
 pub fn allocate_category(
     fcontext_rules: &str,
     range: (u32, u32),
@@ -860,8 +862,7 @@ pub fn ownership_facts(layout: &SiteLayout) -> serde_json::Value {
     let present = |path: String| exists(Path::new(&path));
     let enabled = |unit: String| {
         let state = output("/usr/bin/systemctl", &["is-enabled", "--", &unit])
-            .map(|text| text.trim().to_owned())
-            .unwrap_or_else(|_| "not-enabled".to_owned());
+            .map_or_else(|_| "not-enabled".to_owned(), |text| text.trim().to_owned());
         serde_json::json!({ "unit": unit, "enabled": state })
     };
     let database = spawn(
@@ -1365,6 +1366,9 @@ fn command_name(program: &str) -> &'static str {
         "/usr/bin/systemd-run" => "systemd-run failed",
         "/usr/bin/tar" => "tar failed",
         "/usr/bin/mariadb" => "mariadb failed",
+        "/usr/bin/mariadb-dump" => "mariadb-dump failed",
+        "/usr/pgsql-18/bin/pg_dump" => "pg_dump failed",
+        "/usr/pgsql-18/bin/pg_restore" => "pg_restore failed",
         "/usr/bin/stat" => "stat failed",
         "/usr/local/lsws/bin/openlitespeed" => "openlitespeed config test failed",
         "/usr/sbin/setquota" => "setquota failed",
@@ -1390,6 +1394,44 @@ fn command_label(program: &str, args: &[&str]) -> &'static str {
     }
 }
 
+/// W675: runs a fixed tool with stdin and stdout bound to files the caller
+/// already opened and verified, so a database dump or restore streams through
+/// the kernel instead of this process's memory (no 1 MiB capture cap and no
+/// UTF-8 requirement). The environment holds only `PATH` and `envs`; stderr
+/// is discarded because database tools can quote SQL that carries a secret.
+pub(crate) fn run_streaming(
+    program: &str,
+    args: &[&str],
+    envs: &[(&str, &std::ffi::OsStr)],
+    stdin: Option<std::fs::File>,
+    stdout: Option<std::fs::File>,
+) -> Result<(), ExecutorError> {
+    check_program(program)?;
+    let mut child = Command::new(program)
+        .args(args)
+        .env_clear()
+        .env("PATH", "/usr/sbin:/usr/bin")
+        .envs(envs.iter().copied())
+        .stdin(stdin.map_or_else(Stdio::null, Stdio::from))
+        .stdout(stdout.map_or_else(Stdio::null, Stdio::from))
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| ExecutorError::Unavailable)?;
+    let deadline = Instant::now() + DUMP_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(_)) => return Err(command_failed(command_name(program))),
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(100)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(command_failed("command deadline"));
+            }
+        }
+    }
+}
+
 /// Tools must be root-owned regular files that nobody else can modify.
 pub(crate) fn check_program(program: &str) -> Result<(), ExecutorError> {
     let stat = fs::stat(program).map_err(|_| ExecutorError::Unavailable)?;
@@ -1400,6 +1442,31 @@ pub(crate) fn check_program(program: &str) -> Result<(), ExecutorError> {
         return Err(ExecutorError::Unavailable);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::run_streaming;
+
+    /// W675: more than the old 1 MiB capture cap, with bytes that are not
+    /// UTF-8, passes through byte for byte.
+    #[test]
+    fn a_large_binary_stream_passes_through_unchanged() {
+        let dir = std::env::temp_dir().join(format!("ri-w675-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let input: Vec<u8> = (0..3 * 1024 * 1024)
+            .map(|i: u32| (i % 251) as u8 | 0x80)
+            .collect();
+        std::fs::write(dir.join("in"), &input).unwrap();
+        let source = std::fs::File::open(dir.join("in")).unwrap();
+        let sink = std::fs::File::create(dir.join("out")).unwrap();
+        run_streaming("/usr/bin/cat", &[], &[], Some(source), Some(sink)).unwrap();
+        assert_eq!(std::fs::read(dir.join("out")).unwrap(), input);
+        let failed = run_streaming("/usr/bin/false", &[], &[], None, None);
+        assert_eq!(failed, Err(crate::ExecutorError::StepFailed));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
 
 #[cfg(test)]

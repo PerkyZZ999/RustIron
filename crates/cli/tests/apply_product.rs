@@ -45,15 +45,23 @@ struct Fixture {
     socket: PathBuf,
 }
 
+/// W720: a folder-name part that no other test in this process uses. The
+/// clock alone can repeat across parallel tests.
+fn unique_suffix() -> String {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |time| time.as_nanos());
+    let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{nanos}-{next}")
+}
+
 impl Fixture {
     fn new(vector: &Value) -> Self {
         let directory = std::env::temp_dir().join(format!(
             "ri-cli-product-{}-{}",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            unique_suffix()
         ));
         fs::DirBuilder::new()
             .mode(0o700)
@@ -314,7 +322,7 @@ fn a_product_capture_left_running_is_read_back_after_the_deadline() {
 fn a_failed_capture_reply_reports_failed_and_keeps_the_exit_class() {
     let snapshot = "d".repeat(64);
     for (error, unclaimed, expected) in [
-        (None, Some(snapshot.clone()), 5),
+        (None, Some(snapshot), 5),
         (Some("PROVISION_STEP_FAILED"), None, 5),
         (Some("PRECONDITION_CHANGED"), None, 4),
     ] {

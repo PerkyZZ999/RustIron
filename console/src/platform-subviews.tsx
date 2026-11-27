@@ -6,12 +6,12 @@ import { ArrowLeft, ChevronDown, ChevronRight, Copy, Globe, Layers, Lock } from 
 import { useState } from "react";
 
 import { BackupScheduleWizard } from "./backup-migration-wizards";
-import { useData } from "./data";
+import { isRealHost, useData } from "./data";
 import { DnsRecordEditorPanel, SslActionPanel } from "./hosting-wizards";
 import type { Site } from "./fixture";
 import { type DomainRecord, fixtureDomains, liveApps, liveDomains } from "./platform-data";
-import { InspectorPanel } from "./platform-pages";
-import { Crumbs, EmptyState, Glyph, Page, TableScroll } from "./ui";
+import { InspectorPanel } from "./inspector";
+import { copyText, Crumbs, EmptyState, Glyph, Page, TableScroll } from "./ui";
 
 const recoveryTabItems = [
   { to: "/recovery", label: "Overview" },
@@ -288,30 +288,56 @@ function DomainTabs({ hostname, current }: { hostname: string; current: "overvie
   );
 }
 
+/** W752 (QA-21): the domain record, or null when the host does not serve it. */
 function resolveDomain(
   hostname: string,
   sourceKind: string,
   sites: Site[],
   observation: ReturnType<typeof useData>["observation"],
-): DomainRecord {
+): DomainRecord | null {
   const list =
-    sourceKind === "live" && observation ? liveDomains(sites, observation) : fixtureDomains;
+    sourceKind === "fixture" ? fixtureDomains : observation ? liveDomains(sites, observation) : [];
+  return list.find((d) => d.hostname === hostname) ?? null;
+}
+
+/** W752 (QA-21): an unknown hostname gets a not-found state, as an unknown app does. */
+function DomainNotFound({ hostname, loading }: { hostname: string; loading: boolean }) {
   return (
-    list.find((d) => d.hostname === hostname) ?? {
-      hostname,
-      serves: "Unregistered hostname",
-      siteHref: null,
-      certificate: "not_issued",
-      certificateLabel: "Not observed",
-      notAfter: "—",
-      renewedBy: "—",
-      issuer: "—",
-      chainDigest: "—",
-      renewUntil: "—",
-      lastResult: "Hostname not present in current observation",
-      dnsZone: "Not observed",
-      dnsMode: "Read-only",
-    }
+    <Page live>
+      <Crumbs
+        items={[
+          { href: "/", label: "Overview" },
+          { href: "/domains", label: "Domains" },
+          { label: hostname },
+        ]}
+      />
+      <div className="page-head">
+        <div>
+          <h1 className="mono">{hostname}</h1>
+          <p className="sub">
+            {loading
+              ? "Reading the host observation."
+              : "This hostname is not present in the live host observation."}
+          </p>
+        </div>
+        <Link className="btn sm" to="/domains">
+          <Glyph icon={ArrowLeft} />
+          All domains
+        </Link>
+      </div>
+      {loading ? null : (
+        <EmptyState
+          icon={Globe}
+          title="Domain not found on this host"
+          description="Live mode never substitutes a domain record. Add the domain, or check the hostname on the Domains page."
+          action={
+            <Link className="btn primary sm" to="/domains/new">
+              Add domain
+            </Link>
+          }
+        />
+      )}
+    </Page>
   );
 }
 
@@ -320,9 +346,12 @@ export function DomainDetailPage({ hostname }: { hostname: string }) {
   const domain = resolveDomain(hostname, data.source.kind, data.sites, data.observation);
   const [detailsOpen, setDetailsOpen] = useState(true);
   const [copied, setCopied] = useState(false);
+  if (!domain)
+    return <DomainNotFound hostname={hostname} loading={data.source.kind === "loading"} />;
 
-  function copyDigest() {
-    void navigator.clipboard?.writeText(domain.chainDigest).then(() => setCopied(true));
+  async function copyDigest() {
+    if (!domain) return;
+    if (await copyText(domain.chainDigest, "Chain digest copied")) setCopied(true);
   }
 
   return (
@@ -451,7 +480,7 @@ export function DomainDetailPage({ hostname }: { hostname: string }) {
 
 export function DomainDnsPage({ hostname }: { hostname: string }) {
   const data = useData();
-  const isLive = data.source.kind === "live";
+  const isLive = isRealHost(data.source);
   const domain = resolveDomain(hostname, data.source.kind, data.sites, data.observation);
   const label = hostname.split(".")[0] ?? hostname;
   const liveDnsOps =
@@ -460,6 +489,8 @@ export function DomainDnsPage({ hostname }: { hostname: string }) {
           (op) => op.kind === "dns_zone_import" || op.kind === "dns_change",
         )
       : [];
+  if (!domain)
+    return <DomainNotFound hostname={hostname} loading={data.source.kind === "loading"} />;
 
   return (
     <Page live>
@@ -759,7 +790,7 @@ const emdashMigrationChecks = [
 
 export function EmDashMigrationDetailPage({ migrationId }: { migrationId: string }) {
   const data = useData();
-  const isLive = data.source.kind === "live";
+  const isLive = isRealHost(data.source);
   const liveEmDash =
     isLive && data.observation
       ? liveApps(data.observation).find(

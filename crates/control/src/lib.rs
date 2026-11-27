@@ -1,4 +1,10 @@
 //! Unprivileged local-development coordinator; inventory observations grant no authority.
+#![warn(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "W672: production code returns errors; tests may unwrap (clippy.toml)"
+)]
 
 use rustiron_contracts::{
     apply::{

@@ -1,8 +1,7 @@
 //! Restore probe journal behavior on real SQLite; no host effects.
 use rustiron_contracts::approval::{Hostname, SiteId, SnapshotId};
 use rustiron_journal::{
-    FixtureJournal, JournalError, ProbeIntent, ProbeResult, ProbeState, ProvisionIntent,
-    ProvisionStep,
+    Admitted, FixtureJournal, JournalError, ProbeIntent, ProbeState, ProvisionIntent, ProvisionStep,
 };
 use std::{
     fs,
@@ -101,13 +100,13 @@ fn a_probe_records_its_account_before_effects_and_blocks_until_cleaned() {
         ledger
             .record_probe(&first, time(1000), &digest('e'))
             .unwrap(),
-        ProbeResult::New(_)
+        Admitted::New(_)
     ));
     assert!(matches!(
         ledger
             .record_probe(&first, time(1000), &digest('e'))
             .unwrap(),
-        ProbeResult::Existing(_)
+        Admitted::Existing(_)
     ));
     drop(ledger);
     let mut ledger = state.open().unwrap();
@@ -155,7 +154,7 @@ fn a_probe_records_its_account_before_effects_and_blocks_until_cleaned() {
         ledger
             .record_probe(&probe(2, "blog13", "rp_00aa12"), time(1005), &digest('e'))
             .unwrap(),
-        ProbeResult::New(_)
+        Admitted::New(_)
     ));
     assert_eq!(
         ledger

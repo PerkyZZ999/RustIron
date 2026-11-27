@@ -25,6 +25,7 @@ Public technical contracts, design specification, and operator runbooks for Rust
 - [Dns](technical/DNS.md)
 - [Drift Explanation](technical/DRIFT-EXPLANATION.md)
 - [Emdash](technical/EMDASH.md)
+- [Error Codes](technical/ERROR-CODES.md)
 - [Executor Admission](technical/EXECUTOR-ADMISSION.md)
 - [Experiment Cards](technical/EXPERIMENT-CARDS.md)
 - [Firewall](technical/FIREWALL.md)

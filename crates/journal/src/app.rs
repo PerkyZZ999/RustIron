@@ -23,7 +23,7 @@ use rustiron_contracts::{
 };
 
 use crate::{
-    FixtureJournal, JournalError, ProvisionIntent, ProvisionResult, ProxyFacts, StepState,
+    Admitted, FixtureJournal, JournalError, Provision, ProvisionIntent, ProxyFacts, StepState,
     provision::Origin, storage,
 };
 
@@ -587,15 +587,6 @@ pub struct AppRelease {
     pub state: AppReleaseState,
 }
 
-/// Result of recording an `app_deploy` intent.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AppReleaseResult {
-    /// Newly recorded in `intent`.
-    New(AppRelease),
-    /// Exact idempotent retry returning existing state.
-    Existing(AppRelease),
-}
-
 /// Admitted signed `app_lifecycle` intent.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppLifecycleIntent {
@@ -634,15 +625,6 @@ pub struct AppLifecycle {
     pub action: AppLifecycleAction,
     /// Current state (`intent`, `done`, or `failed`).
     pub state: StepState,
-}
-
-/// Result of recording an `app_lifecycle` intent.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AppLifecycleResult {
-    /// Newly recorded in `intent`.
-    New(AppLifecycle),
-    /// Exact idempotent retry returning existing state.
-    Existing(AppLifecycle),
 }
 
 fn runtime_from_str(text: &str) -> Result<AppRuntime, JournalError> {
@@ -708,7 +690,7 @@ impl FixtureJournal {
         intent: &ProvisionIntent,
         facts: &AppFacts,
         now: Timestamp,
-    ) -> Result<ProvisionResult, JournalError> {
+    ) -> Result<Admitted<Provision>, JournalError> {
         if !facts.is_valid() {
             return Err(JournalError::Conflict);
         }
@@ -724,7 +706,7 @@ impl FixtureJournal {
         facts: &AppFacts,
         spec: &AppFullstackSpec,
         now: Timestamp,
-    ) -> Result<ProvisionResult, JournalError> {
+    ) -> Result<Admitted<Provision>, JournalError> {
         if !spec.is_valid_with(facts) {
             return Err(JournalError::Conflict);
         }
@@ -1030,7 +1012,7 @@ impl FixtureJournal {
         &mut self,
         intent: &AppReleaseIntent,
         now: Timestamp,
-    ) -> Result<AppReleaseResult, JournalError> {
+    ) -> Result<Admitted<AppRelease>, JournalError> {
         let signed = self.take_signed(&crate::signed::Expected {
             plan_digest: &intent.plan_digest,
             grant_digest: &intent.grant_digest,
@@ -1047,7 +1029,7 @@ impl FixtureJournal {
             .map_err(storage::unavailable)?;
         if let Some((exact, existing)) = stored_release(&transaction, intent)? {
             return if exact {
-                Ok(AppReleaseResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(JournalError::Conflict)
             };
@@ -1099,7 +1081,7 @@ impl FixtureJournal {
         let recorded =
             load_release(&transaction, &intent.operation_id)?.ok_or(JournalError::Unavailable)?;
         transaction.commit().map_err(storage::unavailable)?;
-        Ok(AppReleaseResult::New(recorded))
+        Ok(Admitted::New(recorded))
     }
 
     /// Records the durable `intent` of one release step before its host effect.
@@ -1237,7 +1219,7 @@ impl FixtureJournal {
         &mut self,
         intent: &AppLifecycleIntent,
         now: Timestamp,
-    ) -> Result<AppLifecycleResult, JournalError> {
+    ) -> Result<Admitted<AppLifecycle>, JournalError> {
         let signed = self.take_signed(&crate::signed::Expected {
             plan_digest: &intent.plan_digest,
             grant_digest: &intent.grant_digest,
@@ -1251,7 +1233,7 @@ impl FixtureJournal {
             .map_err(storage::unavailable)?;
         if let Some((exact, existing)) = stored_lifecycle(&transaction, intent)? {
             return if exact {
-                Ok(AppLifecycleResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(JournalError::Conflict)
             };
@@ -1295,7 +1277,7 @@ impl FixtureJournal {
         let recorded =
             load_lifecycle(&transaction, &intent.operation_id)?.ok_or(JournalError::Unavailable)?;
         transaction.commit().map_err(storage::unavailable)?;
-        Ok(AppLifecycleResult::New(recorded))
+        Ok(Admitted::New(recorded))
     }
 
     /// Settles an open `app_lifecycle` operation to `done` or `failed`.

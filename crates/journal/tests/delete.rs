@@ -4,7 +4,7 @@
 //! SQLite; no host effects.
 use rustiron_contracts::approval::{Hostname, SiteId};
 use rustiron_journal::{
-    CaptureConsistency, CaptureIntent, CaptureManifest, CaptureMethod, DeleteIntent, DeleteResult,
+    Admitted, CaptureConsistency, CaptureIntent, CaptureManifest, CaptureMethod, DeleteIntent,
     FixtureJournal, JournalError, ProvisionIntent, ProvisionState, ProvisionStep, StepState,
 };
 use std::{
@@ -174,7 +174,7 @@ fn a_deletion_marks_the_site_deleted_in_its_intent_and_replays() {
     served(&mut ledger, "blog2");
     capture(&mut ledger, "blog1", "cap_1", 1000, false);
     let intent = deletion(1, "blog1", "cap_1");
-    let DeleteResult::New(recorded) = ledger.record_deletion(&intent, time(1100)).unwrap() else {
+    let Admitted::New(recorded) = ledger.record_deletion(&intent, time(1100)).unwrap() else {
         panic!("a new deletion");
     };
     assert_eq!(recorded.state, StepState::Intent);
@@ -205,7 +205,7 @@ fn a_deletion_marks_the_site_deleted_in_its_intent_and_replays() {
     );
     assert_eq!(
         ledger.record_deletion(&intent, time(1300)).unwrap(),
-        DeleteResult::Existing(done.clone())
+        Admitted::Existing(done.clone())
     );
     let mut other = intent.clone();
     other.nonce = id("delete_nonce_other");
@@ -294,7 +294,7 @@ fn a_failed_deletion_is_retried_with_its_capture_only() {
             .err(),
         Some(JournalError::Consumed)
     );
-    let DeleteResult::New(retry) = ledger
+    let Admitted::New(retry) = ledger
         .record_deletion(&deletion(4, "blog1", "cap_1"), time(later))
         .unwrap()
     else {

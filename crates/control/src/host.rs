@@ -1124,8 +1124,7 @@ pub(crate) fn write_json(path: &Path, value: &Value) -> Result<(), ErrorCode> {
     }
     if path
         .symlink_metadata()
-        .map(|meta| meta.file_type().is_symlink())
-        .unwrap_or(false)
+        .is_ok_and(|meta| meta.file_type().is_symlink())
     {
         return Err(ErrorCode::InvalidRequest);
     }
@@ -1388,7 +1387,7 @@ fn annotate_site_http(observation: &mut Value) {
             && site["ejected"] != true
             && site["proxy_ports"]
                 .as_array()
-                .is_none_or(|ports| ports.is_empty());
+                .is_none_or(std::vec::Vec::is_empty);
         let Some(account) = site["site_id"].as_str().map(|id| format!("rs_{id}")) else {
             continue;
         };
@@ -1941,15 +1940,23 @@ mod tests {
         );
     }
 
+    /// W720: a folder-name part that no other test in this process uses. The
+    /// clock alone can repeat across parallel tests.
+    fn unique_suffix() -> String {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |time| time.as_nanos());
+        let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("{nanos}-{next}")
+    }
+
     #[test]
     fn samples_cap_and_merge_keep_the_observation_schema() {
         let root = std::env::temp_dir().join(format!(
             "rustiron-status-{}-{}",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
+            unique_suffix()
         ));
         fs::create_dir_all(&root).expect("temp dir");
         let path = root.join("samples.json");
@@ -2003,10 +2010,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "rustiron-empty-samples-{}-{}",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
+            unique_suffix()
         ));
         fs::create_dir_all(&root).expect("temp dir");
         let path = root.join("samples.json");
@@ -2035,10 +2039,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "rustiron-status-link-{}-{}",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
+            unique_suffix()
         ));
         fs::create_dir_all(&root).expect("temp dir");
         let target = root.join("real.json");

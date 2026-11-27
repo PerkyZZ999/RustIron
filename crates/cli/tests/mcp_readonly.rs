@@ -21,12 +21,20 @@ struct McpFixture {
     socket: PathBuf,
 }
 
+/// W720: a folder-name part that no other test in this process uses. The
+/// clock alone can repeat across parallel tests.
+fn unique_suffix() -> String {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |time| time.as_nanos());
+    let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{nanos}-{next}")
+}
+
 impl McpFixture {
     fn new() -> Self {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let suffix = unique_suffix();
         let dir = PathBuf::from("/tmp").join(format!("ri-mcp-{}-{suffix}", std::process::id()));
         fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
         let socket = dir.join("control.sock");

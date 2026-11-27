@@ -22,7 +22,9 @@ A refused update changes nothing. A changed parent needs its own reviewed proced
 
 ## Added and removed files
 
-Under [D-062](../decisions/D-062-update-payload-set.md), a release may add and remove payload files. The plan prints `ADD` and `REMOVE` lines next to `CHANGE`. A removed file's copy is kept in the update folder, and a rollback restores it and removes the added files. When the sysusers file changes, the update creates its identities. New units are not enabled; enable them as their own page says.
+Under [D-062](../decisions/D-062-update-payload-set.md), a release may add and remove payload files. The plan prints `ADD` and `REMOVE` lines next to `CHANGE`. A removed file's copy is kept in the update folder, and a rollback restores it and removes the added files.
+
+An added file may need a new folder inside `/usr/share/rustiron` or `/usr/libexec/rustiron`. The update creates that folder (root, `0755`). A rollback removes it again when it is empty ([W734](../validation/S10-W734/README.md)). The update also creates any install-time state folder that an older host lacks, for example `/etc/rustiron-caddy` for the executor unit. The install record lists it as a state folder, and a rollback removes it when it is empty ([W735](../validation/S10-W735/README.md)). When the sysusers file changes, the update creates its identities. New units are not enabled; enable them as their own page says.
 
 ## Before the update
 

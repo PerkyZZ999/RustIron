@@ -22,8 +22,8 @@ use serde::{Deserialize, Serialize};
 use crate::{CanonicalObject, Id, Text, Timestamp};
 
 use super::{
-    ApprovalError, Hostname, MAX_PROXY_ROUTES, ProxyRoute, Sha256Digest, SiteId, routable_port,
-    types::*, valid_prefix,
+    ApprovalError, Hostname, MAX_PROXY_ROUTES, ProxyRoute, Sha256Digest, SiteId, header::Enrolled,
+    routable_port, types::*, valid_prefix,
 };
 
 /// Maximum environment variable key names declared by one app plan.
@@ -939,30 +939,22 @@ pub fn check_app_provision_binding(
 ) -> Result<(), ApprovalError> {
     let p = &plan.record;
     let g = &grant.record;
-    if g.plan_id != p.plan_id
-        || g.plan_digest != plan.digest()
-        || p.host_id != *context.host_id
-        || g.host_id != *context.host_id
-        || p.host_epoch != *context.host_epoch
-        || g.host_epoch != *context.host_epoch
-        || p.profile_digest != *context.profile_digest
-        || g.profile_digest != *context.profile_digest
-        || p.requester != *context.requester
-        || g.requester != *context.requester
-        || g.issuer != *context.issuer
-        || g.signer_policy_epoch != *context.signer_policy_epoch
-        || g.site_ids.as_slice() != std::slice::from_ref(&p.site_id)
-        || g.risk_class != p.risk_class
-        || g.valid_from.get() < p.valid_from.get()
-        || g.expires_at.get() > p.expires_at.get()
-    {
+    if g.site_ids.as_slice() != std::slice::from_ref(&p.site_id) || g.risk_class != p.risk_class {
         return Err(ApprovalError::BindingMismatch);
     }
-    let now = context.now.ok_or(ApprovalError::ClockUncertain)?;
-    if now.get() < g.valid_from.get() || now.get() >= g.expires_at.get() {
-        return Err(ApprovalError::OutsideValidity);
-    }
-    Ok(())
+    check_signed_header!(
+        plan,
+        grant,
+        Enrolled {
+            host_id: context.host_id,
+            host_epoch: context.host_epoch,
+            profile_digest: context.profile_digest,
+            requester: context.requester,
+            issuer: context.issuer,
+            signer_policy_epoch: context.signer_policy_epoch,
+            now: context.now
+        }
+    )
 }
 
 // ============================================================================
@@ -1258,30 +1250,22 @@ pub fn check_app_deploy_binding(
 ) -> Result<(), ApprovalError> {
     let p = &plan.record;
     let g = &grant.record;
-    if g.plan_id != p.plan_id
-        || g.plan_digest != plan.digest()
-        || p.host_id != *context.host_id
-        || g.host_id != *context.host_id
-        || p.host_epoch != *context.host_epoch
-        || g.host_epoch != *context.host_epoch
-        || p.profile_digest != *context.profile_digest
-        || g.profile_digest != *context.profile_digest
-        || p.requester != *context.requester
-        || g.requester != *context.requester
-        || g.issuer != *context.issuer
-        || g.signer_policy_epoch != *context.signer_policy_epoch
-        || g.site_ids.as_slice() != std::slice::from_ref(&p.site_id)
-        || g.risk_class != p.risk_class
-        || g.valid_from.get() < p.valid_from.get()
-        || g.expires_at.get() > p.expires_at.get()
-    {
+    if g.site_ids.as_slice() != std::slice::from_ref(&p.site_id) || g.risk_class != p.risk_class {
         return Err(ApprovalError::BindingMismatch);
     }
-    let now = context.now.ok_or(ApprovalError::ClockUncertain)?;
-    if now.get() < g.valid_from.get() || now.get() >= g.expires_at.get() {
-        return Err(ApprovalError::OutsideValidity);
-    }
-    Ok(())
+    check_signed_header!(
+        plan,
+        grant,
+        Enrolled {
+            host_id: context.host_id,
+            host_epoch: context.host_epoch,
+            profile_digest: context.profile_digest,
+            requester: context.requester,
+            issuer: context.issuer,
+            signer_policy_epoch: context.signer_policy_epoch,
+            now: context.now
+        }
+    )
 }
 
 // ============================================================================
@@ -1460,28 +1444,20 @@ pub fn check_app_lifecycle_binding(
 ) -> Result<(), ApprovalError> {
     let p = &plan.record;
     let g = &grant.record;
-    if g.plan_id != p.plan_id
-        || g.plan_digest != plan.digest()
-        || p.host_id != *context.host_id
-        || g.host_id != *context.host_id
-        || p.host_epoch != *context.host_epoch
-        || g.host_epoch != *context.host_epoch
-        || p.profile_digest != *context.profile_digest
-        || g.profile_digest != *context.profile_digest
-        || p.requester != *context.requester
-        || g.requester != *context.requester
-        || g.issuer != *context.issuer
-        || g.signer_policy_epoch != *context.signer_policy_epoch
-        || g.site_ids.as_slice() != std::slice::from_ref(&p.site_id)
-        || g.risk_class != p.risk_class
-        || g.valid_from.get() < p.valid_from.get()
-        || g.expires_at.get() > p.expires_at.get()
-    {
+    if g.site_ids.as_slice() != std::slice::from_ref(&p.site_id) || g.risk_class != p.risk_class {
         return Err(ApprovalError::BindingMismatch);
     }
-    let now = context.now.ok_or(ApprovalError::ClockUncertain)?;
-    if now.get() < g.valid_from.get() || now.get() >= g.expires_at.get() {
-        return Err(ApprovalError::OutsideValidity);
-    }
-    Ok(())
+    check_signed_header!(
+        plan,
+        grant,
+        Enrolled {
+            host_id: context.host_id,
+            host_epoch: context.host_epoch,
+            profile_digest: context.profile_digest,
+            requester: context.requester,
+            issuer: context.issuer,
+            signer_policy_epoch: context.signer_policy_epoch,
+            now: context.now
+        }
+    )
 }

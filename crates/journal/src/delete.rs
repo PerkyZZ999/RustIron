@@ -12,7 +12,9 @@ use rustiron_contracts::{
     approval::{Hostname, Sha256Digest, SiteId},
 };
 
-use crate::{FixtureJournal, JournalError, ProvisionState, StepState, provision, storage};
+use crate::{
+    Admitted, FixtureJournal, JournalError, ProvisionState, StepState, provision, storage,
+};
 
 /// D-081: the capture that a deletion names finished at most this long ago.
 pub const DELETE_CAPTURE_MAX_AGE_SECONDS: u64 = 24 * 3600;
@@ -60,15 +62,6 @@ pub struct Deletion {
     pub capture_operation_id: Option<Id>,
     /// `intent` until its outcome is observed.
     pub state: StepState,
-}
-
-/// A new or an exactly repeated deletion.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DeleteResult {
-    /// Recorded now, in `intent`.
-    New(Deletion),
-    /// The same request was recorded before; its stored state.
-    Existing(Deletion),
 }
 
 const COLUMNS: &str = "d.operation_id, d.provision_operation_id, p.site_id, d.capture_operation_id, d.idempotency_key, d.grant_id, d.nonce, d.plan_digest, d.grant_digest, d.expires_at, d.state";
@@ -291,7 +284,7 @@ impl FixtureJournal {
         &mut self,
         intent: &DeleteIntent,
         now: Timestamp,
-    ) -> Result<DeleteResult, JournalError> {
+    ) -> Result<Admitted<Deletion>, JournalError> {
         let signed = self.take_signed(&crate::signed::Expected {
             plan_digest: &intent.plan_digest,
             grant_digest: &intent.grant_digest,
@@ -305,7 +298,7 @@ impl FixtureJournal {
             .map_err(storage::unavailable)?;
         if let Some((exact, existing)) = stored(&transaction, intent)? {
             return if exact {
-                Ok(DeleteResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(JournalError::Conflict)
             };
@@ -353,7 +346,7 @@ impl FixtureJournal {
         crate::signed::insert(&transaction, &intent.operation_id, signed.as_ref())?;
         storage::set_clock(&transaction, now)?;
         transaction.commit().map_err(storage::unavailable)?;
-        Ok(DeleteResult::New(Deletion {
+        Ok(Admitted::New(Deletion {
             operation_id: intent.operation_id.clone(),
             provision_operation_id: provision.intent.operation_id,
             site_id: intent.site_id.clone(),

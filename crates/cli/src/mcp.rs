@@ -14,13 +14,15 @@ use rustiron_contracts::{
     decode_response, encode_request, encode_response, escape_human,
     local::{self, DEADLINE},
 };
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    io::{BufRead, Write},
+    io::{self, BufRead, Write},
+    os::fd::AsFd,
     path::Path,
     sync::atomic::{AtomicU64, Ordering},
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 /// P19 risk tiers enforced by `rustiron-mcp`. Destructive tier is always refused.
@@ -75,11 +77,43 @@ const ERR_INVALID_PARAMS: i64 = -32602;
 
 static REQ_SEQ: AtomicU64 = AtomicU64::new(1);
 
+/// W692 (R14): a client may idle between requests, but once a line has begun
+/// its newline must arrive within this time, or the session ends.
+const LINE_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Buffered line input whose next byte can be awaited with a timeout.
+pub(crate) trait LineInput: BufRead {
+    /// Returns `false` when no input becomes readable before `timeout`.
+    fn wait_readable(&mut self, timeout: Duration) -> io::Result<bool>;
+}
+
+impl<R: io::Read + AsFd> LineInput for io::BufReader<R> {
+    fn wait_readable(&mut self, timeout: Duration) -> io::Result<bool> {
+        if !self.buffer().is_empty() {
+            return Ok(true);
+        }
+        let timeout = Timespec::try_from(timeout)
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        loop {
+            let mut fds = [PollFd::new(self.get_ref(), PollFlags::IN)];
+            match poll(&mut fds, Some(&timeout)) {
+                Ok(0) => return Ok(false),
+                Ok(_) => return Ok(true),
+                // shortcut: a signal restarts the full wait, so a deadline can stretch
+                // by one wait per signal; acceptable for an interactive stdio session.
+                Err(rustix::io::Errno::INTR) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+}
+
 /// Runs the newline-delimited stdio JSON-RPC 2.0 loop until EOF.
 ///
 /// Enforces a hard byte cap (`MAX_REQUEST_BYTES`) per line before parsing so an
-/// unbounded line cannot exhaust memory.
-pub(crate) fn serve<R: BufRead, W: Write>(
+/// unbounded line cannot exhaust memory, and ends the session with
+/// `LINE_DEADLINE` when a begun line does not end in time.
+pub(crate) fn serve<R: LineInput, W: Write>(
     mut reader: R,
     mut writer: W,
     socket: Option<&Path>,
@@ -88,7 +122,15 @@ pub(crate) fn serve<R: BufRead, W: Write>(
     let mut raw = Vec::new();
     loop {
         raw.clear();
-        let bytes_read = read_bounded_line(&mut reader, &mut raw, MAX_REQUEST_BYTES)?;
+        let bytes_read =
+            match read_bounded_line(&mut reader, &mut raw, MAX_REQUEST_BYTES, LINE_DEADLINE) {
+                Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                    let reply = jsonrpc_error(Value::Null, ERR_INVALID_REQUEST, "LINE_DEADLINE");
+                    write_line(&mut writer, &reply)?;
+                    return Err(error);
+                }
+                result => result?,
+            };
         if bytes_read == 0 {
             break;
         }
@@ -114,17 +156,27 @@ pub(crate) fn serve<R: BufRead, W: Write>(
 }
 
 /// Reads up to `limit + 1` bytes up to `\n`, discarding any overflow remainder of the line.
-fn read_bounded_line<R: BufRead>(
+/// Once the line has begun, the rest must arrive within `deadline` (`TimedOut`).
+fn read_bounded_line<R: LineInput>(
     reader: &mut R,
     out: &mut Vec<u8>,
     limit: usize,
+    deadline: Duration,
 ) -> std::io::Result<usize> {
     let mut total = 0usize;
+    let mut started: Option<Instant> = None;
     loop {
+        if let Some(start) = started {
+            let remaining = deadline.saturating_sub(start.elapsed());
+            if remaining.is_zero() || !reader.wait_readable(remaining)? {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "line deadline"));
+            }
+        }
         let buf = reader.fill_buf()?;
         if buf.is_empty() {
             return Ok(total);
         }
+        started.get_or_insert_with(Instant::now);
         let newline = buf.iter().position(|&b| b == b'\n');
         let take = newline.map_or(buf.len(), |idx| idx + 1);
         total = total.saturating_add(take);
@@ -135,6 +187,45 @@ fn read_bounded_line<R: BufRead>(
         if newline.is_some() {
             return Ok(total);
         }
+    }
+}
+
+/// W693 (R13): whether `grant` decodes with the closed contract grant decoder
+/// for `verb`; the backup verbs also accept their product and standing forms.
+fn closed_grant(verb: &str, grant: &[u8]) -> bool {
+    use rustiron_contracts::approval as closed;
+    match verb {
+        "site_provision" => closed::SiteGrant::decode(grant).is_ok(),
+        "config_activate" => closed::OlsGrant::decode(grant).is_ok(),
+        "site_eject" => closed::EjectGrant::decode(grant).is_ok(),
+        "backup_capture" => {
+            closed::CaptureGrant::decode(grant).is_ok()
+                || closed::ProductBackupGrant::decode(grant).is_ok()
+                || closed::StandingCaptureGrant::decode(grant).is_ok()
+        }
+        "restore_probe" => {
+            closed::ProbeGrant::decode(grant).is_ok()
+                || closed::ProductBackupGrant::decode(grant).is_ok()
+        }
+        "site_readopt" => closed::ReadoptGrant::decode(grant).is_ok(),
+        "site_import" => closed::ImportGrant::decode(grant).is_ok(),
+        "import_scrub" => closed::ScrubGrant::decode(grant).is_ok(),
+        "certificate_issue" => closed::CertificateGrant::decode(grant).is_ok(),
+        "site_clone" => closed::SiteCloneGrant::decode(grant).is_ok(),
+        "site_retire" => closed::RetireGrant::decode(grant).is_ok(),
+        "site_update" => closed::SiteUpdateGrant::decode(grant).is_ok(),
+        "site_delete" => closed::DeleteGrant::decode(grant).is_ok(),
+        "site_quota" => closed::QuotaGrant::decode(grant).is_ok(),
+        "clone_scrub" => closed::CloneScrubGrant::decode(grant).is_ok(),
+        "site_restore" => closed::RestoreGrant::decode(grant).is_ok(),
+        "dns_zone_import" => closed::DnsImportGrant::decode(grant).is_ok(),
+        "dns_change" => closed::DnsChangeGrant::decode(grant).is_ok(),
+        "proxy_site_provision" => closed::ProxyGrant::decode(grant).is_ok(),
+        "app_provision" => closed::AppProvisionGrant::decode(grant).is_ok(),
+        "app_deploy" => closed::AppDeployGrant::decode(grant).is_ok(),
+        "app_lifecycle" => closed::AppLifecycleGrant::decode(grant).is_ok(),
+        "site_credential_rotate" => closed::CredentialRotateGrant::decode(grant).is_ok(),
+        _ => false,
     }
 }
 
@@ -687,33 +778,21 @@ fn tool_plan_apply_approved(
         );
     }
 
-    // W633 (R13): strictly validate canonical grant JSON first (rejecting duplicate
-    // keys, escaped-key aliases, trailing input, floats/negatives, and depth/size
-    // overruns) before checking digest binding, no-blanket token, no self-approval,
-    // and expiry. Real cryptographic verification still rests on the executor.
-    let Ok(canonical_grant) = rustiron_contracts::CanonicalObject::decode(grant_bytes) else {
+    // W693 (R13): the grant must pass the closed contract decoder for this
+    // plan's verb before any field is read: unknown and duplicate members,
+    // non-canonical bytes, `max_operations != 1`, a self-issued grant and an
+    // over-long window are all refused. Signature, binding and replay checks
+    // still rest on the executor.
+    if !closed_grant(verb, grant_bytes) {
         return tool_error(
             id,
             "INVALID_GRANT",
-            "grant_json failed strict canonical JSON validation.",
+            "grant_json is not a closed grant for this plan's verb.",
         );
-    };
-    let Ok(grant_val) = serde_json::from_slice::<Value>(canonical_grant.as_bytes()) else {
+    }
+    let Ok(grant_val) = serde_json::from_slice::<Value>(grant_bytes) else {
         return tool_error(id, "INVALID_GRANT", "grant_json is not valid JSON.");
     };
-    if !grant_val.is_object() {
-        return tool_error(id, "INVALID_GRANT", "grant_json must be a JSON object.");
-    }
-    if grant_val["blanket"].as_bool() == Some(true)
-        || grant_val["scope"].as_str() == Some("*")
-        || grant_val["plan_digest"].as_str() == Some("*")
-    {
-        return tool_error(
-            id,
-            "NO_BLANKET_TOKEN",
-            "Blanket or wildcard grants are forbidden; every write requires an individual plan digest binding.",
-        );
-    }
     if grant_val["plan_digest"].as_str() != Some(plan_digest.as_str()) {
         return tool_error(
             id,
@@ -722,10 +801,7 @@ fn tool_plan_apply_approved(
         );
     }
 
-    let issuer = grant_val["issuer"]
-        .as_str()
-        .or_else(|| grant_val["signer_id"].as_str())
-        .unwrap_or("");
+    let issuer = grant_val["issuer"].as_str().unwrap_or("");
     let agent_id = policy.agent_id.as_deref().unwrap_or("");
     if issuer.is_empty() || issuer == agent_id {
         return tool_error(
@@ -738,8 +814,7 @@ fn tool_plan_apply_approved(
     let now = policy.now_override.unwrap_or_else(|| {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_secs())
     });
     let Some(expires_at) = grant_val["expires_at"].as_u64() else {
         return tool_error(
@@ -748,11 +823,7 @@ fn tool_plan_apply_approved(
             "Grant must specify numeric expires_at.",
         );
     };
-    let valid_from = grant_val["valid_from"]
-        .as_u64()
-        .or_else(|| grant_val["not_before"].as_u64())
-        .or_else(|| grant_val["issued_at"].as_u64())
-        .unwrap_or(0);
+    let valid_from = grant_val["valid_from"].as_u64().unwrap_or(0);
     let max_ttl = if target_tier == WriteTier::Production {
         MAX_PROD_GRANT_TTL_SECS
     } else {
@@ -782,7 +853,7 @@ fn tool_plan_apply_approved(
         return tool_error(id, "INVALID_REQUEST", "Request ID out of bounds.");
     };
     let apply_req = ApplyRequest {
-        request_id: request_id.clone(),
+        request_id,
         operation_id: operation_id.clone(),
         idempotency_key,
         plan: plan_bytes.to_vec(),
@@ -911,4 +982,104 @@ fn jsonrpc_error(id: Value, code: i64, message: &str) -> Value {
             "message": message
         }
     })
+}
+
+#[cfg(test)]
+mod line_deadline_tests {
+    use super::{LineInput, WritePolicy, WriteTier, read_bounded_line, serve};
+    use std::{
+        io::{self, BufRead, Cursor, Read},
+        time::Duration,
+    };
+
+    /// In-memory input that reports "nothing readable" once its bytes run out,
+    /// the way a peer that stops mid-line looks to `poll`.
+    struct Stalling(Cursor<Vec<u8>>);
+
+    impl Read for Stalling {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.0.read(buf)
+        }
+    }
+
+    impl BufRead for Stalling {
+        fn fill_buf(&mut self) -> io::Result<&[u8]> {
+            self.0.fill_buf()
+        }
+        fn consume(&mut self, amount: usize) {
+            self.0.consume(amount);
+        }
+    }
+
+    impl LineInput for Stalling {
+        fn wait_readable(&mut self, _timeout: Duration) -> io::Result<bool> {
+            Ok(self.0.position() < self.0.get_ref().len() as u64)
+        }
+    }
+
+    fn stalling(bytes: &[u8]) -> Stalling {
+        Stalling(Cursor::new(bytes.to_vec()))
+    }
+
+    #[test]
+    fn a_line_that_never_ends_times_out() {
+        let mut out = Vec::new();
+        let error = read_bounded_line(
+            &mut stalling(b"{\"jsonrpc\":"),
+            &mut out,
+            64,
+            Duration::from_secs(30),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn a_complete_line_and_a_clean_end_need_no_wait() {
+        let mut input = stalling(b"{}\n");
+        let mut out = Vec::new();
+        assert_eq!(
+            read_bounded_line(&mut input, &mut out, 64, Duration::ZERO).unwrap(),
+            3
+        );
+        assert_eq!(out, b"{}\n");
+        out.clear();
+        assert_eq!(
+            read_bounded_line(&mut input, &mut out, 64, Duration::ZERO).unwrap(),
+            0
+        );
+    }
+
+    /// The real `poll` path: a connected peer that sends half a line and then
+    /// nothing, while keeping its end open.
+    #[test]
+    fn a_real_stream_that_stops_mid_line_times_out() {
+        use std::io::Write;
+        let (mut peer, server) = std::os::unix::net::UnixStream::pair().unwrap();
+        peer.write_all(b"{\"jsonrpc\":").unwrap();
+        let mut input = io::BufReader::new(server);
+        let mut out = Vec::new();
+        let started = std::time::Instant::now();
+        let error =
+            read_bounded_line(&mut input, &mut out, 64, Duration::from_millis(200)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() >= Duration::from_millis(200));
+        drop(peer);
+    }
+
+    #[test]
+    fn serve_answers_line_deadline_and_ends_the_session() {
+        let policy = WritePolicy {
+            tier: WriteTier::Read,
+            agent_id: None,
+            max_changes: 4,
+            max_ols_reloads: 1,
+            now_override: None,
+        };
+        let mut written = Vec::new();
+        let result = serve(stalling(b"{\"jsonrpc\":"), &mut written, None, &policy);
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        let reply: serde_json::Value = serde_json::from_slice(&written).unwrap();
+        assert_eq!(reply["error"]["message"], "LINE_DEADLINE");
+    }
 }

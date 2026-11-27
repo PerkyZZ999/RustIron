@@ -4,21 +4,18 @@ import {
   ArrowLeft,
   ArrowRight,
   BookOpen,
-  Check,
   CircleAlert,
   CircleCheck,
   Clock,
-  Copy,
   FileText,
   Info,
   Search,
   Terminal,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
-import { toastManager } from "@/components/ui/toast";
-import { useData } from "./data";
+import { hostLabel, isRealHost, useData } from "./data";
 import {
   articleBySlug,
   articleCategory,
@@ -33,34 +30,7 @@ import {
   operatorRunbooks,
 } from "./kb-data";
 import { liveHelpItems } from "./live";
-import { Crumbs, Glyph, Page, TableScroll } from "./ui";
-
-function KbCopyButton({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    if (!copied) return undefined;
-    const timer = setTimeout(() => setCopied(false), 1800);
-    return () => clearTimeout(timer);
-  }, [copied]);
-
-  return (
-    <button
-      type="button"
-      className="btn quiet sm"
-      aria-label={label}
-      onClick={() =>
-        void navigator.clipboard?.writeText(text).then(() => {
-          setCopied(true);
-          toastManager.add({ id: "clipboard-copy", type: "success", title: "Command copied" });
-        })
-      }
-    >
-      <Glyph icon={copied ? Check : Copy} className={copied ? "check-pop list-ok" : undefined} />
-      {copied ? "Copied" : "Copy"}
-    </button>
-  );
-}
+import { CopyButton, Crumbs, Glyph, Page, TableScroll } from "./ui";
 
 function KbCommandBlock({ command }: { command: KbCommand }) {
   return (
@@ -71,7 +41,7 @@ function KbCommandBlock({ command }: { command: KbCommand }) {
           <span className="kb-cmd-label">{command.label}</span>
           <span className="pill">{command.where}</span>
         </div>
-        <KbCopyButton text={command.code} label={`Copy command: ${command.label}`} />
+        <CopyButton text={command.code} label={`Copy command: ${command.label}`} />
       </div>
       <pre className="code">{command.code}</pre>
     </div>
@@ -293,9 +263,8 @@ export function KnowledgeBaseHomePage() {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<"all" | KbCategoryId>("all");
   const data = useData();
-  const live = data.source.kind === "live" || data.source.kind === "unavailable";
-  const host =
-    data.source.kind === "live" ? data.source.host.host_id : live ? "this host" : "lab-01";
+  const live = isRealHost(data.source);
+  const host = hostLabel(data.source);
   const needle = query.trim().toLowerCase();
 
   const matchingArticles = kbArticles.filter(
@@ -412,7 +381,7 @@ function KbArticleSection({ section }: { section: KbSection }) {
 
 export function KnowledgeBaseArticlePage({ slug }: { slug: string }) {
   const data = useData();
-  const live = data.source.kind === "live" || data.source.kind === "unavailable";
+  const live = isRealHost(data.source);
   const article = articleBySlug(slug);
 
   if (!article) {

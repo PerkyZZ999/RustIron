@@ -5,7 +5,10 @@
 //! This module is the workspace's single recorded exception to the
 //! `unsafe_code` lint (D-020 option 1). `tests/unsafe_scope.rs` fails when
 //! `unsafe` appears in any other source file.
-#![allow(unsafe_code)]
+#![allow(
+    unsafe_code,
+    reason = "D-020 (W331): the one recorded exception, guarded by tests/unsafe_scope.rs"
+)]
 
 use std::os::{fd::AsRawFd, unix::net::UnixStream};
 

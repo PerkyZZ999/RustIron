@@ -122,6 +122,24 @@ class InstallWizardTests(unittest.TestCase):
         self.assertGreaterEqual(len(token), 32)
         self.assertNotIn(token, stdout)
 
+        # W733 (QA-02): the Console runs as the coordinator UID, the only peer its
+        # socket accepts, and reads an observation the shipped timer keeps fresh.
+        self.assertIn("RUSTIRON_OBSERVATION=/var/lib/rustiron-console/observe/observation.json", env_text)
+        unit_text = (self.root / "etc/systemd/system/rustiron-console.service").read_text()
+        self.assertIn("User=rustiron-coordinator\n", unit_text)
+        self.assertIn("StateDirectory=rustiron-console\n", unit_text)
+        self.assertNotIn("rustiron-build", unit_text)
+        # The unit adds no group; W758 records that User= still loads rustiron-requesters.
+        self.assertNotIn("rustiron-requesters", unit_text)
+        script = self.root / "usr/local/libexec/rustiron-console/rustiron-console-observe"
+        self.assertEqual(stat.S_IMODE(script.stat().st_mode), 0o755)
+        self.assertIn("runuser -u \"$OWNER\"", script.read_text())
+        observe_unit = (self.root / "etc/systemd/system/rustiron-console-observe.service").read_text()
+        self.assertIn(f"ExecStart=/usr/local/libexec/rustiron-console/rustiron-console-observe {wizard.CONSOLE_OBSERVATION}", observe_unit)
+        timer = (self.root / "etc/systemd/system/rustiron-console-observe.timer").read_text()
+        self.assertIn("OnUnitActiveSec=30s", timer)
+        self.assertIn("console_admin_panel", json.dumps(payload))
+
         # SELinux config flipped to enforcing and /.autorelabel created.
         self.assertIn("SELINUX=enforcing", (self.root / "etc/selinux/config").read_text())
         self.assertTrue((self.root / ".autorelabel").is_file())

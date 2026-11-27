@@ -12,7 +12,7 @@ import {
   Wrench,
 } from "lucide-react";
 
-import { useData } from "./data";
+import { isRealHost, useData } from "./data";
 import { SiteActionsConsole } from "./databases-and-site-ops";
 import { FirewallRuleBuilderPanel } from "./server-ops-pages";
 import { CopyId, Crumbs, Glyph, Page, TableScroll } from "./ui";
@@ -26,7 +26,7 @@ function findServiceActive(
 
 export function HostAlertsPage() {
   const data = useData();
-  const isLive = data.source.kind === "live";
+  const isLive = isRealHost(data.source);
   const timerState = findServiceActive(data.machine?.services, "rustiron-alert-checkin.timer");
 
   return (
@@ -212,7 +212,7 @@ function FirewallSummaryCards({
 
 export function HostFirewallPage() {
   const data = useData();
-  const isLive = data.source.kind === "live";
+  const isLive = isRealHost(data.source);
   const fw = data.machine?.firewall;
   const dbListeners = data.machine?.database?.listeners_beyond_loopback;
   const fwReadable = fw?.readable === true;

@@ -198,8 +198,12 @@ fn switch(job: &Issue<'_>, sha: &Sha256Digest) -> Result<(), ExecutorError> {
     if checked.is_err()
         && let Some(previous) = previous.as_ref().and_then(|path| path.to_str())
     {
-        let _ = point_live(job.account, previous);
-        let _ = provision::run("/usr/bin/systemctl", &["reload", "lshttpd.service"]);
+        // W674: a failed restore must not read as "nothing new is served".
+        let restored = point_live(job.account, previous)
+            .and_then(|()| provision::run("/usr/bin/systemctl", &["reload", "lshttpd.service"]));
+        if restored.is_err() {
+            return Err(ExecutorError::RollbackFailed);
+        }
     }
     checked
 }

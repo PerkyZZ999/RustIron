@@ -125,9 +125,9 @@ fn budget_checks_refuse_over_budget_and_report_remaining_authority() {
     );
 
     // Exceed max_served_sites_per_activation.
-    let mut small_cap = limits.clone();
+    let mut small_cap = limits;
     small_cap.max_served_sites_per_activation = 1;
-    let mut big_ols = ols.clone();
+    let mut big_ols = ols;
     big_ols.sites_named = 2;
     assert_eq!(
         check_envelope_budget(&small_cap, &big_ols, &AuthorityUsage::default()),

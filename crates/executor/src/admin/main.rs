@@ -5,6 +5,12 @@
 //! transition (missing module, wrong label) must not leave an unconfined
 //! process serving administrative steps. It then serves only peers in
 //! `rustiron_executor_t`.
+#![warn(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "W672: production code returns errors; tests may unwrap (clippy.toml)"
+)]
 use std::{path::Path, process::ExitCode};
 
 use rustiron_executor::{TrustAnchor, admin_helper, serve};

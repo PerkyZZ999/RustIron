@@ -20,9 +20,6 @@ use rustiron_contracts::{
         ProductBackupPolicy, ProductBackupTarget, check_product_backup_binding,
     },
 };
-use rustiron_journal::{
-    CaptureIntent, CaptureMethod, CaptureResult, ProbeIntent, ProbeResult, ProbeState,
-};
 
 use super::{Executor, Fault, grant_digest, repository_preflight, signed_inputs, system_now};
 use crate::{
@@ -30,7 +27,9 @@ use crate::{
     admin_helper::{self, AdminRequest, AdminStep},
     files, policy,
     product_capture::{Recovery, record_recovery},
-    signature,
+};
+use rustiron_journal::{
+    Admitted, Capture, CaptureIntent, CaptureMethod, Probe, ProbeIntent, ProbeState,
 };
 
 /// What step 1 established: the exact grant, verified against enrollment.
@@ -64,14 +63,7 @@ impl Executor {
             return Err(ExecutorError::InvalidRequest);
         }
         let grant = bind(enrolled)?;
-        let scratch = files::open_trusted_directory(&self.anchor.scratch_dir, owner)?;
-        signature::verify(
-            signed(&grant),
-            signature_bytes,
-            &loaded,
-            &self.anchor.scratch_dir,
-            &scratch,
-        )?;
+        crate::verify_grant(&self.anchor, &loaded, signed(&grant), signature_bytes)?;
         Ok(Authenticated {
             grant,
             host_id: enrolled.host_id.clone(),
@@ -241,7 +233,7 @@ impl Executor {
     pub fn product_restore_probe(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<ProbeResult, ExecutorError> {
+    ) -> Result<Admitted<Probe>, ExecutorError> {
         let plan = ProductBackupPlan::decode(request.plan)?;
         let ProductBackupTarget::RestoreProbe { snapshot_id, .. } = plan.target() else {
             return Err(ExecutorError::InvalidRequest);
@@ -261,7 +253,7 @@ impl Executor {
                 && existing.intent.plan_digest == plan_digest
                 && existing.intent.grant_digest == grant_digest
             {
-                Ok(ProbeResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(ExecutorError::ReplayDenied)
             };
@@ -292,7 +284,7 @@ impl Executor {
             probe_account,
             expires_at: grant.expires_at(),
         };
-        let ProbeResult::New(_) = self.admit(signed_inputs(request)?, |journal| {
+        let Admitted::New(_) = self.admit(signed_inputs(request)?, |journal| {
             journal.record_probe(&intent, now, &digest)
         })?
         else {
@@ -332,7 +324,7 @@ impl Executor {
             }
             // D-031 (W373): the helper ran the probe and its cleanup; record
             // the outcome and receipt it reported.
-            (_, Some((receipt, state))) => Ok(ProbeResult::New(self.journal.finish_probe(
+            (_, Some((receipt, state))) => Ok(Admitted::New(self.journal.finish_probe(
                 &intent.operation_id,
                 state,
                 &receipt.to_string(),
@@ -359,7 +351,7 @@ impl Executor {
     pub fn product_backup_capture(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<CaptureResult, ExecutorError> {
+    ) -> Result<Admitted<Capture>, ExecutorError> {
         let plan = ProductBackupPlan::decode(request.plan)?;
         let ProductBackupTarget::BackupCapture { recipe_id } = plan.target() else {
             return Err(ExecutorError::InvalidRequest);
@@ -393,7 +385,7 @@ impl Executor {
         // replay refusal.
         if let Some(existing) = self.journal.capture_status(&intent.operation_id)? {
             return if existing.intent == intent {
-                Ok(CaptureResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(ExecutorError::ReplayDenied)
             };
@@ -421,7 +413,7 @@ impl Executor {
         method: CaptureMethod,
         destination: &ProductBackupPolicy,
         now: Timestamp,
-    ) -> Result<CaptureResult, ExecutorError> {
+    ) -> Result<Admitted<Capture>, ExecutorError> {
         let digest = destination.digest();
         let retention = destination
             .resolve_site(&intent.site_id)
@@ -432,7 +424,7 @@ impl Executor {
             operation_id: intent.operation_id.clone(),
             signed: staged.signed,
         };
-        let CaptureResult::New(_) = self.admit(staged, |journal| {
+        let Admitted::New(_) = self.admit(staged, |journal| {
             journal.record_capture(intent, now, method, Some(retention), &digest)
         })?
         else {
@@ -440,7 +432,7 @@ impl Executor {
                 .journal
                 .capture_status(&intent.operation_id)?
                 .ok_or(ExecutorError::Unavailable)?;
-            return Ok(CaptureResult::Existing(existing));
+            return Ok(Admitted::Existing(existing));
         };
         self.fault(Fault::AfterProductAdmission)?;
         let reply = admin_helper::request(

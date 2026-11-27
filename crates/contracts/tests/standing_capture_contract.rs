@@ -247,7 +247,7 @@ fn the_schedule_bounds_refuse_both_records() {
         );
     }
     // The largest accepted values: 35 daily windows of 4 h over 35 days.
-    let mut p = plan.clone();
+    let mut p = plan;
     p["period_seconds"] = json!(86_400);
     p["window_seconds"] = json!(14_400);
     p["max_runs"] = json!(35);
@@ -276,7 +276,7 @@ fn other_shapes_and_scopes_are_refused() {
         refused_plan(p).unwrap_err(),
         ApprovalError::UnsupportedVersion
     );
-    let mut p = plan.clone();
+    let mut p = plan;
     p["limitations"] = json!(vec!["x"; 9]);
     assert_eq!(refused_plan(p).unwrap_err(), ApprovalError::InvalidPlan);
 
@@ -298,7 +298,7 @@ fn other_shapes_and_scopes_are_refused() {
     let mut g = grant.clone();
     g["max_operations"] = json!(1);
     assert_eq!(refused_grant(g).unwrap_err(), ApprovalError::InvalidMessage);
-    let mut g = grant.clone();
+    let mut g = grant;
     g["schema_version"] = json!(2);
     assert_eq!(
         refused_grant(g).unwrap_err(),

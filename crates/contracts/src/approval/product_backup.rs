@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{CanonicalObject, Id, Text, Timestamp};
 
 use super::{
-    ApprovalError, CaptureRecipe, ProbeProfile, Sha256Digest, SiteId, SnapshotId,
+    ApprovalError, CaptureRecipe, ProbeProfile, Sha256Digest, SiteId, SnapshotId, header::Enrolled,
     types::valid_window,
 };
 
@@ -249,29 +249,23 @@ pub fn check_product_backup_binding(
 ) -> Result<(), ApprovalError> {
     let p = &plan.record;
     let g = &grant.record;
-    if g.plan_digest != plan.digest()
-        || g.plan_id != p.plan_id
-        || g.host_id != p.host_id
-        || g.host_epoch != p.host_epoch
-        || g.profile_digest != p.profile_digest
-        || g.requester != p.requester
-        || g.site_ids != std::slice::from_ref(&p.site_id)
+    if g.site_ids != std::slice::from_ref(&p.site_id)
         || g.destinations != std::slice::from_ref(&p.destination_id)
         || !p.target.matches(g)
-        || &p.host_id != context.host_id
-        || &p.host_epoch != context.host_epoch
-        || &p.profile_digest != context.profile_digest
-        || &p.requester != context.requester
-        || &g.issuer != context.issuer
-        || &g.signer_policy_epoch != context.signer_policy_epoch
-        || g.valid_from.get() < p.valid_from.get()
-        || g.expires_at.get() > p.expires_at.get()
     {
         return Err(ApprovalError::BindingMismatch);
     }
-    let now = context.now.ok_or(ApprovalError::ClockUncertain)?;
-    if now.get() < g.valid_from.get() || now.get() >= g.expires_at.get() {
-        return Err(ApprovalError::OutsideValidity);
-    }
-    Ok(())
+    check_signed_header!(
+        plan,
+        grant,
+        Enrolled {
+            host_id: context.host_id,
+            host_epoch: context.host_epoch,
+            profile_digest: context.profile_digest,
+            requester: context.requester,
+            issuer: context.issuer,
+            signer_policy_epoch: context.signer_policy_epoch,
+            now: context.now
+        }
+    )
 }

@@ -1,5 +1,6 @@
 // W626: Real on-demand coordinator IPC inspection & redacted evidence export
 // panels (progressive disclosure) for SiteDetail and OperationDetail views.
+import { consoleRequest } from "./console-request";
 import { ChevronDown, Download, RefreshCw, Terminal } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
@@ -13,18 +14,16 @@ type FetchState =
   | { kind: "ok"; payload: unknown; fetchedAt: string };
 
 async function fetchCoordinatorJson(path: string): Promise<FetchState> {
-  try {
-    const res = await fetch(path, { cache: "no-store" });
-    const body = (await res.json()) as { error?: string; data?: { value?: unknown } };
-    if (!res.ok) return { kind: "error", code: body.error ?? `HTTP_${res.status}` };
-    return {
-      kind: "ok",
-      payload: body.data?.value ?? body,
-      fetchedAt: new Date().toISOString().slice(11, 19) + " UTC",
-    };
-  } catch {
-    return { kind: "error", code: "COORDINATOR_UNREACHABLE" };
+  const reply = await consoleRequest<{ data?: { value?: unknown } } | null>(path);
+  if (!reply.ok) {
+    if (reply.status === null) return { kind: "error", code: "COORDINATOR_UNREACHABLE" };
+    return { kind: "error", code: reply.code ?? `HTTP_${reply.status}` };
   }
+  return {
+    kind: "ok",
+    payload: reply.data?.data?.value ?? reply.data,
+    fetchedAt: new Date().toISOString().slice(11, 19) + " UTC",
+  };
 }
 
 function triggerJsonDownload(filename: string, payload: unknown) {
@@ -64,23 +63,16 @@ export function LiveSiteCoordinatorPanel({ siteId }: { siteId: string }) {
     setState(await fetchCoordinatorJson(`/api/coordinator/sites/${encodeURIComponent(siteId)}`));
   }, [siteId]);
 
-  useEffect(() => {
-    if (!reachable) return undefined;
-    let active = true;
-    void fetchCoordinatorJson(`/api/coordinator/sites/${encodeURIComponent(siteId)}`).then(
-      (res) => {
-        if (active) setState(res);
-      },
-    );
-    return () => {
-      active = false;
-    };
-  }, [reachable, siteId]);
-
   if (!reachable) return null;
 
   return (
-    <details className="disclose">
+    <details
+      className="disclose"
+      onToggle={(event) => {
+        // W754 (QA-23): query the coordinator when asked, not on every page load.
+        if (event.currentTarget.open && state.kind === "idle") void load();
+      }}
+    >
       <summary>
         <Glyph icon={Terminal} />
         <span>Live coordinator record (/api/coordinator/sites/{siteId})</span>
@@ -133,16 +125,15 @@ export function LiveOperationEvidenceBar({
     setLiveEvidence(evRes);
   }, [operationId]);
 
+  // W754 (QA-23): only the status loads with the page. Many operations have no
+  // evidence record, so evidence waits for "Query coordinator".
   useEffect(() => {
     if (!reachable) return undefined;
     let active = true;
-    void Promise.all([
-      fetchCoordinatorJson(`/api/coordinator/operations/${encodeURIComponent(operationId)}`),
-      fetchCoordinatorJson(`/api/coordinator/evidence/${encodeURIComponent(operationId)}`),
-    ]).then(([statusRes, evRes]) => {
-      if (!active) return;
-      setLiveStatus(statusRes);
-      setLiveEvidence(evRes);
+    void fetchCoordinatorJson(
+      `/api/coordinator/operations/${encodeURIComponent(operationId)}`,
+    ).then((statusRes) => {
+      if (active) setLiveStatus(statusRes);
     });
     return () => {
       active = false;
@@ -177,7 +168,9 @@ export function LiveOperationEvidenceBar({
       <p className="cap">
         {liveEvidence.kind === "ok"
           ? `Live coordinator evidence fetched at ${liveEvidence.fetchedAt}. Redacted: no secrets or private keys.`
-          : "Exports the redacted operation record from this observation without credentials or signing keys."}
+          : liveEvidence.kind === "error"
+            ? `The coordinator has no evidence record for this operation (${liveEvidence.code}). The download uses this observation's redacted record.`
+            : "Exports the redacted operation record from this observation without credentials or signing keys."}
       </p>
       {liveStatus.kind === "ok" ? (
         <details className="disclose" style={{ marginTop: 12 }}>

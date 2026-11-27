@@ -53,6 +53,12 @@
 //! `seal-admission-mark` (service stopped) writes the admission high-water
 //! mark for a journal that has none for its host/epoch; every open and
 //! admission refuses a journal behind that mark (`JOURNAL_ROLLBACK`).
+#![warn(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "W672: production code returns errors; tests may unwrap (clippy.toml)"
+)]
 
 use std::{path::PathBuf, process::ExitCode};
 
@@ -682,10 +688,10 @@ fn capture_report(capture: &Capture) -> serde_json::Value {
         "state": state,
         "snapshot_id": capture.snapshot_id,
         "unclaimed_snapshot_id": capture.unclaimed_snapshot_id,
-        "capture_method": capture.method.map(|method| method.as_str()),
+        "capture_method": capture.method.map(rustiron_journal::CaptureMethod::as_str),
         "retention_days": capture.retention_days,
         "started_at": capture.started_at.get(),
-        "finished_at": capture.finished_at.map(|t| t.get()),
+        "finished_at": capture.finished_at.map(rustiron_contracts::Timestamp::get),
         "manifest": capture.manifest.as_ref().map(|m| serde_json::json!({
             "sha256": m.sha256, "entries": m.entries,
             "regular_bytes": m.regular_bytes, "truncated": m.truncated})),
@@ -903,7 +909,7 @@ mod tests {
             after_days: 30,
             objects: vec![rustiron_journal::ObjectRetention {
                 kind: rustiron_journal::RetainedObjectKind::Snapshot,
-                object_id: snapshot.clone(),
+                object_id: snapshot,
                 version_id: "76b01aea-db7c-4b38-b41d-3c031085d108".to_owned(),
                 retain_until: 1_000 + 30 * 86_400,
             }],
@@ -994,7 +1000,7 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         let tampered = {
-            let mut copy = document.clone();
+            let mut copy = document;
             copy["body"]["fields"]["independent_copy_confirmed"]["status"] = "pass".into();
             copy
         };

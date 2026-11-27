@@ -1,8 +1,8 @@
 //! Multi-step provision journal behavior on real SQLite; no host effects.
 use rustiron_contracts::approval::{Hostname, SiteId};
 use rustiron_journal::{
-    FixtureJournal, JournalError, ProvisionIntent, ProvisionResult, ProvisionState, ProvisionStep,
-    RecordResult, StepState,
+    Admitted, FixtureJournal, JournalError, ProvisionIntent, ProvisionState, ProvisionStep,
+    StepState,
 };
 use std::{
     fs,
@@ -78,7 +78,7 @@ fn steps_run_in_order_and_complete() {
     let one = site(1);
     assert!(matches!(
         ledger.record_provision(&one, time(1000)).unwrap(),
-        ProvisionResult::New(_)
+        Admitted::New(_)
     ));
     assert_eq!(
         ledger
@@ -93,7 +93,7 @@ fn steps_run_in_order_and_complete() {
     assert_eq!(done.steps.len(), 8);
     assert!(matches!(
         ledger.record_provision(&one, time(1001)).unwrap(),
-        ProvisionResult::Existing(_)
+        Admitted::Existing(_)
     ));
     drop(ledger);
     let ledger = state.open().unwrap();
@@ -146,7 +146,7 @@ fn a_step_cannot_begin_twice_and_failure_quarantines() {
     // A quarantined provision no longer blocks others.
     assert!(matches!(
         ledger.record_provision(&site(2), time(1001)).unwrap(),
-        ProvisionResult::New(_)
+        Admitted::New(_)
     ));
 }
 
@@ -423,13 +423,13 @@ fn an_ejection_needs_a_succeeded_provision_and_happens_once() {
         ledger
             .record_ejection_intent(&first, &blog1, time(1001))
             .unwrap(),
-        RecordResult::New(_)
+        Admitted::New(_)
     ));
     assert!(matches!(
         ledger
             .record_ejection_intent(&first, &blog1, time(1001))
             .unwrap(),
-        RecordResult::Existing(_)
+        Admitted::Existing(_)
     ));
     assert_eq!(
         ledger.ejection_site(&first.operation_id).unwrap(),

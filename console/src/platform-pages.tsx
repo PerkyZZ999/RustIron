@@ -1,14 +1,13 @@
 // W604 (P29): Read-only developer hosting-platform views ported from
 // docs/mockup/screens/ to Astryx + scoped CSS (Apps/EmDash, Host Diagnoses,
 // Host Updates, Domains, Migration). No view here writes to or changes the host.
+import { APP_TABS, type AppTab } from "./app-tabs";
 import { Link } from "@tanstack/react-router";
 import {
   ArrowLeft,
   ChevronDown,
   ChevronRight,
-  CircleAlert,
   CircleCheck,
-  CircleHelp,
   CircleMinus,
   CircleX,
   Copy,
@@ -17,13 +16,11 @@ import {
   Server,
   ShieldCheck,
   Terminal,
-  X,
 } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { useState } from "react";
 
-import { toastManager } from "@/components/ui/toast";
 import { MigrationWizardsPanel } from "./backup-migration-wizards";
-import { useData } from "./data";
+import { isRealHost, useData } from "./data";
 import {
   type AppRecord,
   type DiagnosisFinding,
@@ -40,137 +37,14 @@ import {
   type MigrationRecord,
   type SupportComponent,
 } from "./platform-data";
-import { Crumbs, EmptyState, Glyph, Page, TableScroll } from "./ui";
-
-export function InspectorPanel({
-  ariaLabel,
-  title,
-  subtitle,
-  monoTitle = false,
-  closeLabel,
-  onClose,
-  children,
-}: {
-  ariaLabel: string;
-  title: string;
-  subtitle?: string;
-  monoTitle?: boolean;
-  closeLabel: string;
-  onClose: () => void;
-  children: ReactNode;
-}) {
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  return (
-    <>
-      <div className="insp-backdrop" aria-hidden="true" onClick={onClose} />
-      <aside className="insp-drawer" aria-label={ariaLabel}>
-        <div className="insp-head">
-          <div style={{ minWidth: 0 }}>
-            <h2
-              className={monoTitle ? "mono" : undefined}
-              style={{ fontSize: monoTitle ? 16 : 18 }}
-            >
-              {title}
-            </h2>
-            {subtitle ? <span className="cap">{subtitle}</span> : null}
-          </div>
-          <button type="button" className="icon-btn" aria-label={closeLabel} onClick={onClose}>
-            <Glyph icon={X} />
-          </button>
-        </div>
-        <div className="insp-body">{children}</div>
-      </aside>
-    </>
-  );
-}
-
-function FindingChip({ state }: { state: DiagnosisFinding["state"] }) {
-  const icon =
-    state === "fail"
-      ? CircleX
-      : state === "warn"
-        ? CircleAlert
-        : state === "ok"
-          ? CircleCheck
-          : CircleHelp;
-  const cls =
-    state === "fail"
-      ? "pill err"
-      : state === "warn"
-        ? "pill warn"
-        : state === "ok"
-          ? "pill ok"
-          : "pill";
-  return (
-    <span className={cls}>
-      <Glyph icon={icon} />
-      {state}
-    </span>
-  );
-}
-
-function OwnerBadge({ owner, prefix = "" }: { owner: "rustiron" | "host"; prefix?: string }) {
-  return (
-    <span className={owner === "host" ? "owner-badge host" : "owner-badge"}>
-      {prefix}
-      {owner}
-    </span>
-  );
-}
+import { FindingChip, OwnerBadge } from "./findings-panel";
+import { InspectorPanel, useDrawerSelection } from "./inspector";
+import { copyText, Crumbs, EmptyState, Glyph, Page, TableScroll } from "./ui";
 
 function releasePillClass(state: AppRecord["releases"][number]["state"]) {
   if (state === "active") return "pill ok";
   if (state === "failed_compensated") return "pill err";
   return "pill";
-}
-
-/** Compact open-findings panel shown beside Resource history on Host Overview (overview.html). */
-export function OverviewFindingsPanel() {
-  const data = useData();
-  const findings =
-    data.source.kind === "live" && data.observation
-      ? liveFindings(data.observation, data.machine)
-      : fixtureFindings;
-  const open = findings.filter((f) => f.state !== "ok");
-  const passedCount = findings.length - open.length;
-
-  return (
-    <section className="panel" aria-labelledby="overview-findings-title">
-      <div className="panel-head">
-        <h2 id="overview-findings-title">Open findings</h2>
-        <Link to="/host/diagnoses">All diagnoses</Link>
-      </div>
-      {open.length === 0 ? (
-        <p className="muted">No open findings in this observation.</p>
-      ) : (
-        <div>
-          {open.slice(0, 4).map((finding) => (
-            <div key={finding.id} className="findings-row">
-              <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
-                <FindingChip state={finding.state} />
-                <strong>{finding.check}</strong>
-                <span className="mono muted" style={{ fontSize: 12 }}>
-                  {finding.subject}
-                </span>
-              </div>
-              <OwnerBadge owner={finding.owner} />
-            </div>
-          ))}
-        </div>
-      )}
-      <div className="findings-row" style={{ marginTop: 8 }}>
-        <span className="muted">{passedCount} passed checks</span>
-        <Link to="/host/diagnoses">Show</Link>
-      </div>
-    </section>
-  );
 }
 
 function servingIcon(kind: AppRecord["servingKind"]) {
@@ -344,12 +218,12 @@ function AppInspector({ selected, onClose }: { selected: AppRecord; onClose: () 
 
 export function AppsPage() {
   const data = useData();
-  const isLive = data.source.kind === "live";
+  const isLive = isRealHost(data.source);
   const observedApps = data.observation ? liveApps(data.observation) : [];
   const allApps: AppRecord[] = isLive ? observedApps : fixtureApps;
   const [stackFilter, setStackFilter] = useState<AppStackFilter>("All");
   const apps = stackFilter === "All" ? allApps : allApps.filter((app) => app.kind === stackFilter);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useDrawerSelection<string>();
   const selected = apps.find((a) => a.id === selectedId) ?? null;
 
   return (
@@ -579,14 +453,20 @@ rustiron plan create app-deploy --site-id ${app.siteId} --release-id ${app.curre
   );
 }
 
-export function AppDetailPage({ appId }: { appId: string }) {
+const appTabLabels: Record<AppTab, string> = {
+  overview: "Overview",
+  deployments: "Deployments",
+  config: "Configuration & secrets",
+};
+
+/** W684: the tab lives in the URL (`?tab=`), like the other section navs, so it survives reload. */
+export function AppDetailPage({ appId, tab }: { appId: string; tab: AppTab }) {
   const data = useData();
-  const isLive = data.source.kind === "live";
+  const isLive = isRealHost(data.source);
   const observedApps = data.observation ? liveApps(data.observation) : [];
   const app = isLive
     ? (observedApps.find((item) => item.id === appId) ?? null)
     : (fixtureApps.find((item) => item.id === appId) ?? fixtureApps[0] ?? null);
-  const [tab, setTab] = useState<"overview" | "deployments" | "config">("overview");
   if (!app) {
     return (
       <Page live>
@@ -650,24 +530,16 @@ export function AppDetailPage({ appId }: { appId: string }) {
       </div>
 
       <nav className="host-tabs" aria-label="App sections">
-        {(
-          [
-            ["overview", "Overview"],
-            ["deployments", "Deployments"],
-            ["config", "Configuration & secrets"],
-          ] as const
-        ).map(([key, label]) => (
-          <a
+        {APP_TABS.map((key) => (
+          <Link
             key={key}
-            href={`#${key}`}
+            to="/apps/$appId"
+            params={{ appId }}
+            search={key === "overview" ? {} : { tab: key }}
             aria-current={tab === key ? "page" : undefined}
-            onClick={(event) => {
-              event.preventDefault();
-              setTab(key);
-            }}
           >
-            {label}
-          </a>
+            {appTabLabels[key]}
+          </Link>
         ))}
       </nav>
 
@@ -899,23 +771,21 @@ function DiagnosesTableCard({
 
 export function HostDiagnosesPage() {
   const data = useData();
-  const findings =
-    data.source.kind === "live" && data.observation
+  const findings = isRealHost(data.source)
+    ? data.observation
       ? liveFindings(data.observation, data.machine)
-      : fixtureFindings;
+      : []
+    : fixtureFindings;
   const open = findings.filter((f) => f.state !== "ok");
   const passed = findings.filter((f) => f.state === "ok");
   const hasAlerts = open.some((f) => f.state === "fail" || f.state === "warn");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useDrawerSelection<string>();
   const [passedOpen, setPassedOpen] = useState(!hasAlerts && passed.length > 0);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const selected = findings.find((f) => f.id === selectedId) ?? null;
 
-  function handleCopy(id: string, text: string) {
-    void navigator.clipboard?.writeText(text).then(() => {
-      setCopiedId(id);
-      toastManager.add({ id: "clipboard-copy", type: "success", title: "Command copied" });
-    });
+  async function handleCopy(id: string, text: string) {
+    if (await copyText(text, "Command copied")) setCopiedId(id);
   }
 
   return (
@@ -955,9 +825,9 @@ export function HostDiagnosesPage() {
 
 export function HostUpdatesPage() {
   const data = useData();
-  const isLive = data.source.kind === "live";
+  const isLive = isRealHost(data.source);
   const components: SupportComponent[] = liveSupportComponents(data.machine, isLive);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useDrawerSelection<string>();
   const selected = components.find((c) => c.id === selectedId) ?? null;
   const inRange = components.filter((c) => c.state === "supported").length;
   const optionalAbsent = components.filter((c) => c.state === "optional").length;
@@ -1098,11 +968,12 @@ export function HostUpdatesPage() {
 
 export function DomainsPage() {
   const data = useData();
-  const domains: DomainRecord[] =
-    data.source.kind === "live" && data.observation
+  const domains: DomainRecord[] = isRealHost(data.source)
+    ? data.observation
       ? liveDomains(data.sites, data.observation)
-      : fixtureDomains;
-  const [selectedHost, setSelectedHost] = useState<string | null>(null);
+      : []
+    : fixtureDomains;
+  const [selectedHost, setSelectedHost] = useDrawerSelection<string>();
   const selected = domains.find((d) => d.hostname === selectedHost) ?? null;
 
   const expiring = domains.filter(
@@ -1385,13 +1256,13 @@ function MigrationTable({
 
 export function MigrationPage() {
   const data = useData();
-  const isLive = data.source.kind === "live";
+  const isLive = isRealHost(data.source);
   const migrations: MigrationRecord[] = isLive
     ? data.observation
       ? liveMigrations(data.observation)
       : []
     : fixtureMigrations;
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useDrawerSelection<string>();
   const selected = migrations.find((m) => m.id === selectedId) ?? null;
 
   return (

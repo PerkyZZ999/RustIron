@@ -17,7 +17,9 @@ use std::{
 
 use rustiron_contracts::{
     ErrorCode, Id, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, Timestamp,
-    approval::{ProductBackupPlan, ProductBackupTarget, StandingCapturePlan},
+    approval::{
+        PlanKind, PreparedPlan, ProductBackupPlan, ProductBackupTarget, StandingCapturePlan,
+    },
     execution::{
         OutcomeState, StatusQuery, SubmissionReply, decode_evidence_query, decode_status_query,
         decode_submission, status_query_request_id,
@@ -25,9 +27,11 @@ use rustiron_contracts::{
     local::{self, DEADLINE},
 };
 use rustiron_journal::{
-    Capture, CaptureResult, CaptureState, Operation, Probe, ProbeResult, ProbeState, Provision,
-    ProvisionResult, ProvisionState, ReadoptResult, ReadoptState, Readoption, RecordResult,
-    RecordedState,
+    Admitted, AppLifecycle, AppRelease, AppReleaseState, Capture, CaptureState, Certificate,
+    CertificateState, CloneScrubGrant, CredentialRotateState, CredentialRotation, Deletion,
+    DnsChange, DnsImport, ImportScrub, Operation, Probe, ProbeState, Provision, ProvisionState,
+    QuotaChange, ReadoptState, Readoption, RecordedState, Renewal, RestoreState, Retirement,
+    SiteRestore, SiteUpdate, StepState, UpdateState,
 };
 
 use crate::{AdmissionRequest, Executor, ExecutorError, files};
@@ -147,9 +151,8 @@ pub fn serve_with(
             }
         });
         let result = loop {
-            let stream = match listener.accept() {
-                Ok((stream, _)) => stream,
-                Err(_) => break Err(ExecutorError::Unavailable),
+            let Ok((stream, _)) = listener.accept() else {
+                break Err(ExecutorError::Unavailable);
             };
             dispatch(stream, limits, &slots, &queue);
         };
@@ -169,10 +172,7 @@ fn dispatch(
         return;
     };
     let uid = peer.uid.as_raw();
-    let taken = slots
-        .lock()
-        .map(|mut slots| slots.take(limits, uid))
-        .unwrap_or(false);
+    let taken = slots.lock().is_ok_and(|mut slots| slots.take(limits, uid));
     if !taken {
         refuse(&mut stream, ExecutorError::Unavailable);
         return;
@@ -276,613 +276,7 @@ fn process(executor: &mut Executor, frame: &[u8], peer_uid: u32) -> SubmissionRe
         return error_reply(None, ExecutorError::InvalidRequest);
     };
     let operation_id = submission.operation_id.clone();
-    if rustiron_contracts::approval::SiteClonePlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        // W499 (D-078): the clone needs the product store; a lab build
-        // stops every clone before intent.
-        if !cfg!(rustiron_profile = "product") {
-            let error = executor
-                .preflight_site_clone(&request)
-                .err()
-                .unwrap_or(ExecutorError::NotAdmitted);
-            return error_reply(Some(operation_id), error);
-        }
-        return match executor.site_clone(&request) {
-            Ok(ProvisionResult::New(provision)) => provision_reply(&provision, false, None),
-            Ok(ProvisionResult::Existing(provision)) => provision_reply(&provision, true, None),
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.provision_status(&operation_id)
-            }) {
-                Some(provision) => provision_reply(&provision, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    // D-035 (W386): one run of a standing capture grant (product only).
-    if cfg!(rustiron_profile = "product") && StandingCapturePlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.product_standing_capture(&request) {
-            Ok(CaptureResult::New(capture)) => capture_reply(&capture, false, None),
-            Ok(CaptureResult::Existing(capture)) => capture_reply(&capture, true, None),
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.capture_status(&operation_id)
-            }) {
-                Some(capture) => capture_reply(&capture, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    if cfg!(rustiron_profile = "product")
-        && let Ok(plan) = ProductBackupPlan::decode(submission.plan)
-    {
-        // W319/W320: product captures and restore probes are admitted
-        // durably; their effects are not enabled.
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match plan.target() {
-            ProductBackupTarget::BackupCapture { .. } => {
-                match executor.product_backup_capture(&request) {
-                    Ok(CaptureResult::New(capture)) => capture_reply(&capture, false, None),
-                    Ok(CaptureResult::Existing(capture)) => capture_reply(&capture, true, None),
-                    Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                        executor.capture_status(&operation_id)
-                    }) {
-                        Some(capture) => capture_reply(&capture, false, Some(error)),
-                        None => error_reply(Some(operation_id), error),
-                    },
-                }
-            }
-            ProductBackupTarget::RestoreProbe { .. } => {
-                match executor.product_restore_probe(&request) {
-                    Ok(ProbeResult::New(probe)) => probe_reply(&probe, false, None),
-                    Ok(ProbeResult::Existing(probe)) => probe_reply(&probe, true, None),
-                    Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                        executor.probe_status(&operation_id)
-                    }) {
-                        Some(probe) => probe_reply(&probe, false, Some(error)),
-                        None => error_reply(Some(operation_id), error),
-                    },
-                }
-            }
-        };
-    }
-    if rustiron_contracts::approval::ProbePlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.restore_probe(&request) {
-            Ok(ProbeResult::New(probe)) => probe_reply(&probe, false, None),
-            Ok(ProbeResult::Existing(probe)) => probe_reply(&probe, true, None),
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.probe_status(&operation_id)
-            }) {
-                Some(probe) => probe_reply(&probe, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    if rustiron_contracts::approval::CapturePlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.backup_capture(&request) {
-            Ok(CaptureResult::New(capture)) => capture_reply(&capture, false, None),
-            Ok(CaptureResult::Existing(capture)) => capture_reply(&capture, true, None),
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.capture_status(&operation_id)
-            }) {
-                Some(capture) => capture_reply(&capture, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    if rustiron_contracts::approval::ReadoptPlan::decode(submission.plan).is_ok() {
-        // W372: re-adoption records only; a refusal after intent replies
-        // with the stored row and its code.
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.readopt(&request) {
-            Ok(ReadoptResult::New(row)) => readopt_reply(&row, false, None),
-            Ok(ReadoptResult::Existing(row)) => readopt_reply(&row, true, None),
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.readoption_status(&operation_id)
-            }) {
-                Some(row) => readopt_reply(&row, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    if rustiron_contracts::approval::EjectPlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.eject_site(&request) {
-            Ok(RecordResult::New(operation)) => reply(&operation, false, None),
-            Ok(RecordResult::Existing(operation)) => reply(&operation, true, None),
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.status(&operation_id)
-            }) {
-                Some(operation) => reply(&operation, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    if rustiron_contracts::approval::OlsPlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.activate_ols(&request) {
-            Ok(RecordResult::New(operation)) => reply(&operation, false, None),
-            Ok(RecordResult::Existing(operation)) => reply(&operation, true, None),
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.status(&operation_id)
-            }) {
-                Some(operation) => reply(&operation, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    // W462 (D-059): a signed certificate issuance.
-    if rustiron_contracts::approval::CertificatePlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.certificate(&request) {
-            Ok(rustiron_journal::CertificateResult::New(row)) => {
-                certificate_reply(&row, false, None)
-            }
-            Ok(rustiron_journal::CertificateResult::Existing(row)) => {
-                certificate_reply(&row, true, None)
-            }
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.certificate_status(&operation_id)
-            }) {
-                Some(row) => certificate_reply(&row, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    // W515 (D-084): a signed WordPress plugin and theme update.
-    if rustiron_contracts::approval::SiteUpdatePlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.update_site(&request) {
-            Ok(rustiron_journal::UpdateResult::New(row)) => update_reply(&row, false, None),
-            Ok(rustiron_journal::UpdateResult::Existing(row)) => update_reply(&row, true, None),
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.update_status(&operation_id)
-            }) {
-                Some(row) => update_reply(&row, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    // W508 (D-080): a signed retirement of a quarantined site.
-    if rustiron_contracts::approval::RetirePlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.retire_site(&request) {
-            Ok(rustiron_journal::RetireResult::New(row)) => retire_reply(&row, false, None),
-            Ok(rustiron_journal::RetireResult::Existing(row)) => retire_reply(&row, true, None),
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.retirement_status(&operation_id)
-            }) {
-                Some(row) => retire_reply(&row, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    // W535 (D-088): a signed change of a site's quota.
-    if rustiron_contracts::approval::QuotaPlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.change_quota(&request) {
-            Ok(rustiron_journal::QuotaChangeResult::New(row)) => {
-                step_reply(&row.operation_id, row.state, false, None)
-            }
-            Ok(rustiron_journal::QuotaChangeResult::Existing(row)) => {
-                step_reply(&row.operation_id, row.state, true, None)
-            }
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.quota_change_status(&operation_id)
-            }) {
-                Some(row) => step_reply(&row.operation_id, row.state, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    // W609 (D-100): a signed per-site MariaDB credential rotation.
-    if rustiron_contracts::approval::CredentialRotatePlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.rotate_site_credentials(&request) {
-            Ok(rustiron_journal::CredentialRotateResult::New(row)) => {
-                credential_rotate_reply(&row, false, None)
-            }
-            Ok(rustiron_journal::CredentialRotateResult::Existing(row)) => {
-                credential_rotate_reply(&row, true, None)
-            }
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.credential_rotation_status(&operation_id)
-            }) {
-                Some(row) => credential_rotate_reply(&row, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    // W543 (D-089): a signed restore of a live site from its own capture.
-    if rustiron_contracts::approval::RestorePlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.restore_site(&request) {
-            Ok(rustiron_journal::RestoreResult::New(row)) => restore_reply(&row, false, None),
-            Ok(rustiron_journal::RestoreResult::Existing(row)) => restore_reply(&row, true, None),
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.site_restore_status(&operation_id)
-            }) {
-                Some(row) => restore_reply(&row, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    // W565 (D-091): a signed change of an owned zone's record sets.
-    if rustiron_contracts::approval::DnsChangePlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.change_dns(&request) {
-            Ok(rustiron_journal::DnsChangeResult::New(row)) => {
-                step_reply(&row.operation_id, row.state, false, None)
-            }
-            Ok(rustiron_journal::DnsChangeResult::Existing(row)) => {
-                step_reply(&row.operation_id, row.state, true, None)
-            }
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.dns_change_status(&operation_id)
-            }) {
-                Some(row) => step_reply(&row.operation_id, row.state, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    // W563 (D-091): a signed import of one DNS zone.
-    if rustiron_contracts::approval::DnsImportPlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.import_dns_zone(&request) {
-            Ok(rustiron_journal::DnsImportResult::New(row)) => {
-                step_reply(&row.operation_id, row.state, false, None)
-            }
-            Ok(rustiron_journal::DnsImportResult::Existing(row)) => {
-                step_reply(&row.operation_id, row.state, true, None)
-            }
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.dns_import_status(&operation_id)
-            }) {
-                Some(row) => step_reply(&row.operation_id, row.state, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    // W538 (D-078): a signed scrub of a quarantined clone.
-    if rustiron_contracts::approval::CloneScrubPlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.scrub_clone(&request) {
-            Ok(rustiron_journal::CloneScrubResult::New(row)) => {
-                step_reply(&row.operation_id, row.state, false, None)
-            }
-            Ok(rustiron_journal::CloneScrubResult::Existing(row)) => {
-                step_reply(&row.operation_id, row.state, true, None)
-            }
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.clone_scrub_status(&operation_id)
-            }) {
-                Some(row) => step_reply(&row.operation_id, row.state, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    // W522 (D-085): a signed deletion of a live site that is offline.
-    if rustiron_contracts::approval::DeletePlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.delete_site(&request) {
-            Ok(rustiron_journal::DeleteResult::New(row)) => {
-                step_reply(&row.operation_id, row.state, false, None)
-            }
-            Ok(rustiron_journal::DeleteResult::Existing(row)) => {
-                step_reply(&row.operation_id, row.state, true, None)
-            }
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.deletion_status(&operation_id)
-            }) {
-                Some(row) => step_reply(&row.operation_id, row.state, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    // W459 (D-057): a signed scrub of an ended import's leftovers.
-    if rustiron_contracts::approval::ScrubPlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.scrub(&request) {
-            Ok(rustiron_journal::ScrubResult::New(scrub)) => scrub_reply(&scrub, false, None),
-            Ok(rustiron_journal::ScrubResult::Existing(scrub)) => scrub_reply(&scrub, true, None),
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.scrub_status(&operation_id)
-            }) {
-                Some(scrub) => scrub_reply(&scrub, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    // W572 (D-095): a proxy site runs the provision steps of a proxy site.
-    if rustiron_contracts::approval::ProxyPlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.provision_proxy(&request) {
-            Ok(ProvisionResult::New(provision)) => provision_reply(&provision, false, None),
-            Ok(ProvisionResult::Existing(provision)) => provision_reply(&provision, true, None),
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.provision_status(&operation_id)
-            }) {
-                Some(provision) => provision_reply(&provision, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    // W598 (D-099): P27 modern app hosting (`app_provision`, `app_deploy`, `app_lifecycle`).
-    if rustiron_contracts::approval::AppProvisionPlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.provision_app(&request) {
-            Ok(ProvisionResult::New(provision)) => provision_reply(&provision, false, None),
-            Ok(ProvisionResult::Existing(provision)) => provision_reply(&provision, true, None),
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.provision_status(&operation_id)
-            }) {
-                Some(provision) => provision_reply(&provision, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    if rustiron_contracts::approval::AppDeployPlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.deploy_app(&request) {
-            Ok(rustiron_journal::AppReleaseResult::New(row)) => {
-                app_release_reply(&row, false, None)
-            }
-            Ok(rustiron_journal::AppReleaseResult::Existing(row)) => {
-                app_release_reply(&row, true, None)
-            }
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.app_release_status(&operation_id)
-            }) {
-                Some(row) => app_release_reply(&row, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    if rustiron_contracts::approval::AppLifecyclePlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.app_lifecycle(&request) {
-            Ok(rustiron_journal::AppLifecycleResult::New(row)) => {
-                step_reply(&row.operation_id, row.state, false, None)
-            }
-            Ok(rustiron_journal::AppLifecycleResult::Existing(row)) => {
-                step_reply(&row.operation_id, row.state, true, None)
-            }
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.app_lifecycle_status(&operation_id)
-            }) {
-                Some(row) => step_reply(&row.operation_id, row.state, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    // W446 (D-053): a site import runs the provision steps with its import.
-    if rustiron_contracts::approval::ImportPlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.import(&request) {
-            Ok(ProvisionResult::New(provision)) => provision_reply(&provision, false, None),
-            Ok(ProvisionResult::Existing(provision)) => provision_reply(&provision, true, None),
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.provision_status(&operation_id)
-            }) {
-                Some(provision) => provision_reply(&provision, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
-    if rustiron_contracts::approval::SitePlan::decode(submission.plan).is_ok() {
-        let request = AdmissionRequest {
-            peer_uid,
-            plan: submission.plan,
-            grant: submission.grant,
-            signature: submission.signature.as_bytes(),
-            operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
-            now: system_time(),
-        };
-        return match executor.provision(&request) {
-            Ok(ProvisionResult::New(provision)) => provision_reply(&provision, false, None),
-            Ok(ProvisionResult::Existing(provision)) => provision_reply(&provision, true, None),
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.provision_status(&operation_id)
-            }) {
-                Some(provision) => provision_reply(&provision, false, Some(error)),
-                None => error_reply(Some(operation_id), error),
-            },
-        };
-    }
+    // W686: one admission request; each plan kind below decides which verb receives it.
     let request = AdmissionRequest {
         peer_uid,
         plan: submission.plan,
@@ -892,14 +286,299 @@ fn process(executor: &mut Executor, frame: &[u8], peer_uid: u32) -> SubmissionRe
         idempotency_key: submission.idempotency_key,
         now: system_time(),
     };
-    match executor.submit(&request) {
-        Ok(RecordResult::Existing(operation)) => reply(&operation, true, None),
-        Ok(RecordResult::New(_)) => match executor.execute(&operation_id, system_time()) {
-            Ok(operation) => reply(&operation, false, None),
-            Err(error) => match stored_for_peer(executor, peer_uid, |executor| {
-                executor.status(&operation_id)
-            }) {
-                Some(operation) => reply(&operation, false, Some(error)),
+    match route(submission.plan) {
+        Route::SiteClone => {
+            // W499 (D-078): the clone needs the product store; a lab build
+            // stops every clone before intent.
+            if !cfg!(rustiron_profile = "product") {
+                let error = executor
+                    .preflight_site_clone(&request)
+                    .err()
+                    .unwrap_or(ExecutorError::NotAdmitted);
+                return error_reply(Some(operation_id), error);
+            }
+            admission_reply(
+                executor.site_clone(&request),
+                executor,
+                peer_uid,
+                &operation_id,
+            )
+        }
+        Route::StandingCapture => admission_reply(
+            executor.product_standing_capture(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::ProductCapture => admission_reply(
+            executor.product_backup_capture(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::ProductProbe => admission_reply(
+            executor.product_restore_probe(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::Probe => admission_reply(
+            executor.restore_probe(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::Capture => admission_reply(
+            executor.backup_capture(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::Readopt => admission_reply(
+            executor.readopt(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::Eject => admission_reply(
+            executor.eject_site(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::Ols => admission_reply(
+            executor.activate_ols(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::Certificate => admission_reply(
+            executor.certificate(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::SiteUpdate => admission_reply(
+            executor.update_site(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::Retire => admission_reply(
+            executor.retire_site(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::Quota => admission_reply(
+            executor.change_quota(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::CredentialRotate => admission_reply(
+            executor.rotate_site_credentials(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::Restore => admission_reply(
+            executor.restore_site(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::DnsChange => admission_reply(
+            executor.change_dns(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::DnsImport => admission_reply(
+            executor.import_dns_zone(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::CloneScrub => admission_reply(
+            executor.scrub_clone(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::Delete => admission_reply(
+            executor.delete_site(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::Scrub => {
+            admission_reply(executor.scrub(&request), executor, peer_uid, &operation_id)
+        }
+        Route::Proxy => admission_reply(
+            executor.provision_proxy(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::AppProvision => admission_reply(
+            executor.provision_app(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::AppDeploy => admission_reply(
+            executor.deploy_app(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::AppLifecycle => admission_reply(
+            executor.app_lifecycle(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::Import => {
+            admission_reply(executor.import(&request), executor, peer_uid, &operation_id)
+        }
+        Route::Provision => admission_reply(
+            executor.provision(&request),
+            executor,
+            peer_uid,
+            &operation_id,
+        ),
+        Route::Generic => generic_submit(executor, &request, peer_uid, operation_id),
+    }
+}
+
+/// W688: the verb a submitted plan goes to, decided once from its validated
+/// kind. The match is exhaustive, so a new plan kind cannot be left unrouted;
+/// a plan no closed kind accepts takes the generic (fixture) path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Route {
+    /// W499 (D-078): a staging clone; a lab build stops it before intent.
+    SiteClone,
+    /// D-035 (W386): one run of a standing capture grant (product only).
+    StandingCapture,
+    /// W319: a product capture, admitted durably (product only).
+    ProductCapture,
+    /// W320: a product restore probe, admitted durably (product only).
+    ProductProbe,
+    /// A lab restore probe.
+    Probe,
+    /// A lab backup capture.
+    Capture,
+    /// W372: re-adoption records only.
+    Readopt,
+    /// A signed site ejection.
+    Eject,
+    /// A signed OLS configuration activation.
+    Ols,
+    /// W462 (D-059): a signed certificate issuance.
+    Certificate,
+    /// W515 (D-084): a signed WordPress plugin and theme update.
+    SiteUpdate,
+    /// W508 (D-080): a signed retirement of a quarantined site.
+    Retire,
+    /// W535 (D-088): a signed change of a site's quota.
+    Quota,
+    /// W609 (D-100): a signed per-site MariaDB credential rotation.
+    CredentialRotate,
+    /// W543 (D-089): a signed restore of a live site from its own capture.
+    Restore,
+    /// W565 (D-091): a signed change of an owned zone's record sets.
+    DnsChange,
+    /// W563 (D-091): a signed import of one DNS zone.
+    DnsImport,
+    /// W538 (D-078): a signed scrub of a quarantined clone.
+    CloneScrub,
+    /// W522 (D-085): a signed deletion of a live site that is offline.
+    Delete,
+    /// W459 (D-057): a signed scrub of an ended import's leftovers.
+    Scrub,
+    /// W572 (D-095): the provision steps of a proxy site.
+    Proxy,
+    /// W598 (D-099): P27 app provision.
+    AppProvision,
+    /// W598 (D-099): P27 app release deploy.
+    AppDeploy,
+    /// W598 (D-099): P27 app start, stop, or restart.
+    AppLifecycle,
+    /// W446 (D-053): the provision steps with a site import.
+    Import,
+    /// A WordPress site provision.
+    Provision,
+    /// No closed kind: the generic (fixture) path.
+    Generic,
+}
+
+fn route(plan: &[u8]) -> Route {
+    let Ok(prepared) = PreparedPlan::decode(plan) else {
+        return Route::Generic;
+    };
+    match prepared.kind() {
+        PlanKind::SiteClone => Route::SiteClone,
+        PlanKind::BackupCapture | PlanKind::RestoreProbe => backup_route(plan),
+        PlanKind::SiteReadopt => Route::Readopt,
+        PlanKind::SiteEject => Route::Eject,
+        PlanKind::ConfigActivate => Route::Ols,
+        PlanKind::CertificateIssue => Route::Certificate,
+        PlanKind::SiteUpdate => Route::SiteUpdate,
+        PlanKind::SiteRetire => Route::Retire,
+        PlanKind::SiteQuota => Route::Quota,
+        PlanKind::SiteCredentialRotate => Route::CredentialRotate,
+        PlanKind::SiteRestore => Route::Restore,
+        PlanKind::DnsChange => Route::DnsChange,
+        PlanKind::DnsZoneImport => Route::DnsImport,
+        PlanKind::CloneScrub => Route::CloneScrub,
+        PlanKind::SiteDelete => Route::Delete,
+        PlanKind::ImportScrub => Route::Scrub,
+        PlanKind::ProxySiteProvision => Route::Proxy,
+        PlanKind::AppProvision => Route::AppProvision,
+        PlanKind::AppDeploy => Route::AppDeploy,
+        PlanKind::AppLifecycle => Route::AppLifecycle,
+        PlanKind::SiteImport => Route::Import,
+        PlanKind::SiteProvision => Route::Provision,
+    }
+}
+
+/// Capture and probe kinds split by schema version between four forms; the
+/// standing and product forms are admitted only by a product build.
+fn backup_route(plan: &[u8]) -> Route {
+    if cfg!(rustiron_profile = "product") {
+        if StandingCapturePlan::decode(plan).is_ok() {
+            return Route::StandingCapture;
+        }
+        if let Ok(plan) = ProductBackupPlan::decode(plan) {
+            return match plan.target() {
+                ProductBackupTarget::BackupCapture { .. } => Route::ProductCapture,
+                ProductBackupTarget::RestoreProbe { .. } => Route::ProductProbe,
+            };
+        }
+    }
+    if rustiron_contracts::approval::ProbePlan::decode(plan).is_ok() {
+        return Route::Probe;
+    }
+    if rustiron_contracts::approval::CapturePlan::decode(plan).is_ok() {
+        return Route::Capture;
+    }
+    Route::Generic
+}
+
+/// A plan no closed kind accepts: the journal's generic submit, then execute.
+fn generic_submit(
+    executor: &mut Executor,
+    request: &AdmissionRequest<'_>,
+    peer_uid: u32,
+    operation_id: Id,
+) -> SubmissionReply {
+    match executor.submit(request) {
+        Ok(Admitted::Existing(operation)) => row_reply(&operation, true, None),
+        Ok(Admitted::New(_)) => match executor.execute(&operation_id, system_time()) {
+            Ok(operation) => row_reply(&operation, false, None),
+            Err(error) => match stored_for_peer::<Operation>(executor, peer_uid, &operation_id) {
+                Some(operation) => row_reply(&operation, false, Some(error)),
                 None => error_reply(Some(operation_id), error),
             },
         },
@@ -907,17 +586,37 @@ fn process(executor: &mut Executor, frame: &[u8], peer_uid: u32) -> SubmissionRe
     }
 }
 
+/// W686: the reply every admitted verb shares. A refusal after intent replies with the
+/// stored row and its code; with no stored row visible to this peer it is a plain error.
+fn admission_reply<Row: ReplyRow>(
+    result: Result<Admitted<Row>, ExecutorError>,
+    executor: &Executor,
+    peer_uid: u32,
+    operation_id: &Id,
+) -> SubmissionReply {
+    match result {
+        Ok(admitted) => {
+            let (row, existing) = admitted.into_row();
+            row_reply(&row, existing, None)
+        }
+        Err(error) => match stored_for_peer::<Row>(executor, peer_uid, operation_id) {
+            Some(row) => row_reply(&row, false, Some(error)),
+            None => error_reply(Some(operation_id.clone()), error),
+        },
+    }
+}
+
 /// W329/W332: stored status for a refused submission of any verb, only for
 /// a peer a status query would answer. A refusal to any other peer carries
 /// no state, even when it names an existing operation.
-fn stored_for_peer<T>(
+fn stored_for_peer<Row: ReplyRow>(
     executor: &Executor,
     peer_uid: u32,
-    status: impl FnOnce(&Executor) -> Result<Option<T>, ExecutorError>,
-) -> Option<T> {
+    operation_id: &Id,
+) -> Option<Row> {
     executor
         .authorize_status_peer(peer_uid)
-        .and_then(|()| status(executor))
+        .and_then(|()| Row::stored(executor, operation_id))
         .ok()
         .flatten()
 }
@@ -963,90 +662,30 @@ fn status_query(executor: &Executor, peer_uid: u32, query: StatusQuery) -> serde
                 _ => ErrorCode::DependencyUnavailable,
             })?;
         let id = &query.operation_id;
+        // The provision must stay second: a re-adopted site's provision row
+        // shares the id of its re-adoption, which answers for both (W372).
+        // W462-F2, W508, W515, W544-F1, W563, W565, W609, W646: every signed
+        // row answers status, so a long effect is never reported as unknown.
         let candidates = [
-            executor
-                .status(id)
-                .map(|v| v.map(|op| reply(&op, false, None))),
-            executor
-                .provision_status(id)
-                .map(|v| v.map(|op| provision_reply(&op, false, None))),
-            executor
-                .capture_status(id)
-                .map(|v| v.map(|op| capture_reply(&op, false, None))),
-            executor
-                .probe_status(id)
-                .map(|v| v.map(|op| probe_reply(&op, false, None))),
-            // W372: an adopted site's provision row shares the id of its
-            // re-adoption; the re-adoption answers for both.
-            executor
-                .readoption_status(id)
-                .map(|v| v.map(|row| readopt_reply(&row, false, None))),
-            // W462-F2: signed scrubs and certificates answer status too, so
-            // a long issuance is not reported as unknown.
-            executor
-                .scrub_status(id)
-                .map(|v| v.map(|row| scrub_reply(&row, false, None))),
-            executor
-                .certificate_status(id)
-                .map(|v| v.map(|row| certificate_reply(&row, false, None))),
-            // W515: a signed update answers status too.
-            executor
-                .update_status(id)
-                .map(|v| v.map(|row| update_reply(&row, false, None))),
-            // W508: a signed retirement answers status too.
-            executor
-                .retirement_status(id)
-                .map(|v| v.map(|row| retire_reply(&row, false, None))),
-            // W544-F1: a signed deletion, quota change, clone scrub, and
-            // restore answer status too, so a restore longer than the reply
-            // deadline is not reported as unknown.
-            executor
-                .deletion_status(id)
-                .map(|v| v.map(|row| step_reply(&row.operation_id, row.state, false, None))),
-            executor
-                .quota_change_status(id)
-                .map(|v| v.map(|row| step_reply(&row.operation_id, row.state, false, None))),
-            executor
-                .clone_scrub_status(id)
-                .map(|v| v.map(|row| step_reply(&row.operation_id, row.state, false, None))),
-            executor
-                .site_restore_status(id)
-                .map(|v| v.map(|row| restore_reply(&row, false, None))),
-            // W563: a signed zone import answers status too.
-            executor
-                .dns_import_status(id)
-                .map(|v| v.map(|row| step_reply(&row.operation_id, row.state, false, None))),
-            // W565: a signed record change answers status too.
-            executor
-                .dns_change_status(id)
-                .map(|v| v.map(|row| step_reply(&row.operation_id, row.state, false, None))),
-            // W609: a signed credential rotation answers status too.
-            executor
-                .credential_rotation_status(id)
-                .map(|v| v.map(|row| credential_rotate_reply(&row, false, None))),
-            // W646: signed P27/P30 app deploys and lifecycles answer status too,
-            // so a large release unpack exceeding the initial reply deadline is
-            // reconciled cleanly instead of returning NOT_FOUND / outcome_unknown.
-            executor
-                .app_release_status(id)
-                .map(|v| v.map(|row| app_release_reply(&row, false, None))),
-            executor
-                .app_lifecycle_status(id)
-                .map(|v| v.map(|row| step_reply(&row.operation_id, row.state, false, None))),
-            executor.renewal_status(id).map(|v| {
-                v.map(|row| SubmissionReply {
-                    schema_version: 1,
-                    operation_id: Some(row.renewal_id.clone()),
-                    state: Some(match row.state {
-                        rustiron_journal::CertificateState::Intent => OutcomeState::Intent,
-                        rustiron_journal::CertificateState::Installed => OutcomeState::Succeeded,
-                        rustiron_journal::CertificateState::Failed => OutcomeState::Failed,
-                    }),
-                    replay: false,
-                    error: None,
-                    unclaimed_snapshot_id: None,
-                })
-            }),
+            stored_outcome::<Operation>(executor, id),
+            stored_outcome::<Provision>(executor, id),
+            stored_outcome::<Capture>(executor, id),
+            stored_outcome::<Probe>(executor, id),
+            stored_outcome::<Readoption>(executor, id),
+            stored_outcome::<ImportScrub>(executor, id),
+            stored_outcome::<Certificate>(executor, id),
+            stored_outcome::<SiteUpdate>(executor, id),
+            stored_outcome::<Retirement>(executor, id),
+            stored_outcome::<Deletion>(executor, id),
+            stored_outcome::<QuotaChange>(executor, id),
+            stored_outcome::<CloneScrubGrant>(executor, id),
+            stored_outcome::<SiteRestore>(executor, id),
+            stored_outcome::<DnsImport>(executor, id),
+            stored_outcome::<DnsChange>(executor, id),
+            stored_outcome::<CredentialRotation>(executor, id),
+            stored_outcome::<AppRelease>(executor, id),
+            stored_outcome::<AppLifecycle>(executor, id),
+            stored_outcome::<Renewal>(executor, id),
         ];
         let readopted = matches!(executor.readoption_status(id), Ok(Some(_)));
         let mut found = None;
@@ -1054,11 +693,10 @@ fn status_query(executor: &Executor, peer_uid: u32, query: StatusQuery) -> serde
             if readopted && index == 1 {
                 continue;
             }
-            if let Some(reply) = candidate.map_err(|_| ErrorCode::DependencyUnavailable)? {
-                let state = reply.state.ok_or(ErrorCode::DependencyUnavailable)?;
-                if found.replace(state).is_some() {
-                    return Err(ErrorCode::DependencyUnavailable);
-                }
+            if let Some(state) = candidate.map_err(|_| ErrorCode::DependencyUnavailable)?
+                && found.replace(state).is_some()
+            {
+                return Err(ErrorCode::DependencyUnavailable);
             }
         }
         found.ok_or(ErrorCode::NotFound)
@@ -1088,39 +726,89 @@ fn system_time() -> Option<Timestamp> {
     Timestamp::try_from(seconds).ok()
 }
 
-fn reply(operation: &Operation, replay: bool, error: Option<ExecutorError>) -> SubmissionReply {
+/// W709 (pass 33, fix 2): what a submission reply and a status query need
+/// from a stored row: its operation, its state on the wire, and how to find
+/// it again. Each journal row type maps its own states here, once.
+trait ReplyRow: Sized {
+    fn operation_id(&self) -> &Id;
+    fn outcome(&self) -> OutcomeState;
+    /// Only a failed capture names a snapshot it could not claim.
+    fn unclaimed_snapshot_id(&self) -> Option<String> {
+        None
+    }
+    /// The stored row for `operation`, read through the executor.
+    fn stored(executor: &Executor, operation: &Id) -> Result<Option<Self>, ExecutorError>;
+}
+
+/// The reply for one stored row.
+fn row_reply<Row: ReplyRow>(
+    row: &Row,
+    replay: bool,
+    error: Option<ExecutorError>,
+) -> SubmissionReply {
     SubmissionReply {
         schema_version: 1,
-        operation_id: Some(operation.intent.operation_id.clone()),
-        state: Some(match operation.state {
+        operation_id: Some(row.operation_id().clone()),
+        state: Some(row.outcome()),
+        replay,
+        error: error.map(|error| error.code().to_owned()),
+        unclaimed_snapshot_id: row.unclaimed_snapshot_id(),
+    }
+}
+
+/// The wire state of the stored row for `operation`, if it is this kind.
+fn stored_outcome<Row: ReplyRow>(
+    executor: &Executor,
+    operation: &Id,
+) -> Result<Option<OutcomeState>, ExecutorError> {
+    Ok(Row::stored(executor, operation)?.map(|row| row.outcome()))
+}
+
+/// W522: the state of an operation recorded as one step: a retirement
+/// (D-080), a deletion (D-085), and the other one-step verbs.
+fn step_outcome(state: StepState) -> OutcomeState {
+    match state {
+        StepState::Intent => OutcomeState::Intent,
+        StepState::Done => OutcomeState::Succeeded,
+        StepState::Failed => OutcomeState::Failed,
+    }
+}
+
+impl ReplyRow for Operation {
+    fn operation_id(&self) -> &Id {
+        &self.intent.operation_id
+    }
+    fn outcome(&self) -> OutcomeState {
+        match self.state {
             RecordedState::Intent => OutcomeState::Intent,
             RecordedState::Succeeded => OutcomeState::Succeeded,
             RecordedState::Untouched => OutcomeState::Untouched,
             RecordedState::NeedsAttention => OutcomeState::NeedsAttention,
             RecordedState::Compensating => OutcomeState::Compensating,
             RecordedState::FailedCompensated => OutcomeState::FailedCompensated,
-        }),
-        replay,
-        error: error.map(|error| error.code().to_owned()),
-        unclaimed_snapshot_id: None,
+        }
+    }
+    fn stored(executor: &Executor, operation: &Id) -> Result<Option<Self>, ExecutorError> {
+        executor.status(operation)
     }
 }
 
 /// Probes reuse the reply states: passed is succeeded; a failed probe left
 /// nothing behind (untouched); leftover sandbox resources need attention.
-fn probe_reply(probe: &Probe, replay: bool, error: Option<ExecutorError>) -> SubmissionReply {
-    SubmissionReply {
-        schema_version: 1,
-        operation_id: Some(probe.intent.operation_id.clone()),
-        state: Some(match probe.state {
+impl ReplyRow for Probe {
+    fn operation_id(&self) -> &Id {
+        &self.intent.operation_id
+    }
+    fn outcome(&self) -> OutcomeState {
+        match self.state {
             ProbeState::Running => OutcomeState::Intent,
             ProbeState::Passed => OutcomeState::Succeeded,
             ProbeState::Failed => OutcomeState::Untouched,
             ProbeState::CleanupIncomplete => OutcomeState::NeedsAttention,
-        }),
-        replay,
-        error: error.map(|error| error.code().to_owned()),
-        unclaimed_snapshot_id: None,
+        }
+    }
+    fn stored(executor: &Executor, operation: &Id) -> Result<Option<Self>, ExecutorError> {
+        executor.probe_status(operation)
     }
 }
 
@@ -1130,206 +818,159 @@ fn probe_reply(probe: &Probe, replay: bool, error: Option<ExecutorError>) -> Sub
 /// `failed`, never `untouched`. Recovery records `failed` after a write that
 /// left store objects (W321, W376 cut 3), and the W366 settlement records it
 /// with an unclaimed snapshot, which the reply then names.
-fn capture_reply(capture: &Capture, replay: bool, error: Option<ExecutorError>) -> SubmissionReply {
-    let failed = capture.state == CaptureState::Failed;
-    SubmissionReply {
-        schema_version: 1,
-        operation_id: Some(capture.intent.operation_id.clone()),
-        state: Some(match capture.state {
+impl ReplyRow for Capture {
+    fn operation_id(&self) -> &Id {
+        &self.intent.operation_id
+    }
+    fn outcome(&self) -> OutcomeState {
+        match self.state {
             CaptureState::Running => OutcomeState::Intent,
             CaptureState::Succeeded => OutcomeState::Succeeded,
             CaptureState::Failed => OutcomeState::Failed,
-        }),
-        replay,
-        error: error.map(|error| error.code().to_owned()),
-        unclaimed_snapshot_id: capture.unclaimed_snapshot_id.clone().filter(|_| failed),
+        }
+    }
+    fn unclaimed_snapshot_id(&self) -> Option<String> {
+        self.unclaimed_snapshot_id
+            .clone()
+            .filter(|_| self.state == CaptureState::Failed)
+    }
+    fn stored(executor: &Executor, operation: &Id) -> Result<Option<Self>, ExecutorError> {
+        executor.capture_status(operation)
     }
 }
 
 /// W372: re-adoptions reuse the reply states: `verifying` is intent (not
 /// settled), `adopted` succeeded, and `refused` untouched (nothing but the
 /// row was recorded and nothing on the host changed).
-fn readopt_reply(row: &Readoption, replay: bool, error: Option<ExecutorError>) -> SubmissionReply {
-    SubmissionReply {
-        schema_version: 1,
-        operation_id: Some(row.intent.operation_id.clone()),
-        state: Some(match row.state {
+impl ReplyRow for Readoption {
+    fn operation_id(&self) -> &Id {
+        &self.intent.operation_id
+    }
+    fn outcome(&self) -> OutcomeState {
+        match self.state {
             ReadoptState::Verifying => OutcomeState::Intent,
             ReadoptState::Adopted => OutcomeState::Succeeded,
             ReadoptState::Refused => OutcomeState::Untouched,
-        }),
-        replay,
-        error: error.map(|error| error.code().to_owned()),
-        unclaimed_snapshot_id: None,
+        }
+    }
+    fn stored(executor: &Executor, operation: &Id) -> Result<Option<Self>, ExecutorError> {
+        executor.readoption_status(operation)
     }
 }
 
 /// W462: an issuance is `intent` until observed, then `succeeded` when its
 /// chain is installed, or `failed`.
-fn certificate_reply(
-    row: &rustiron_journal::Certificate,
-    replay: bool,
-    error: Option<ExecutorError>,
-) -> SubmissionReply {
-    SubmissionReply {
-        schema_version: 1,
-        operation_id: Some(row.intent.operation_id.clone()),
-        state: Some(match row.state {
-            rustiron_journal::CertificateState::Intent => OutcomeState::Intent,
-            rustiron_journal::CertificateState::Installed => OutcomeState::Succeeded,
-            rustiron_journal::CertificateState::Failed => OutcomeState::Failed,
-        }),
-        replay,
-        error: error.map(|error| error.code().to_owned()),
-        unclaimed_snapshot_id: None,
+fn certificate_outcome(state: CertificateState) -> OutcomeState {
+    match state {
+        CertificateState::Intent => OutcomeState::Intent,
+        CertificateState::Installed => OutcomeState::Succeeded,
+        CertificateState::Failed => OutcomeState::Failed,
     }
 }
 
-/// W459: a scrub is `intent` until observed, then `succeeded` or `failed`.
+impl ReplyRow for Certificate {
+    fn operation_id(&self) -> &Id {
+        &self.intent.operation_id
+    }
+    fn outcome(&self) -> OutcomeState {
+        certificate_outcome(self.state)
+    }
+    fn stored(executor: &Executor, operation: &Id) -> Result<Option<Self>, ExecutorError> {
+        executor.certificate_status(operation)
+    }
+}
+
+/// A renewal answers status under its renewal id, with the issuance states.
+impl ReplyRow for Renewal {
+    fn operation_id(&self) -> &Id {
+        &self.renewal_id
+    }
+    fn outcome(&self) -> OutcomeState {
+        certificate_outcome(self.state)
+    }
+    fn stored(executor: &Executor, operation: &Id) -> Result<Option<Self>, ExecutorError> {
+        executor.renewal_status(operation)
+    }
+}
+
 /// W515: an update's state: open, done, or rolled back to its predecessor.
-fn update_reply(
-    row: &rustiron_journal::SiteUpdate,
-    replay: bool,
-    error: Option<ExecutorError>,
-) -> SubmissionReply {
-    SubmissionReply {
-        schema_version: 1,
-        operation_id: Some(row.operation_id.clone()),
-        state: Some(match row.state {
-            rustiron_journal::UpdateState::Intent => OutcomeState::Intent,
-            rustiron_journal::UpdateState::Done => OutcomeState::Succeeded,
-            rustiron_journal::UpdateState::RolledBack => OutcomeState::FailedCompensated,
-        }),
-        replay,
-        error: error.map(|error| error.code().to_owned()),
-        unclaimed_snapshot_id: None,
+impl ReplyRow for SiteUpdate {
+    fn operation_id(&self) -> &Id {
+        &self.operation_id
+    }
+    fn outcome(&self) -> OutcomeState {
+        match self.state {
+            UpdateState::Intent => OutcomeState::Intent,
+            UpdateState::Done => OutcomeState::Succeeded,
+            UpdateState::RolledBack => OutcomeState::FailedCompensated,
+        }
+    }
+    fn stored(executor: &Executor, operation: &Id) -> Result<Option<Self>, ExecutorError> {
+        executor.update_status(operation)
     }
 }
 
 /// W598 (D-099): an `app_deploy` release's state: open, done, or rolled back.
-fn app_release_reply(
-    row: &rustiron_journal::AppRelease,
-    replay: bool,
-    error: Option<ExecutorError>,
-) -> SubmissionReply {
-    SubmissionReply {
-        schema_version: 1,
-        operation_id: Some(row.operation_id.clone()),
-        state: Some(match row.state {
-            rustiron_journal::AppReleaseState::Intent => OutcomeState::Intent,
-            rustiron_journal::AppReleaseState::Done => OutcomeState::Succeeded,
-            rustiron_journal::AppReleaseState::RolledBack => OutcomeState::FailedCompensated,
-        }),
-        replay,
-        error: error.map(|error| error.code().to_owned()),
-        unclaimed_snapshot_id: None,
+impl ReplyRow for AppRelease {
+    fn operation_id(&self) -> &Id {
+        &self.operation_id
+    }
+    fn outcome(&self) -> OutcomeState {
+        match self.state {
+            AppReleaseState::Intent => OutcomeState::Intent,
+            AppReleaseState::Done => OutcomeState::Succeeded,
+            AppReleaseState::RolledBack => OutcomeState::FailedCompensated,
+        }
+    }
+    fn stored(executor: &Executor, operation: &Id) -> Result<Option<Self>, ExecutorError> {
+        executor.app_release_status(operation)
     }
 }
 
 /// W543: an open restore is `intent`, also after a failed step (the reply
 /// then carries the step's error); a reverted one is `failed_compensated`.
-fn restore_reply(
-    row: &rustiron_journal::SiteRestore,
-    replay: bool,
-    error: Option<ExecutorError>,
-) -> SubmissionReply {
-    SubmissionReply {
-        schema_version: 1,
-        operation_id: Some(row.operation_id.clone()),
-        state: Some(match row.state {
-            rustiron_journal::RestoreState::Intent => OutcomeState::Intent,
-            rustiron_journal::RestoreState::Done => OutcomeState::Succeeded,
-            rustiron_journal::RestoreState::Reverted => OutcomeState::FailedCompensated,
-        }),
-        replay,
-        error: error.map(|error| error.code().to_owned()),
-        unclaimed_snapshot_id: None,
+impl ReplyRow for SiteRestore {
+    fn operation_id(&self) -> &Id {
+        &self.operation_id
+    }
+    fn outcome(&self) -> OutcomeState {
+        match self.state {
+            RestoreState::Intent => OutcomeState::Intent,
+            RestoreState::Done => OutcomeState::Succeeded,
+            RestoreState::Reverted => OutcomeState::FailedCompensated,
+        }
+    }
+    fn stored(executor: &Executor, operation: &Id) -> Result<Option<Self>, ExecutorError> {
+        executor.site_restore_status(operation)
     }
 }
 
-fn retire_reply(
-    row: &rustiron_journal::Retirement,
-    replay: bool,
-    error: Option<ExecutorError>,
-) -> SubmissionReply {
-    step_reply(&row.operation_id, row.state, replay, error)
-}
-
-/// W522: the reply for an operation recorded as one step: a retirement
-/// (D-080) or a deletion (D-085).
-fn step_reply(
-    operation_id: &rustiron_contracts::Id,
-    state: rustiron_journal::StepState,
-    replay: bool,
-    error: Option<ExecutorError>,
-) -> SubmissionReply {
-    SubmissionReply {
-        schema_version: 1,
-        operation_id: Some(operation_id.clone()),
-        state: Some(match state {
-            rustiron_journal::StepState::Intent => OutcomeState::Intent,
-            rustiron_journal::StepState::Done => OutcomeState::Succeeded,
-            rustiron_journal::StepState::Failed => OutcomeState::Failed,
-        }),
-        replay,
-        error: error.map(|error| error.code().to_owned()),
-        unclaimed_snapshot_id: None,
+impl ReplyRow for CredentialRotation {
+    fn operation_id(&self) -> &Id {
+        &self.operation_id
     }
-}
-
-fn credential_rotate_reply(
-    row: &rustiron_journal::CredentialRotation,
-    replay: bool,
-    error: Option<ExecutorError>,
-) -> SubmissionReply {
-    SubmissionReply {
-        schema_version: 1,
-        operation_id: Some(row.operation_id.clone()),
-        state: Some(match row.state {
-            rustiron_journal::CredentialRotateState::Intent => OutcomeState::Intent,
-            rustiron_journal::CredentialRotateState::Done => OutcomeState::Succeeded,
-            rustiron_journal::CredentialRotateState::FailedCompensated => {
-                OutcomeState::FailedCompensated
-            }
-            rustiron_journal::CredentialRotateState::NeedsAttention => OutcomeState::NeedsAttention,
-            rustiron_journal::CredentialRotateState::Failed => OutcomeState::Failed,
-        }),
-        replay,
-        error: error.map(|error| error.code().to_owned()),
-        unclaimed_snapshot_id: None,
+    fn outcome(&self) -> OutcomeState {
+        match self.state {
+            CredentialRotateState::Intent => OutcomeState::Intent,
+            CredentialRotateState::Done => OutcomeState::Succeeded,
+            CredentialRotateState::FailedCompensated => OutcomeState::FailedCompensated,
+            CredentialRotateState::NeedsAttention => OutcomeState::NeedsAttention,
+            CredentialRotateState::Failed => OutcomeState::Failed,
+        }
     }
-}
-
-fn scrub_reply(
-    scrub: &rustiron_journal::ImportScrub,
-    replay: bool,
-    error: Option<ExecutorError>,
-) -> SubmissionReply {
-    SubmissionReply {
-        schema_version: 1,
-        operation_id: Some(scrub.operation_id.clone()),
-        state: Some(match scrub.state {
-            rustiron_journal::StepState::Intent => OutcomeState::Intent,
-            rustiron_journal::StepState::Done => OutcomeState::Succeeded,
-            rustiron_journal::StepState::Failed => OutcomeState::Failed,
-        }),
-        replay,
-        error: error.map(|error| error.code().to_owned()),
-        unclaimed_snapshot_id: None,
+    fn stored(executor: &Executor, operation: &Id) -> Result<Option<Self>, ExecutorError> {
+        executor.credential_rotation_status(operation)
     }
 }
 
 /// A quarantined provision is a known stop with resources kept. It is not
 /// the uncertain `needs_attention` state used after an OLS activation fault.
-fn provision_reply(
-    provision: &Provision,
-    replay: bool,
-    error: Option<ExecutorError>,
-) -> SubmissionReply {
-    SubmissionReply {
-        schema_version: 1,
-        operation_id: Some(provision.intent.operation_id.clone()),
-        state: Some(match provision.state {
+impl ReplyRow for Provision {
+    fn operation_id(&self) -> &Id {
+        &self.intent.operation_id
+    }
+    fn outcome(&self) -> OutcomeState {
+        match self.state {
             ProvisionState::Running => OutcomeState::Intent,
             ProvisionState::Succeeded => OutcomeState::Succeeded,
             ProvisionState::Quarantined => OutcomeState::Quarantined,
@@ -1337,11 +978,39 @@ fn provision_reply(
             // D-085: the provision itself succeeded; a later deletion
             // has its own operation and status.
             ProvisionState::Deleted => OutcomeState::Succeeded,
-        }),
-        replay,
-        error: error.map(|error| error.code().to_owned()),
-        unclaimed_snapshot_id: None,
+        }
     }
+    fn stored(executor: &Executor, operation: &Id) -> Result<Option<Self>, ExecutorError> {
+        executor.provision_status(operation)
+    }
+}
+
+/// The one-step rows: each replies [`step_outcome`] of its state.
+macro_rules! step_rows {
+    ($($row:ty => $status:ident),+ $(,)?) => {$(
+        impl ReplyRow for $row {
+            fn operation_id(&self) -> &Id {
+                &self.operation_id
+            }
+            fn outcome(&self) -> OutcomeState {
+                step_outcome(self.state)
+            }
+            fn stored(executor: &Executor, operation: &Id) -> Result<Option<Self>, ExecutorError> {
+                executor.$status(operation)
+            }
+        }
+    )+};
+}
+
+step_rows! {
+    Retirement => retirement_status,
+    Deletion => deletion_status,
+    QuotaChange => quota_change_status,
+    CloneScrubGrant => clone_scrub_status,
+    DnsImport => dns_import_status,
+    DnsChange => dns_change_status,
+    AppLifecycle => app_lifecycle_status,
+    ImportScrub => scrub_status,
 }
 
 pub(crate) fn error_reply(operation_id: Option<Id>, error: ExecutorError) -> SubmissionReply {
@@ -1366,7 +1035,7 @@ mod tests {
         Capture, CaptureIntent, CaptureState, Provision, ProvisionIntent, ProvisionState,
     };
 
-    use super::{capture_reply, provision_reply, restore_reply};
+    use super::row_reply;
     use crate::ExecutorError;
 
     /// W544-F1: a restore's reply and status: open (also after a failed
@@ -1388,7 +1057,7 @@ mod tests {
             attempts: Vec::new(),
             state: RestoreState::Intent,
         };
-        let failed = restore_reply(&row, false, Some(ExecutorError::StepFailed));
+        let failed = row_reply(&row, false, Some(ExecutorError::StepFailed));
         assert_eq!(failed.state, Some(OutcomeState::Intent));
         assert_eq!(
             failed.error.as_deref(),
@@ -1396,12 +1065,12 @@ mod tests {
         );
         row.state = RestoreState::Done;
         assert_eq!(
-            restore_reply(&row, true, None).state,
+            row_reply(&row, true, None).state,
             Some(OutcomeState::Succeeded)
         );
         row.state = RestoreState::Reverted;
         assert_eq!(
-            restore_reply(&row, false, None).state,
+            row_reply(&row, false, None).state,
             Some(OutcomeState::FailedCompensated)
         );
     }
@@ -1442,7 +1111,7 @@ mod tests {
 
     #[test]
     fn an_uncertain_capture_left_running_replies_intent_with_its_error() {
-        let reply = capture_reply(
+        let reply = row_reply(
             &capture(CaptureState::Running),
             false,
             Some(ExecutorError::StepFailed),
@@ -1460,7 +1129,7 @@ mod tests {
     /// with an unclaimed snapshot in the store.
     #[test]
     fn a_recorded_failure_replies_failed_and_never_untouched() {
-        let failed = capture_reply(
+        let failed = row_reply(
             &capture(CaptureState::Failed),
             false,
             Some(ExecutorError::StepFailed),
@@ -1469,7 +1138,7 @@ mod tests {
         assert_eq!(failed.unclaimed_snapshot_id, None);
         assert_eq!(failed.exit_code(), 5);
         let snapshot = "c".repeat(64);
-        let settled = capture_reply(
+        let settled = row_reply(
             &Capture {
                 unclaimed_snapshot_id: Some(snapshot.clone()),
                 ..capture(CaptureState::Failed)
@@ -1483,10 +1152,10 @@ mod tests {
             serde_json::to_value(&settled).unwrap()["unclaimed_snapshot_id"],
             "c".repeat(64)
         );
-        let done = capture_reply(&capture(CaptureState::Succeeded), true, None);
+        let done = row_reply(&capture(CaptureState::Succeeded), true, None);
         assert_eq!(done.state, Some(OutcomeState::Succeeded));
         assert_eq!(done.unclaimed_snapshot_id, None);
-        let running = capture_reply(&capture(CaptureState::Running), false, None);
+        let running = row_reply(&capture(CaptureState::Running), false, None);
         assert_eq!(running.state, Some(OutcomeState::Intent));
         assert!(
             serde_json::to_value(&running)
@@ -1518,7 +1187,7 @@ mod tests {
             state: ProvisionState::Quarantined,
             steps: Vec::new(),
         };
-        let reply = provision_reply(&provision, false, Some(ExecutorError::StepFailed));
+        let reply = row_reply(&provision, false, Some(ExecutorError::StepFailed));
         assert_eq!(reply.state, Some(OutcomeState::Quarantined));
         assert_ne!(reply.state, Some(OutcomeState::NeedsAttention));
         assert_eq!(
@@ -1547,18 +1216,117 @@ mod tests {
             state: rustiron_journal::AppReleaseState::Intent,
         };
         assert_eq!(
-            super::app_release_reply(&row, false, None).state,
+            row_reply(&row, false, None).state,
             Some(OutcomeState::Intent)
         );
         row.state = rustiron_journal::AppReleaseState::Done;
         assert_eq!(
-            super::app_release_reply(&row, false, None).state,
+            row_reply(&row, false, None).state,
             Some(OutcomeState::Succeeded)
         );
         row.state = rustiron_journal::AppReleaseState::RolledBack;
         assert_eq!(
-            super::app_release_reply(&row, false, None).state,
+            row_reply(&row, false, None).state,
             Some(OutcomeState::FailedCompensated)
         );
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::{Route, route};
+    use rustiron_contracts::approval::{
+        AppDeployPlan, AppLifecyclePlan, AppProvisionPlan, CapturePlan, CertificatePlan,
+        CloneScrubPlan, CredentialRotatePlan, DeletePlan, DnsChangePlan, DnsImportPlan, EjectPlan,
+        ImportPlan, OlsPlan, ProbePlan, ProductBackupPlan, ProductBackupTarget, ProxyPlan,
+        QuotaPlan, ReadoptPlan, RestorePlan, RetirePlan, ScrubPlan, SiteClonePlan, SitePlan,
+        SiteUpdatePlan, StandingCapturePlan,
+    };
+    use std::path::{Path, PathBuf};
+
+    /// One decoder of the old chain and the route it chose.
+    type Accepts = (fn(&[u8]) -> bool, Route);
+
+    /// The W686 trial-decode order, kept as the characterization oracle.
+    fn trial_route(plan: &[u8]) -> Route {
+        let product = cfg!(rustiron_profile = "product");
+        if SiteClonePlan::decode(plan).is_ok() {
+            return Route::SiteClone;
+        }
+        if product && StandingCapturePlan::decode(plan).is_ok() {
+            return Route::StandingCapture;
+        }
+        if product && let Ok(plan) = ProductBackupPlan::decode(plan) {
+            return match plan.target() {
+                ProductBackupTarget::BackupCapture { .. } => Route::ProductCapture,
+                ProductBackupTarget::RestoreProbe { .. } => Route::ProductProbe,
+            };
+        }
+        let checks: [Accepts; 22] = [
+            (|p| ProbePlan::decode(p).is_ok(), Route::Probe),
+            (|p| CapturePlan::decode(p).is_ok(), Route::Capture),
+            (|p| ReadoptPlan::decode(p).is_ok(), Route::Readopt),
+            (|p| EjectPlan::decode(p).is_ok(), Route::Eject),
+            (|p| OlsPlan::decode(p).is_ok(), Route::Ols),
+            (|p| CertificatePlan::decode(p).is_ok(), Route::Certificate),
+            (|p| SiteUpdatePlan::decode(p).is_ok(), Route::SiteUpdate),
+            (|p| RetirePlan::decode(p).is_ok(), Route::Retire),
+            (|p| QuotaPlan::decode(p).is_ok(), Route::Quota),
+            (
+                |p| CredentialRotatePlan::decode(p).is_ok(),
+                Route::CredentialRotate,
+            ),
+            (|p| RestorePlan::decode(p).is_ok(), Route::Restore),
+            (|p| DnsChangePlan::decode(p).is_ok(), Route::DnsChange),
+            (|p| DnsImportPlan::decode(p).is_ok(), Route::DnsImport),
+            (|p| CloneScrubPlan::decode(p).is_ok(), Route::CloneScrub),
+            (|p| DeletePlan::decode(p).is_ok(), Route::Delete),
+            (|p| ScrubPlan::decode(p).is_ok(), Route::Scrub),
+            (|p| ProxyPlan::decode(p).is_ok(), Route::Proxy),
+            (|p| AppProvisionPlan::decode(p).is_ok(), Route::AppProvision),
+            (|p| AppDeployPlan::decode(p).is_ok(), Route::AppDeploy),
+            (|p| AppLifecyclePlan::decode(p).is_ok(), Route::AppLifecycle),
+            (|p| ImportPlan::decode(p).is_ok(), Route::Import),
+            (|p| SitePlan::decode(p).is_ok(), Route::Provision),
+        ];
+        checks
+            .iter()
+            .find(|(accepts, _)| accepts(plan))
+            .map_or(Route::Generic, |&(_, route)| route)
+    }
+
+    fn json_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                json_files(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "json") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// W688: routing by the validated kind sends every recorded plan where the
+    /// old trial chain did.
+    #[test]
+    fn kind_routing_matches_the_trial_chain_for_every_fixture_plan() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = Vec::new();
+        for dir in ["docs/validation", "crates", "fuzz"] {
+            json_files(&root.join(dir), &mut files);
+        }
+        let mut routed = 0;
+        for file in &files {
+            let bytes = std::fs::read(file).unwrap();
+            let expected = trial_route(&bytes);
+            assert_eq!(route(&bytes), expected, "{}", file.display());
+            if expected != Route::Generic {
+                routed += 1;
+            }
+        }
+        assert!(routed >= 18, "only {routed} fixture plans were routed");
     }
 }

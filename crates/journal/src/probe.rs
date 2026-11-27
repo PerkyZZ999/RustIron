@@ -9,7 +9,7 @@ use rustiron_contracts::{
     approval::{Sha256Digest, SiteId, SnapshotId},
 };
 
-use crate::{FixtureJournal, JournalError, storage};
+use crate::{Admitted, FixtureJournal, JournalError, storage};
 
 const MAX_PROBES: i64 = 1000;
 
@@ -72,15 +72,6 @@ pub struct Probe {
     pub backup_policy_digest: Option<Sha256Digest>,
 }
 
-/// New durable probe, or status of an exact earlier one.
-#[derive(Debug, Eq, PartialEq)]
-pub enum ProbeResult {
-    /// Intent committed; nonce consumed.
-    New(Probe),
-    /// Status only; never permission to probe again.
-    Existing(Probe),
-}
-
 impl FixtureJournal {
     /// Records a probe intent (with its probe account) in one transaction,
     /// or returns exact status. One probe runs at a time.
@@ -90,7 +81,7 @@ impl FixtureJournal {
         intent: &ProbeIntent,
         now: Timestamp,
         backup_policy_digest: &Sha256Digest,
-    ) -> Result<ProbeResult, JournalError> {
+    ) -> Result<Admitted<Probe>, JournalError> {
         let signed = self.take_signed(&crate::signed::Expected {
             plan_digest: &intent.plan_digest,
             grant_digest: &intent.grant_digest,
@@ -113,7 +104,7 @@ impl FixtureJournal {
             intent.idempotency_key.as_str(),
         )? {
             return if existing.intent == *intent {
-                Ok(ProbeResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(JournalError::Conflict)
             };
@@ -191,7 +182,7 @@ impl FixtureJournal {
         crate::signed::insert(&transaction, &intent.operation_id, signed.as_ref())?;
         storage::set_clock(&transaction, now)?;
         transaction.commit().map_err(storage::unavailable)?;
-        Ok(ProbeResult::New(Probe {
+        Ok(Admitted::New(Probe {
             intent: intent.clone(),
             started_at: now,
             state: ProbeState::Running,

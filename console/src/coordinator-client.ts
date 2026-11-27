@@ -5,6 +5,8 @@ import { lstat, realpath } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { dirname, isAbsolute } from "node:path";
 
+import { z } from "zod";
+
 export const MAX_REQUEST_BYTES = 262_144;
 export const MAX_RESPONSE_BYTES = 1_048_576;
 export const MAX_SIGNATURE_BYTES = 16_384;
@@ -29,19 +31,29 @@ export type CoordinatorErrorCode =
   | "RESPONSE_TOO_LARGE"
   | "INVALID_RESPONSE";
 
-export type CoordinatorWireResponse = {
-  schema_version: 1;
-  request_id: string | null;
-  status: "ok" | "error";
-  data: { kind: string; value: unknown } | null;
-  error: {
-    code: string;
-    message: string;
-    retryable: boolean;
-    operation_id: string | null;
-    details: string[];
-  } | null;
-};
+/** W681: mirrors `ApiError` (crates/contracts/src/error.rs); unknown fields are refused. */
+const wireError = z.strictObject({
+  code: z.string(),
+  message: z.string(),
+  retryable: z.boolean(),
+  operation_id: z.string().nullable(),
+  details: z.array(z.string()),
+});
+
+const envelope = { schema_version: z.literal(1), request_id: z.string().nullable() };
+
+/** W681: mirrors `OutgoingResponse` (crates/contracts/src/codec.rs): `status` picks the filled slot. */
+const wireResponse = z.discriminatedUnion("status", [
+  z.strictObject({
+    ...envelope,
+    status: z.literal("ok"),
+    data: z.strictObject({ kind: z.string(), value: z.unknown() }),
+    error: z.null(),
+  }),
+  z.strictObject({ ...envelope, status: z.literal("error"), data: z.null(), error: wireError }),
+]);
+
+export type CoordinatorWireResponse = z.infer<typeof wireResponse>;
 
 export type CoordinatorResult =
   | { ok: true; response: CoordinatorWireResponse }
@@ -104,38 +116,19 @@ async function checkSocketPath(socketPath: string): Promise<CoordinatorErrorCode
   }
 }
 
-function isPresent(value: unknown): boolean {
-  return value !== undefined && value !== null;
-}
-
-function hasValidWireEnvelope(
-  parsed: Partial<CoordinatorWireResponse>,
-  expectedRequestId?: string,
-): boolean {
-  if (parsed.schema_version !== 1) return false;
-  if (expectedRequestId && parsed.request_id !== expectedRequestId) return false;
-  const hasData = isPresent(parsed.data);
-  const hasError = isPresent(parsed.error);
-  return (
-    (parsed.status === "ok" && hasData && !hasError) ||
-    (parsed.status === "error" && hasError && !hasData)
-  );
-}
-
 function parseWireResponse(payload: Buffer, expectedRequestId?: string): CoordinatorResult {
+  let raw: unknown;
   try {
-    const parsed = JSON.parse(payload.toString("utf8")) as Partial<CoordinatorWireResponse> | null;
-    if (
-      typeof parsed !== "object" ||
-      parsed === null ||
-      !hasValidWireEnvelope(parsed, expectedRequestId)
-    ) {
-      return { ok: false, code: "INVALID_RESPONSE" };
-    }
-    return { ok: true, response: parsed as CoordinatorWireResponse };
+    raw = JSON.parse(payload.toString("utf8"));
   } catch {
     return { ok: false, code: "INVALID_RESPONSE" };
   }
+  const parsed = wireResponse.safeParse(raw);
+  if (!parsed.success) return { ok: false, code: "INVALID_RESPONSE" };
+  if (expectedRequestId && parsed.data.request_id !== expectedRequestId) {
+    return { ok: false, code: "INVALID_RESPONSE" };
+  }
+  return { ok: true, response: parsed.data };
 }
 
 function sendFramedPayload(

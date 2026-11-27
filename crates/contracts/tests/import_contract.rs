@@ -319,7 +319,8 @@ fn schema_two_signs_a_different_source_hostname() {
     let plan = rename(2, json!("blog1.example.org")).unwrap();
     assert_eq!(plan.hostname().as_str(), "blog1.example.test");
     assert_eq!(
-        plan.source_hostname().map(|h| h.as_str()),
+        plan.source_hostname()
+            .map(rustiron_contracts::approval::Hostname::as_str),
         Some("blog1.example.org")
     );
     assert_ne!(plan.digest().as_str(), PLAN_DIGEST);
@@ -352,7 +353,8 @@ fn schema_three_binds_one_exact_static_alias() {
     let plan = ImportPlan::decode(ALIAS_PLAN).unwrap();
     assert!(plan.is_static());
     assert_eq!(
-        plan.alias_hostname().map(|hostname| hostname.as_str()),
+        plan.alias_hostname()
+            .map(rustiron_contracts::approval::Hostname::as_str),
         Some("alternate.example.test")
     );
     assert_eq!(

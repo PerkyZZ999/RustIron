@@ -1,12 +1,11 @@
 //! D-088 (W535): admission of a signed `site_quota` change and its effect.
 
-use rustiron_journal::{QuotaChange, QuotaChangeResult, StepState};
-
-use super::{Executor, signed_inputs};
+use super::Executor;
 use crate::{
     AdmissionRequest, ExecutorError,
     admin_helper::{self, AdminRequest, AdminStep},
 };
+use rustiron_journal::{Admitted, QuotaChange, StepState};
 
 impl Executor {
     /// Admits one signed change of a site's hard quota limits, then asks the
@@ -18,51 +17,50 @@ impl Executor {
     pub fn change_quota(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<QuotaChangeResult, ExecutorError> {
+    ) -> Result<Admitted<QuotaChange>, ExecutorError> {
         let intent = crate::verified_quota(&self.anchor, request)?;
-        self.check_identity(&intent.host_id, &intent.host_epoch)?;
-        let now = request.now.ok_or(ExecutorError::TimeDenied)?;
-        if self
-            .journal
-            .quota_change_status(&intent.operation_id)?
-            .is_none()
-        {
-            let owned = self
-                .journal
-                .provision_for_site(&intent.site_id)?
-                .is_some_and(|provision| provision.state.is_owned());
-            if !owned || self.journal.ejected_sites()?.contains(&intent.site_id) {
-                return Err(ExecutorError::PreconditionChanged);
+        let change = match self.admit_signed(
+            request,
+            (&intent.host_id, &intent.host_epoch),
+            |journal| Ok(journal.quota_change_status(&intent.operation_id)?.is_some()),
+            |executor, _now| {
+                let owned = executor
+                    .journal
+                    .provision_for_site(&intent.site_id)?
+                    .is_some_and(|provision| provision.state.is_owned());
+                if !owned || executor.journal.ejected_sites()?.contains(&intent.site_id) {
+                    return Err(ExecutorError::PreconditionChanged);
+                }
+                // The enrolled cap bounds every site; without one, the host
+                // enforces no quota and there is nothing to change.
+                let cap = crate::policy::load(
+                    &crate::files::open_trusted_directory(
+                        &executor.anchor.policy_dir,
+                        executor.anchor.owner_uid,
+                    )?,
+                    executor.anchor.owner_uid,
+                )?
+                .policy
+                .provisioning
+                .and_then(|provisioning| provisioning.quota)
+                .ok_or(ExecutorError::QuotaUnavailable)?;
+                if intent.block_hard_kib > cap.block_hard_kib || intent.inode_hard > cap.inode_hard
+                {
+                    return Err(ExecutorError::PreconditionChanged);
+                }
+                if executor.anchor.admin_socket.is_none() {
+                    return Err(ExecutorError::Unavailable);
+                }
+                Ok(())
+            },
+            |journal, now| journal.record_quota_change(&intent, now),
+        )? {
+            Admitted::Existing(existing) => {
+                return Ok(Admitted::Existing(existing));
             }
-            // The enrolled cap bounds every site; without one, the host
-            // enforces no quota and there is nothing to change.
-            let cap = crate::policy::load(
-                &crate::files::open_trusted_directory(
-                    &self.anchor.policy_dir,
-                    self.anchor.owner_uid,
-                )?,
-                self.anchor.owner_uid,
-            )?
-            .policy
-            .provisioning
-            .and_then(|provisioning| provisioning.quota)
-            .ok_or(ExecutorError::QuotaUnavailable)?;
-            if intent.block_hard_kib > cap.block_hard_kib || intent.inode_hard > cap.inode_hard {
-                return Err(ExecutorError::PreconditionChanged);
-            }
-            if self.anchor.admin_socket.is_none() {
-                return Err(ExecutorError::Unavailable);
-            }
-        }
-        let change = match self.admit(signed_inputs(request)?, |journal| {
-            journal.record_quota_change(&intent, now)
-        })? {
-            QuotaChangeResult::Existing(existing) => {
-                return Ok(QuotaChangeResult::Existing(existing));
-            }
-            QuotaChangeResult::New(change) => change,
+            Admitted::New(change) => change,
         };
-        Ok(QuotaChangeResult::New(self.run_quota_change(&change)?))
+        Ok(Admitted::New(self.run_quota_change(&change)?))
     }
 
     /// Asks the admin helper to set the open change's limits and records the
@@ -75,7 +73,7 @@ impl Executor {
         let outcome = admin_helper::route(
             self.anchor.admin_socket.as_deref(),
             &AdminRequest {
-                operation_id: provision.intent.operation_id.clone(),
+                operation_id: provision.intent.operation_id,
                 step: AdminStep::SiteQuotaSet,
             },
             || {

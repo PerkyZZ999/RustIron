@@ -2118,7 +2118,10 @@ impl Helper {
     }
 
     /// Runs the provision step the journal records as current.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is one journaled fact of the step; a struct would only rename them"
+    )]
     fn provision_step(
         &mut self,
         action: &AdminAction,
@@ -2137,8 +2140,9 @@ impl Helper {
         // W598 (D-099) & W658 (D-102 C2): a modern app site, known from its journaled app row.
         if let Some(facts) = app {
             let app_db = app_fullstack
-                .map(|s| s.database)
-                .unwrap_or(rustiron_contracts::approval::AppDatabase::Sqlite);
+                .map_or(rustiron_contracts::approval::AppDatabase::Sqlite, |s| {
+                    s.database
+                });
             let operation = &provision.intent.operation_id;
             return match last.step {
                 step if crate::app_site::skips(step, app_db) => Err(ExecutorError::BindingDenied),
@@ -2342,7 +2346,10 @@ pub fn product_capture_effects_for(
 
 /// W658 (D-102 C2): as [`product_capture_effects_for`] with explicit modern app
 /// database engine selection (`none`/`sqlite`/`mariadb`/`postgresql_18`).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is one journaled fact of the step; a struct would only rename them"
+)]
 pub fn product_capture_effects_for_app_db(
     anchor: &TrustAnchor,
     policy: &rustiron_contracts::approval::ProductBackupPolicy,
@@ -2624,9 +2631,8 @@ pub fn serve_helper(
             }
         });
         let result = loop {
-            let mut stream = match listener.accept() {
-                Ok((stream, _)) => stream,
-                Err(_) => break Err(ExecutorError::Unavailable),
+            let Ok((mut stream, _)) = listener.accept() else {
+                break Err(ExecutorError::Unavailable);
             };
             let taken = reading
                 .fetch_add(1, Ordering::AcqRel)

@@ -13,7 +13,7 @@ use rustiron_contracts::{
     approval::{ReadoptForm, ReadoptPlan, SiteId},
 };
 use rustiron_journal::{
-    ProvisionStep, ReadoptOutcome, ReadoptResult, ReadoptState, Readoption, ReadoptionIntent,
+    Admitted, ProvisionStep, ReadoptOutcome, ReadoptState, Readoption, ReadoptionIntent,
     SiteAdoption,
 };
 
@@ -59,7 +59,7 @@ impl Executor {
     pub fn readopt(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<ReadoptResult, ExecutorError> {
+    ) -> Result<Admitted<Readoption>, ExecutorError> {
         let (plan, grant, enrolled) = verified_readopt(&self.anchor, request)?;
         self.check_enrolled_identity(&enrolled)?;
         let digests = (plan.digest(), grant_digest(grant.as_bytes()));
@@ -68,7 +68,7 @@ impl Executor {
                 && existing.intent.plan_digest == digests.0
                 && existing.intent.grant_digest == digests.1
             {
-                Ok(ReadoptResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(ExecutorError::ReplayDenied)
             };
@@ -82,7 +82,7 @@ impl Executor {
             plan_digest: digests.0,
             grant_digest: digests.1,
             host_id: enrolled.host_id.clone(),
-            host_epoch: enrolled.host_epoch.clone(),
+            host_epoch: enrolled.host_epoch,
             form: plan.form(),
             site: plan
                 .site()
@@ -97,12 +97,12 @@ impl Executor {
         match self.admit(signed_inputs(request)?, |journal| {
             journal.record_readoption(&intent, now)
         })? {
-            ReadoptResult::Existing(existing) => return Ok(ReadoptResult::Existing(existing)),
-            ReadoptResult::New(_) => {}
+            Admitted::Existing(existing) => return Ok(Admitted::Existing(existing)),
+            Admitted::New(_) => {}
         }
         self.fault(Fault::AfterReadoptIntent)?;
         self.verify_readoption(&request.operation_id)
-            .map(ReadoptResult::New)
+            .map(Admitted::New)
     }
 
     /// Re-adoption status only.
@@ -260,14 +260,11 @@ impl Executor {
             return Err(ExecutorError::BindingDenied);
         }
         let layout = SiteLayout::derive(site);
-        let input = match self.site_input(operation_id, &layout)? {
-            Some(input) => input,
-            None => {
-                return Ok(Decision {
-                    facts: "{\"observation\":\"refused\"}".to_owned(),
-                    verdict: Err(Rule::Observation),
-                });
-            }
+        let Some(input) = self.site_input(operation_id, &layout)? else {
+            return Ok(Decision {
+                facts: "{\"observation\":\"refused\"}".to_owned(),
+                verdict: Err(Rule::Observation),
+            });
         };
         let (uids, categories) = self.recorded_allocations()?;
         let verdict = readopt::judge_site(

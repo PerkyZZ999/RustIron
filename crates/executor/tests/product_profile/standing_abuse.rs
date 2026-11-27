@@ -156,9 +156,9 @@ fn w394_standing_run_abuse_is_refused_before_any_record() {
 
     // The run under test: grant G2, site blog13, window 0.
     let (plan2, grant2) = second(&["blog13"], |_, _| {});
-    let valid = m.sign(&plan2, grant2.clone());
+    let valid = m.sign(&plan2, grant2);
     let target = run(&valid, "blog13", 0);
-    let (operation, key) = (target.operation_id.clone(), target.idempotency_key.clone());
+    let (operation, key) = (target.operation_id.clone(), target.idempotency_key);
 
     // A tampered signature over the exact grant bytes.
     let mut tampered = copy(&valid);

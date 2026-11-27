@@ -4,6 +4,12 @@
 //! P01 migration dry run (W456, W591).
 //! No signing, admission, network or execution; the plan is untrusted input
 //! and every displayed value has passed the closed contract decoders.
+#![warn(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "W672: production code returns errors; tests may unwrap (clippy.toml)"
+)]
 
 mod file_input;
 mod migration_plan;

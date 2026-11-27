@@ -5,13 +5,17 @@
 // stale-grant refusal, digest matching, and truthful ApplyOutcome reporting.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
+import { z } from "zod";
+
 import { checkD090Request, jsonReply } from "./backend-server";
 import {
+  type CoordinatorWireResponse,
   isValidOpaqueId,
   MAX_REQUEST_BYTES,
   MAX_SIGNATURE_BYTES,
   sendCoordinatorApply,
 } from "./coordinator-client";
+import { parseBody } from "./request-body";
 import { PLAN_DOMAIN } from "./signed";
 
 export type PlanReviewSummary = {
@@ -230,8 +234,21 @@ async function readBoundedJson(
   return { ok: true, data: parsed };
 }
 
-function strField(data: Record<string, unknown>, key: string): string {
-  return typeof data[key] === "string" ? data[key] : "";
+const REQUEST_REFUSAL = { error: "INVALID_REQUEST" };
+
+/** W681: plan and grant stay raw strings; the Rust decoder is their only authority. */
+const reviewBody = z.strictObject({ plan_json: z.string(), grant_json: z.string() });
+
+const applyBody = reviewBody.extend({
+  operation_id: z.string(),
+  idempotency_key: z.string(),
+  signature_text: z.string(),
+});
+
+async function readWriteBody<T>(request: Request, schema: z.ZodType<T>): Promise<T | Response> {
+  const body = await readBoundedJson(request);
+  if (!body.ok) return body.response;
+  return parseBody(schema, body.data, REQUEST_REFUSAL);
 }
 
 function checkReviewValidity(summary: PlanReviewSummary | null): Response | null {
@@ -242,7 +259,7 @@ function checkReviewValidity(summary: PlanReviewSummary | null): Response | null
 }
 
 function validateApplyPayload(
-  data: Record<string, unknown>,
+  data: z.infer<typeof applyBody>,
   nowSec: number,
 ):
   | {
@@ -254,11 +271,13 @@ function validateApplyPayload(
       signatureText: string;
     }
   | { ok: false; response: Response } {
-  const operationId = strField(data, "operation_id");
-  const idempotencyKey = strField(data, "idempotency_key");
-  const planRaw = strField(data, "plan_json");
-  const grantRaw = strField(data, "grant_json");
-  const signatureText = strField(data, "signature_text");
+  const {
+    operation_id: operationId,
+    idempotency_key: idempotencyKey,
+    plan_json: planRaw,
+    grant_json: grantRaw,
+    signature_text: signatureText,
+  } = data;
 
   if (!isValidOpaqueId(operationId) || !isValidOpaqueId(idempotencyKey)) {
     return { ok: false, response: jsonReply(400, { error: "INVALID_ID" }) };
@@ -269,6 +288,35 @@ function validateApplyPayload(
     return { ok: false, response: jsonReply(400, { error: "INVALID_SIGNATURE" }) };
   }
   return { ok: true, operationId, idempotencyKey, planRaw, grantRaw, signatureText };
+}
+
+const OUTCOME_UNKNOWN = { kind: "outcome_unknown" } as const;
+
+/** W687: mirrors `ApplyOutcome` (crates/contracts/src/apply.rs). */
+const applyOutcome = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("not_sent"), reason: z.string() }),
+  z.strictObject({ kind: z.literal("outcome_unknown") }),
+  z.strictObject({
+    kind: z.literal("executor_reply"),
+    reply: z.looseObject({ operation_id: z.string() }),
+  }),
+]);
+
+const applyReplyValue = z.strictObject({ operation_id: z.string(), outcome: applyOutcome });
+
+/**
+ * W687: as `decode_apply_response` does, a reply counts only when it is this
+ * operation's `plan_apply` value; anything else is `outcome_unknown`, never success.
+ */
+function correlatedOutcome(response: CoordinatorWireResponse, operationId: string): unknown {
+  if (response.status !== "ok" || response.data.kind !== "plan_apply") return OUTCOME_UNKNOWN;
+  const value = applyReplyValue.safeParse(response.data.value);
+  if (!value.success || value.data.operation_id !== operationId) return OUTCOME_UNKNOWN;
+  const { outcome } = value.data;
+  if (outcome.kind === "executor_reply" && outcome.reply.operation_id !== operationId) {
+    return OUTCOME_UNKNOWN;
+  }
+  return outcome;
 }
 
 export function createWriteBackendHandlers(config: WriteBackendConfig) {
@@ -294,11 +342,9 @@ export function createWriteBackendHandlers(config: WriteBackendConfig) {
         config.enabled,
       );
       if (refused) return refused;
-      const body = await readBoundedJson(request);
-      if (!body.ok) return body.response;
-      const planRaw = typeof body.data.plan_json === "string" ? body.data.plan_json : "";
-      const grantRaw = typeof body.data.grant_json === "string" ? body.data.grant_json : "";
-      const summary = reviewSignedPair(planRaw, grantRaw, nowSec());
+      const fields = await readWriteBody(request, reviewBody);
+      if (fields instanceof Response) return fields;
+      const summary = reviewSignedPair(fields.plan_json, fields.grant_json, nowSec());
       if (!summary) return jsonReply(400, { error: "INVALID_PLAN_OR_GRANT" });
       return jsonReply(200, summary);
     },
@@ -310,9 +356,9 @@ export function createWriteBackendHandlers(config: WriteBackendConfig) {
         config.enabled,
       );
       if (refused) return refused;
-      const body = await readBoundedJson(request);
-      if (!body.ok) return body.response;
-      const valid = validateApplyPayload(body.data, nowSec());
+      const fields = await readWriteBody(request, applyBody);
+      if (fields instanceof Response) return fields;
+      const valid = validateApplyPayload(fields, nowSec());
       if (!valid.ok) return valid.response;
 
       const ipc = await sendCoordinatorApply(config.coordinatorSocket, {
@@ -326,11 +372,10 @@ export function createWriteBackendHandlers(config: WriteBackendConfig) {
         const status = ipc.code === "UNAUTHORIZED_PEER" ? 403 : 503;
         return jsonReply(status, { error: ipc.code, outcome: { kind: "outcome_unknown" } });
       }
-      const replyVal = ipc.response.data?.value as { outcome?: unknown } | undefined;
       const result: WriteApplyResult = {
         schema: "rustiron-console-apply/1",
         operation_id: valid.operationId,
-        outcome: replyVal?.outcome ?? { kind: "outcome_unknown" },
+        outcome: correlatedOutcome(ipc.response, valid.operationId),
       };
       return jsonReply(200, result);
     },

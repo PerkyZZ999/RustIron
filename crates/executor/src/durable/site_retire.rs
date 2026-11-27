@@ -1,12 +1,11 @@
 //! D-080 (W508): admission of a signed `site_retire` and its removal.
 
-use rustiron_journal::{ProvisionState, RetireResult, StepState};
-
-use super::{Executor, signed_inputs};
+use super::Executor;
 use crate::{
     AdmissionRequest, ExecutorError,
     admin_helper::{self, AdminRequest, AdminStep},
 };
+use rustiron_journal::{Admitted, ProvisionState, Retirement, StepState};
 
 impl Executor {
     /// Admits one signed retirement of a quarantined site and asks the
@@ -17,47 +16,45 @@ impl Executor {
     pub fn retire_site(
         &mut self,
         request: &AdmissionRequest<'_>,
-    ) -> Result<RetireResult, ExecutorError> {
+    ) -> Result<Admitted<Retirement>, ExecutorError> {
         let intent = crate::verified_retire(&self.anchor, request)?;
-        self.check_identity(&intent.host_id, &intent.host_epoch)?;
-        let now = request.now.ok_or(ExecutorError::TimeDenied)?;
-        if self
-            .journal
-            .retirement_status(&intent.operation_id)?
-            .is_none()
-        {
-            // Fresh preconditions before intent; the journal rechecks the
-            // provision in the transaction that records it.
-            let provision = self
-                .journal
-                .provision_status(&intent.provision_operation_id)?
-                .ok_or(ExecutorError::PreconditionChanged)?;
-            let open_scrub = self
-                .journal
-                .import_status(&intent.provision_operation_id)?
-                .is_some_and(|import| {
-                    import
-                        .scrubs
-                        .iter()
-                        .any(|scrub| scrub.state == StepState::Intent)
-                })
-                || self
+        let retirement = match self.admit_signed(
+            request,
+            (&intent.host_id, &intent.host_epoch),
+            |journal| Ok(journal.retirement_status(&intent.operation_id)?.is_some()),
+            |executor, _now| {
+                // Fresh preconditions before intent; the journal rechecks the
+                // provision in the transaction that records it.
+                let provision = executor
                     .journal
-                    .clone_status(&intent.provision_operation_id)?
-                    .is_some_and(|clone| clone.scrub == Some(StepState::Intent));
-            if provision.intent.site_id != intent.site_id
-                || provision.state != ProvisionState::Quarantined
-                || self.journal.ejected_sites()?.contains(&intent.site_id)
-                || open_scrub
-            {
-                return Err(ExecutorError::PreconditionChanged);
-            }
-        }
-        let retirement = match self.admit(signed_inputs(request)?, |journal| {
-            journal.record_retirement(&intent, now)
-        })? {
-            RetireResult::Existing(existing) => return Ok(RetireResult::Existing(existing)),
-            RetireResult::New(retirement) => retirement,
+                    .provision_status(&intent.provision_operation_id)?
+                    .ok_or(ExecutorError::PreconditionChanged)?;
+                let open_scrub = executor
+                    .journal
+                    .import_status(&intent.provision_operation_id)?
+                    .is_some_and(|import| {
+                        import
+                            .scrubs
+                            .iter()
+                            .any(|scrub| scrub.state == StepState::Intent)
+                    })
+                    || executor
+                        .journal
+                        .clone_status(&intent.provision_operation_id)?
+                        .is_some_and(|clone| clone.scrub == Some(StepState::Intent));
+                if provision.intent.site_id != intent.site_id
+                    || provision.state != ProvisionState::Quarantined
+                    || executor.journal.ejected_sites()?.contains(&intent.site_id)
+                    || open_scrub
+                {
+                    return Err(ExecutorError::PreconditionChanged);
+                }
+                Ok(())
+            },
+            |journal, now| journal.record_retirement(&intent, now),
+        )? {
+            Admitted::Existing(existing) => return Ok(Admitted::Existing(existing)),
+            Admitted::New(retirement) => retirement,
         };
         let outcome = admin_helper::route(
             self.anchor.admin_socket.as_deref(),
@@ -77,7 +74,7 @@ impl Executor {
             .journal
             .finish_retirement(&retirement.operation_id, outcome.is_ok())?;
         outcome?;
-        Ok(RetireResult::New(recorded))
+        Ok(Admitted::New(recorded))
     }
 
     /// W508: a stored retirement, for status.

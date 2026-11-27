@@ -376,7 +376,7 @@ fn product_capture_settlement_as_root() {
         settled.state,
         settled.snapshot_id,
         settled.unclaimed_snapshot_id,
-        settled.finished_at.map(|t| t.get())
+        settled.finished_at.map(rustiron_contracts::Timestamp::get)
     );
     assert_eq!(settled.state, CaptureState::Failed);
     assert_eq!(settled.snapshot_id, None);

@@ -1,5 +1,6 @@
 // W631 (P29 Slice 11): CyberPanel-grade Self-Hosted Postfix + Dovecot Email Manager
 // (Mailboxes CRUD, Aliases & Forwarders, Per-Site Outbound Relay, and MX/SPF/DKIM/DMARC DNS).
+import { consoleRequest, failureText } from "./console-request";
 import { Link } from "@tanstack/react-router";
 import {
   AlertCircle,
@@ -18,7 +19,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { useData } from "./data";
 import type { MailAliasRow, MailboxRow, MailStatePayload } from "./mail-backend";
-import { Crumbs, EmptyState, Glyph, Page, TableScroll } from "./ui";
+import { ConfirmDeleteButton, copyText, Crumbs, EmptyState, Glyph, Page, TableScroll } from "./ui";
 
 type MailTab = "mailboxes" | "aliases" | "relay" | "dns";
 
@@ -27,30 +28,32 @@ type MailLoadResult =
   | { ok: false; error: string };
 
 async function fetchMailState(): Promise<MailLoadResult> {
-  try {
-    const res = await fetch("/api/mail/state", { cache: "no-store", credentials: "same-origin" });
-    if (!res.ok) {
-      return { ok: false, error: `Mail catalog request returned HTTP ${res.status}.` };
-    }
-    const body = (await res.json()) as
-      | (Partial<MailStatePayload> & { writesEnabled?: boolean })
-      | null;
-    if (
-      body &&
-      Array.isArray(body.domains) &&
-      Array.isArray(body.mailboxes) &&
-      Array.isArray(body.aliases)
-    ) {
-      return {
-        ok: true,
-        state: { domains: body.domains, mailboxes: body.mailboxes, aliases: body.aliases },
-        writesEnabled: body.writesEnabled === true,
-      };
-    }
-    return { ok: false, error: "Mail catalog returned an unexpected response shape." };
-  } catch {
-    return { ok: false, error: "Could not reach /api/mail/state." };
+  const reply = await consoleRequest<
+    (Partial<MailStatePayload> & { writesEnabled?: boolean }) | null
+  >("/api/mail/state");
+  if (!reply.ok) {
+    return {
+      ok: false,
+      error:
+        reply.status === null
+          ? "Could not reach /api/mail/state."
+          : `Mail catalog request returned HTTP ${reply.status}.`,
+    };
   }
+  const body = reply.data;
+  if (
+    body &&
+    Array.isArray(body.domains) &&
+    Array.isArray(body.mailboxes) &&
+    Array.isArray(body.aliases)
+  ) {
+    return {
+      ok: true,
+      state: { domains: body.domains, mailboxes: body.mailboxes, aliases: body.aliases },
+      writesEnabled: body.writesEnabled === true,
+    };
+  }
+  return { ok: false, error: "Mail catalog returned an unexpected response shape." };
 }
 
 function generateStrongPassword(): string {
@@ -84,15 +87,29 @@ function MailFeedback({ notice }: { notice: { tone: "err" | "ok"; text: string }
   );
 }
 
+/**
+ * W743 (QA-12): the domains of sites this host serves. A quarantined site is
+ * "err" and an ejected one "muted"; neither receives mail here.
+ */
+export function servedSiteDomains(sites: { domain: string; servingKind: string }[]): string[] {
+  return sites
+    .filter((site) => site.servingKind !== "err" && site.servingKind !== "muted")
+    .map((site) => site.domain);
+}
+
 function CreateMailboxCard({
   domains,
+  servedDomains,
   onCreated,
 }: {
   domains: string[];
+  servedDomains: string[];
   onCreated: (msg: string) => Promise<void>;
 }) {
   const [localPart, setLocalPart] = useState("");
-  const [domain, setDomain] = useState(domains[0] ?? "example.com");
+  const [domain, setDomain] = useState("");
+  const typedDomain = domain.trim().toLowerCase();
+  const notServed = typedDomain !== "" && !servedDomains.includes(typedDomain);
   const [password, setPassword] = useState("");
   const [quotaMb, setQuotaMb] = useState("1024");
   const [busy, setBusy] = useState(false);
@@ -102,31 +119,31 @@ function CreateMailboxCard({
     e.preventDefault();
     setBusy(true);
     setErr(null);
+    const reply = await consoleRequest("/api/mail/mailboxes", {
+      method: "POST",
+      json: { localPart, domain, password, quotaMb: Number(quotaMb) },
+    });
+    if (!reply.ok) {
+      setBusy(false);
+      setErr(failureText(reply, "Failed to create mailbox.", "Could not reach the Mail API."));
+      return;
+    }
+    const createdAddr = `${localPart.trim().toLowerCase()}@${domain.trim().toLowerCase()}`;
+    setLocalPart("");
+    setPassword("");
     try {
-      const res = await fetch("/api/mail/mailboxes", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ localPart, domain, password, quotaMb: Number(quotaMb) }),
-      });
-      const body = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
-      if (!res.ok) {
-        setErr(body.message ?? body.error ?? "Failed to create mailbox.");
-        return;
-      }
-      const createdAddr = `${localPart.trim().toLowerCase()}@${domain.trim().toLowerCase()}`;
-      setLocalPart("");
-      setPassword("");
       await onCreated(`Mailbox ${createdAddr} created.`);
-    } catch {
-      setErr("Could not reach the Mail API.");
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <form className="panel stack" onSubmit={(e) => void handleSubmit(e)}>
+    <form
+      className="panel stack"
+      onSubmit={(e) => void handleSubmit(e)}
+      onInvalidCapture={() => setErr(null)}
+    >
       <div className="panel-head">
         <div className="row" style={{ gap: 8 }}>
           <Glyph icon={MailPlus} />
@@ -154,9 +171,17 @@ function CreateMailboxCard({
             list="mb-domain-list"
             className="input mono"
             required
+            placeholder={domains[0] ?? "example.com"}
+            aria-describedby={notServed ? "mb-domain-hint" : undefined}
             value={domain}
             onChange={(e) => setDomain(e.target.value)}
           />
+          {notServed ? (
+            <span id="mb-domain-hint" className="hint">
+              This host does not serve {typedDomain}. The mailbox is cataloged, but no mail arrives
+              until the domain is a served site here.
+            </span>
+          ) : null}
           <datalist id="mb-domain-list">
             {domains.map((d) => (
               <option key={d} value={d}>
@@ -231,16 +256,17 @@ function EditMailboxModal({
     setErr(null);
     const payload: Record<string, unknown> = { quotaMb: Number(quotaMb), enabled };
     if (password.trim()) payload.password = password;
-    const res = await fetch(`/api/mail/mailboxes/${mailbox.id}`, {
+    const reply = await consoleRequest(`/api/mail/mailboxes/${mailbox.id}`, {
       method: "PATCH",
-      credentials: "same-origin",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
+      json: payload,
     });
     setBusy(false);
-    if (!res.ok) {
-      const body = (await res.json().catch(() => ({}))) as { message?: string };
-      setErr(body.message ?? "Update failed.");
+    if (!reply.ok) {
+      setErr(
+        reply.status === null
+          ? "The Console server did not answer. Reload to see whether the update applied."
+          : (reply.message ?? "Update failed."),
+      );
       return;
     }
     await onSaved(`Updated ${mailbox.email}.`);
@@ -248,7 +274,11 @@ function EditMailboxModal({
   }
 
   return (
-    <form className="panel stack" onSubmit={(e) => void handleSave(e)}>
+    <form
+      className="panel stack"
+      onSubmit={(e) => void handleSave(e)}
+      onInvalidCapture={() => setErr(null)}
+    >
       <div className="panel-head">
         <h2>Edit {mailbox.email}</h2>
         <button type="button" className="btn quiet sm" onClick={onClose}>
@@ -319,15 +349,12 @@ function AliasesTab({
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
-    const res = await fetch("/api/mail/aliases", {
+    const reply = await consoleRequest("/api/mail/aliases", {
       method: "POST",
-      credentials: "same-origin",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ source, destination }),
+      json: { source, destination },
     });
-    const body = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
-    if (!res.ok) {
-      setErr(body.message ?? body.error ?? "Failed to add forwarder.");
+    if (!reply.ok) {
+      setErr(failureText(reply, "Failed to add forwarder."));
       return;
     }
     setSource("");
@@ -336,16 +363,18 @@ function AliasesTab({
   }
 
   async function handleDelete(id: string) {
-    const res = await fetch(`/api/mail/aliases/${id}`, {
-      method: "DELETE",
-      credentials: "same-origin",
-    });
-    if (res.ok) await onChanged("Forwarder removed.");
+    const reply = await consoleRequest(`/api/mail/aliases/${id}`, { method: "DELETE" });
+    if (reply.ok) await onChanged("Forwarder removed.");
+    else setErr(failureText(reply, "Could not remove the forwarder."));
   }
 
   return (
     <div className="stack">
-      <form className="panel stack" onSubmit={(e) => void handleAdd(e)}>
+      <form
+        className="panel stack"
+        onSubmit={(e) => void handleAdd(e)}
+        onInvalidCapture={() => setErr(null)}
+      >
         <div className="panel-head">
           <h2>Add email forwarder / alias</h2>
         </div>
@@ -413,14 +442,10 @@ function AliasesTab({
                       </span>
                     </td>
                     <td>
-                      <button
-                        type="button"
-                        className="icon-btn"
-                        aria-label={`Delete alias ${a.source}`}
-                        onClick={() => void handleDelete(a.id)}
-                      >
-                        <Glyph icon={Trash2} />
-                      </button>
+                      <ConfirmDeleteButton
+                        label={`Delete alias ${a.source}`}
+                        onConfirm={() => void handleDelete(a.id)}
+                      />
                     </td>
                   </tr>
                 ))}
@@ -434,7 +459,9 @@ function AliasesTab({
 }
 
 function MailDnsTab({ domains }: { domains: string[] }) {
-  const [selected, setSelected] = useState(domains[0] ?? "example.com");
+  // W743 (QA-12): resolve against the current list; a first-render choice goes stale.
+  const [chosen, setSelected] = useState("");
+  const selected = domains.includes(chosen) ? chosen : (domains[0] ?? "example.com");
   const [copied, setCopied] = useState(false);
   const records = [
     { type: "MX", name: "@", value: `10 mail.${selected}.` },
@@ -459,7 +486,9 @@ function MailDnsTab({ domains }: { domains: string[] }) {
           <button
             type="button"
             className="btn quiet sm"
-            onClick={() => void navigator.clipboard?.writeText(snippet).then(() => setCopied(true))}
+            onClick={async () => {
+              if (await copyText(snippet, "DNS records copied")) setCopied(true);
+            }}
           >
             <Glyph icon={copied ? Check : Copy} />
             {copied ? "Copied" : "Copy records"}
@@ -575,6 +604,7 @@ function MailLoadWarning({ error }: { error: string | null }) {
 function MailboxesTabContent({
   mailboxes,
   knownDomains,
+  servedDomains,
   editing,
   confirmDeleteId,
   onEdit,
@@ -584,6 +614,7 @@ function MailboxesTabContent({
 }: {
   mailboxes: MailboxRow[];
   knownDomains: string[];
+  servedDomains: string[];
   editing: MailboxRow | null;
   confirmDeleteId: string | null;
   onEdit: (m: MailboxRow) => void;
@@ -596,7 +627,7 @@ function MailboxesTabContent({
       {editing ? (
         <EditMailboxModal mailbox={editing} onClose={onCloseEdit} onSaved={onSaved} />
       ) : null}
-      <CreateMailboxCard domains={knownDomains} onCreated={onSaved} />
+      <CreateMailboxCard domains={knownDomains} servedDomains={servedDomains} onCreated={onSaved} />
       {mailboxes.length === 0 ? (
         <EmptyState
           icon={Mail}
@@ -700,21 +731,22 @@ export function EmailManagementPage({ initialTab = "mailboxes" }: { initialTab?:
     };
   }, []);
 
+  const servedDomains = servedSiteDomains(sites);
   const knownDomains = Array.from(
-    new Set([...sites.map((s) => s.domain), ...mailState.domains.map((d) => d.domain)]),
+    new Set([...servedDomains, ...mailState.domains.map((d) => d.domain)]),
   );
   const totalQuotaMb = mailState.mailboxes.reduce((sum, m) => sum + m.quotaMb, 0);
 
   async function handleExport() {
-    const res = await fetch("/api/mail/export", { cache: "no-store", credentials: "same-origin" });
+    const res = await consoleRequest("/api/mail/export");
     if (res.ok) {
-      downloadJson("rustiron-postfix-dovecot-bundle.json", await res.json());
+      downloadJson("rustiron-postfix-dovecot-bundle.json", res.data);
       setNotice({
         tone: "ok",
         text: "Exported Console-local Postfix/Dovecot catalog (pending host sync).",
       });
     } else {
-      setNotice({ tone: "err", text: `Export failed (HTTP ${res.status}).` });
+      setNotice({ tone: "err", text: failureText(res, `Export failed (HTTP ${res.status}).`) });
     }
   }
 
@@ -724,119 +756,127 @@ export function EmailManagementPage({ initialTab = "mailboxes" }: { initialTab?:
       return;
     }
     setConfirmDeleteId(null);
-    const res = await fetch(`/api/mail/mailboxes/${m.id}`, {
-      method: "DELETE",
-      credentials: "same-origin",
-    });
+    const res = await consoleRequest(`/api/mail/mailboxes/${m.id}`, { method: "DELETE" });
     if (res.ok) {
       setNotice({ tone: "ok", text: `Deleted mailbox ${m.email} from local catalog.` });
       await reload();
     } else {
-      setNotice({ tone: "err", text: `Could not delete mailbox (HTTP ${res.status}).` });
+      setNotice({
+        tone: "err",
+        text: failureText(res, `Could not delete mailbox (HTTP ${res.status}).`),
+      });
     }
   }
 
   return (
     <Page live>
-      <Crumbs items={[{ href: "/", label: "Overview" }, { label: "Email" }]} />
-      <div className="page-head">
-        <div>
-          <h1>Email</h1>
-          <p className="sub">
-            Console-local Postfix and Dovecot mailbox catalog (pending host sync), aliases and
-            forwarders, per-site outbound relay reference, and mail DNS templates.
-          </p>
-        </div>
-        <button type="button" className="btn sm" onClick={() => void handleExport()}>
-          <Glyph icon={Download} />
-          Export Postfix / Dovecot maps
-        </button>
-      </div>
-
-      <MailLoadWarning error={loadError} />
-
-      <section className="grid g4" aria-label="Email summary">
-        <article className="panel metric">
-          <div className="m-head">Mailboxes</div>
-          <div className="m-val">{mailState.mailboxes.length}</div>
-          <div className="m-detail">Dovecot Maildir virtual accounts</div>
-        </article>
-        <article className="panel metric">
-          <div className="m-head">Allocated quota</div>
-          <div className="m-val">{(totalQuotaMb / 1024).toFixed(1)} GiB</div>
-          <div className="m-detail">Combined mailbox storage limit</div>
-        </article>
-        <article className="panel metric">
-          <div className="m-head">Aliases &amp; forwarders</div>
-          <div className="m-val">{mailState.aliases.length}</div>
-          <div className="m-detail">Postfix virtual alias mappings</div>
-        </article>
-        <article className="panel metric">
-          <div className="m-head">Mail services</div>
-          <div className="m-val" style={{ fontSize: 18 }}>
-            Postfix · Dovecot
-          </div>
-          <div className="m-detail">IMAPS 993 · Submission 587 · rustiron_mail_relay</div>
-        </article>
-      </section>
-
+      {/* W747 (QA-16): any form action replaces the page notice. */}
       <div
-        className="row"
-        style={{ gap: 6, flexWrap: "wrap" }}
-        role="tablist"
-        aria-label="Email sections"
+        style={{ display: "contents" }}
+        onSubmitCapture={() => setNotice(null)}
+        onInvalidCapture={() => setNotice(null)}
       >
-        {(
-          [
-            ["mailboxes", `Mailboxes (${mailState.mailboxes.length})`],
-            ["aliases", `Aliases & Forwarders (${mailState.aliases.length})`],
-            ["relay", "Outbound Relay"],
-            ["dns", "MX / SPF / DKIM / DMARC"],
-          ] as const
-        ).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={tab === id}
-            className={tab === id ? "btn primary sm" : "btn quiet sm"}
-            onClick={() => setTab(id)}
-          >
-            {label}
+        <Crumbs items={[{ href: "/", label: "Overview" }, { label: "Email" }]} />
+        <div className="page-head">
+          <div>
+            <h1>Email</h1>
+            <p className="sub">
+              Console-local Postfix and Dovecot mailbox catalog (pending host sync), aliases and
+              forwarders, per-site outbound relay reference, and mail DNS templates.
+            </p>
+          </div>
+          <button type="button" className="btn sm" onClick={() => void handleExport()}>
+            <Glyph icon={Download} />
+            Export Postfix / Dovecot maps
           </button>
-        ))}
+        </div>
+
+        <MailLoadWarning error={loadError} />
+
+        <section className="grid g4" aria-label="Email summary">
+          <article className="panel metric">
+            <div className="m-head">Mailboxes</div>
+            <div className="m-val">{mailState.mailboxes.length}</div>
+            <div className="m-detail">Dovecot Maildir virtual accounts</div>
+          </article>
+          <article className="panel metric">
+            <div className="m-head">Allocated quota</div>
+            <div className="m-val">{(totalQuotaMb / 1024).toFixed(1)} GiB</div>
+            <div className="m-detail">Combined mailbox storage limit</div>
+          </article>
+          <article className="panel metric">
+            <div className="m-head">Aliases &amp; forwarders</div>
+            <div className="m-val">{mailState.aliases.length}</div>
+            <div className="m-detail">Postfix virtual alias mappings</div>
+          </article>
+          <article className="panel metric">
+            <div className="m-head">Mail services</div>
+            <div className="m-val" style={{ fontSize: 18 }}>
+              Postfix · Dovecot
+            </div>
+            <div className="m-detail">IMAPS 993 · Submission 587 · rustiron_mail_relay</div>
+          </article>
+        </section>
+
+        <div
+          className="row"
+          style={{ gap: 6, flexWrap: "wrap" }}
+          role="tablist"
+          aria-label="Email sections"
+        >
+          {(
+            [
+              ["mailboxes", `Mailboxes (${mailState.mailboxes.length})`],
+              ["aliases", `Aliases & Forwarders (${mailState.aliases.length})`],
+              ["relay", "Outbound Relay"],
+              ["dns", "MX / SPF / DKIM / DMARC"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={tab === id}
+              className={tab === id ? "btn primary sm" : "btn quiet sm"}
+              onClick={() => setTab(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <MailFeedback notice={notice} />
+
+        {tab === "mailboxes" ? (
+          <MailboxesTabContent
+            mailboxes={mailState.mailboxes}
+            knownDomains={knownDomains}
+            servedDomains={servedDomains}
+            editing={editing}
+            confirmDeleteId={confirmDeleteId}
+            onEdit={setEditing}
+            onCloseEdit={() => setEditing(null)}
+            onSaved={async (msg) => {
+              setNotice({ tone: "ok", text: msg });
+              await reload();
+            }}
+            onDelete={handleDeleteMailbox}
+          />
+        ) : null}
+
+        {tab === "aliases" ? (
+          <AliasesTab
+            aliases={mailState.aliases}
+            onChanged={async (msg) => {
+              setNotice({ tone: "ok", text: msg });
+              await reload();
+            }}
+          />
+        ) : null}
+
+        {tab === "relay" ? <OutboundRelayTab /> : null}
+        {tab === "dns" ? <MailDnsTab domains={knownDomains} /> : null}
       </div>
-
-      <MailFeedback notice={notice} />
-
-      {tab === "mailboxes" ? (
-        <MailboxesTabContent
-          mailboxes={mailState.mailboxes}
-          knownDomains={knownDomains}
-          editing={editing}
-          confirmDeleteId={confirmDeleteId}
-          onEdit={setEditing}
-          onCloseEdit={() => setEditing(null)}
-          onSaved={async (msg) => {
-            setNotice({ tone: "ok", text: msg });
-            await reload();
-          }}
-          onDelete={handleDeleteMailbox}
-        />
-      ) : null}
-
-      {tab === "aliases" ? (
-        <AliasesTab
-          aliases={mailState.aliases}
-          onChanged={async (msg) => {
-            setNotice({ tone: "ok", text: msg });
-            await reload();
-          }}
-        />
-      ) : null}
-
-      {tab === "relay" ? <OutboundRelayTab /> : null}
-      {tab === "dns" ? <MailDnsTab domains={knownDomains} /> : null}
     </Page>
   );
 }

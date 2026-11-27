@@ -9,11 +9,19 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-fn tmp_dir() -> PathBuf {
-    let suffix = SystemTime::now()
+/// W720: a folder-name part that no other test in this process uses. The
+/// clock alone can repeat across parallel tests.
+fn unique_suffix() -> String {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+        .map_or(0, |time| time.as_nanos());
+    let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{nanos}-{next}")
+}
+
+fn tmp_dir() -> PathBuf {
+    let suffix = unique_suffix();
     let dir = PathBuf::from("/tmp").join(format!("ri-p22-{}-{suffix}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     dir

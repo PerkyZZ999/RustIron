@@ -699,7 +699,7 @@ fn d102_schema_v2_covers_all_four_topologies_databases_blue_green_and_rejects_in
     bad_ols_split["ingress"] = json!("ols");
     assert!(AppProvisionPlan::decode(&canonical(&bad_ols_split)).is_err());
 
-    let mut bad_db_effect = split.clone();
+    let mut bad_db_effect = split;
     bad_db_effect["expected_effects"]["creates_database"] = json!(false);
     assert!(AppProvisionPlan::decode(&canonical(&bad_db_effect)).is_err());
 

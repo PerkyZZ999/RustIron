@@ -60,7 +60,7 @@ impl BackupFixture {
     fn new() -> Self {
         let serial = BACKUP_TESTS
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut random = [0; 16];
         rustix::rand::getrandom(&mut random, rustix::rand::GetRandomFlags::empty()).unwrap();
         // W319 root lab test: PID 1 reads credential sources, which it may

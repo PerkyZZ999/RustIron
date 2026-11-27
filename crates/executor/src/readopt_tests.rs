@@ -496,7 +496,7 @@ fn a_planted_edited_extended_or_partial_generation_is_refused() {
     let digest = ols::digest(&render);
     let id = ols::generation_id(&digest);
     assert_eq!(
-        judge_generation(&live(render.clone()), (&id, &digest), &one),
+        judge_generation(&live(render), (&id, &digest), &one),
         Err(Rule::Render),
         "a missing or unowned site"
     );

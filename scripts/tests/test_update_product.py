@@ -40,6 +40,10 @@ class UpdateProductTests(unittest.TestCase):
             path.write_bytes(content)
             path.chmod(mode)
             self.old[name] = digest(content)
+        # A real install has its state folders (W735).
+        for name, mode in sorted(installer.STATE_DIRS.items()):
+            (self.target / name).mkdir(parents=True, exist_ok=True)
+            (self.target / name).chmod(mode)
         self.record = {
             "schema": installer.INSTALL_RECORD_SCHEMA,
             "payload": {name: {"sha256": self.old[name], "mode": mode}
@@ -69,7 +73,8 @@ class UpdateProductTests(unittest.TestCase):
         (self.target / extra).write_bytes(b"planted\n")
         self.assertIn("exists but is not in the install record",
                       updater.compatibility(self.record, added, self.target)[0])
-        nested = {**self.new, "usr/libexec/rustiron/nowhere/x": digest(b"x")}
+        # W734 (QA-03): a new folder inside a product tree may be created; one elsewhere may not.
+        nested = {**self.new, "usr/lib/rustiron-nowhere/x": digest(b"x")}
         self.assertIn("does not exist", updater.compatibility(self.record, nested, self.target)[0])
         module = next(name for name in self.new if name.startswith(updater.MODULE_PREFIX))
         without_module = {name: value for name, value in self.new.items() if name != module}
@@ -183,6 +188,85 @@ class UpdateProductTests(unittest.TestCase):
                             "rollback", self.owner, created=restored, dropped=deleted, remove_empty=folders)
         self.assertFalse((self.target / folder_name).exists())
         self.assertEqual((self.target / updater.RECORD).read_bytes(), content)
+
+    def test_a_new_product_folder_is_created_once_and_removed_by_the_rollback(self):
+        # W734 (QA-03): W658 added usr/share/rustiron/postgres/; an install from
+        # before it must still update.
+        folder_name = "usr/share/rustiron/postgres"
+        files = [f"{folder_name}/pg_hba.conf", f"{folder_name}/zz-rustiron-loopback.conf"]
+        for name in files:
+            del self.record["payload"][name]
+            (self.target / name).unlink()
+        (self.target / folder_name).rmdir()
+        content = (json.dumps(self.record, indent=1, sort_keys=True) + "\n").encode()
+        (self.target / updater.RECORD).chmod(0o600)
+        (self.target / updater.RECORD).write_bytes(content)
+        (self.target / updater.RECORD).chmod(0o400)
+        record, content = updater.load_record(self.target, self.owner)
+        digests = {**self.old, **{name: digest(name.encode()) for name in files}}
+        self.assertEqual(updater.compatibility(record, digests, self.target), [])
+        outside = "etc/somewhere-new/x.conf"
+        self.assertIn("does not exist",
+                      updater.compatibility(record, {**digests, outside: digest(b"x")}, self.target)[0])
+        created = updater.added(record, digests)
+        self.assertEqual(sorted(created), files)
+        with mock.patch.object(updater, "busy_units", return_value=[]), \
+                mock.patch.object(updater, "active_units", return_value=[]), \
+                mock.patch.object(updater, "stop_units"), mock.patch.object(updater, "start_units"), \
+                mock.patch.object(updater, "finish_host"), \
+                mock.patch.object(updater, "utc_stamp", return_value="20261127T000000Z"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            folder = updater.execute(
+                self.target, [], content, lambda folder: updater.new_record(record, digests, folder),
+                lambda name: (lambda: iter((name.encode(),))), digests, "update",
+                self.owner, created=created)
+        self.assertEqual(stat.S_IMODE((self.target / folder_name).stat().st_mode), 0o755)
+        for name in files:
+            self.assertEqual((self.target / name).read_bytes(), name.encode())
+        manifest = json.loads((folder / updater.UPDATE_MANIFEST).read_text())
+        self.assertEqual(manifest["created_folders"], [folder_name])
+        record2, content2, old_content, old_digests, names, restored, deleted, folders = \
+            updater.plan_rollback(folder, self.target, self.owner)
+        self.assertEqual((sorted(deleted), folders), (files, [folder_name]))
+        with mock.patch.object(updater, "busy_units", return_value=[]), \
+                mock.patch.object(updater, "active_units", return_value=[]), \
+                mock.patch.object(updater, "stop_units"), mock.patch.object(updater, "start_units"), \
+                mock.patch.object(updater, "finish_host"), \
+                mock.patch.object(updater, "utc_stamp", return_value="20261127T000001Z"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            updater.execute(self.target, names, content2, lambda _folder: old_content,
+                            lambda name: updater.chunks_of(folder / updater.FILES / name), old_digests,
+                            "rollback", self.owner, created=restored, dropped=deleted, remove_empty=folders)
+        self.assertFalse((self.target / folder_name).exists())
+        self.assertEqual((self.target / updater.RECORD).read_bytes(), content)
+
+    def test_a_missing_state_folder_is_created_and_removed_by_the_rollback(self):
+        # W735 (QA-04): an install from before W657 has no etc/rustiron-caddy, which
+        # the executor unit names in ReadWritePaths.
+        for name in ("etc/rustiron-caddy/generations", "etc/rustiron-caddy"):
+            (self.target / name).rmdir()
+        record, content = updater.load_record(self.target, self.owner)
+        with mock.patch.object(updater, "busy_units", return_value=[]), \
+                mock.patch.object(updater, "active_units", return_value=[]), \
+                mock.patch.object(updater, "stop_units"), mock.patch.object(updater, "start_units"), \
+                mock.patch.object(updater, "finish_host") as finish, \
+                mock.patch.object(updater, "utc_stamp", return_value="20261127T000002Z"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            folder = updater.execute(
+                self.target, [], content, lambda folder: updater.new_record(record, self.old, folder),
+                lambda name: (lambda: iter(())), self.old, "update", self.owner)
+        made = ["etc/rustiron-caddy", "etc/rustiron-caddy/generations"]
+        finish.assert_called_once_with(self.target, made)
+        for name in made:
+            self.assertEqual(stat.S_IMODE((self.target / name).stat().st_mode), 0o755)
+        self.assertEqual(json.loads((folder / updater.UPDATE_MANIFEST).read_text())["created_folders"], made)
+        after, _ = updater.load_record(self.target, self.owner)
+        self.assertEqual(after["state_directories"], made)
+        self.assertNotIn("etc/rustiron-caddy", after.get("created_directories", []))
+        *_, names, restored, deleted, folders = updater.plan_rollback(folder, self.target, self.owner)
+        with contextlib.redirect_stdout(io.StringIO()):
+            updater.remove_folders(self.target, folders)
+        self.assertFalse((self.target / "etc/rustiron-caddy").exists())
 
     def test_a_changed_mariadb_dropin_restarts_mariadb_and_checks_loopback(self):
         # W569 (W558-F1).

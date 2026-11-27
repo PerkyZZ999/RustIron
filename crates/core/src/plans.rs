@@ -1,4 +1,4 @@
-//! Canonical plan bytes for the five lab plan kinds.
+//! Canonical plan bytes for every closed plan kind.
 //!
 //! A stored plan is not a signature, a grant, or permission to execute.
 
@@ -8,7 +8,9 @@ use rustiron_contracts::{
     approval::{PlanKind, PreparedPlan, Sha256Digest},
     local,
 };
+use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     fs::{self, File, OpenOptions},
     io,
     os::unix::fs::{MetadataExt, OpenOptionsExt},
@@ -63,7 +65,14 @@ pub enum PlanStoreError {
 pub struct PlanStore {
     connection: Connection,
     _lock: File,
+    validated: Validated,
 }
+
+/// W676: plan ID to the SHA-256 of a row (`kind`, `digest`, `bytes`) that this
+/// store already decoded and checked in full. Every row is still read on each
+/// call, so any changed byte is caught; only an unchanged row skips the decode,
+/// which would give the same result.
+type Validated = HashMap<String, [u8; 32]>;
 
 impl PlanStore {
     /// Creates an empty store. Refuses a directory that already has plan database files.
@@ -73,16 +82,18 @@ impl PlanStore {
         Ok(Self {
             connection,
             _lock: lock,
+            validated: Validated::new(),
         })
     }
 
     /// Opens a valid store. A second opener in another process is refused.
     pub fn open(directory: &Path) -> Result<Self, PlanStoreError> {
         let lock = storage::acquire_lock(directory, DATABASE, "plans.lock").map_err(store_error)?;
-        let connection = open(directory)?;
+        let (connection, validated) = open(directory)?;
         Ok(Self {
             connection,
             _lock: lock,
+            validated,
         })
     }
 
@@ -93,7 +104,7 @@ impl PlanStore {
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|_| PlanStoreError::Unavailable)?;
-        validate(&transaction)?;
+        validate(&transaction, &mut self.validated)?;
         let existing: Option<Vec<u8>> = transaction
             .query_row(
                 "SELECT bytes FROM plans WHERE plan_id=?1",
@@ -137,7 +148,7 @@ impl PlanStore {
             .connection
             .transaction()
             .map_err(|_| PlanStoreError::Unavailable)?;
-        validate(&transaction)?;
+        validate(&transaction, &mut self.validated)?;
         let bytes: Option<Vec<u8>> = transaction
             .query_row(
                 "SELECT bytes FROM plans WHERE plan_id=?1",
@@ -220,7 +231,7 @@ fn initialize(directory: &Path) -> Result<Connection, PlanStoreError> {
     Ok(connection)
 }
 
-fn open(directory: &Path) -> Result<Connection, PlanStoreError> {
+fn open(directory: &Path) -> Result<(Connection, Validated), PlanStoreError> {
     check_files(directory)?;
     let path = directory.join(DATABASE);
     let probe =
@@ -228,13 +239,14 @@ fn open(directory: &Path) -> Result<Connection, PlanStoreError> {
     probe
         .pragma_update(None, "trusted_schema", false)
         .map_err(|_| PlanStoreError::Unavailable)?;
-    validate(&probe)?;
+    let mut validated = Validated::new();
+    validate(&probe, &mut validated)?;
     drop(probe);
     let connection =
         Connection::open_with_flags(path, flags(false)).map_err(|_| PlanStoreError::Unavailable)?;
     storage::configure(&connection).map_err(|_| PlanStoreError::Unavailable)?;
-    validate(&connection)?;
-    Ok(connection)
+    validate(&connection, &mut validated)?;
+    Ok((connection, validated))
 }
 
 fn check_files(directory: &Path) -> Result<(), PlanStoreError> {
@@ -254,7 +266,7 @@ fn check_files(directory: &Path) -> Result<(), PlanStoreError> {
     Ok(())
 }
 
-fn validate(connection: &Connection) -> Result<(), PlanStoreError> {
+fn validate(connection: &Connection, validated: &mut Validated) -> Result<(), PlanStoreError> {
     let application: i64 = connection
         .pragma_query_value(None, "application_id", |row| row.get(0))
         .map_err(|_| PlanStoreError::Unavailable)?;
@@ -288,6 +300,7 @@ fn validate(connection: &Connection) -> Result<(), PlanStoreError> {
     let mut rows = connection
         .prepare("SELECT plan_id,kind,digest,bytes FROM plans")
         .map_err(|_| PlanStoreError::Unavailable)?;
+    // W676: rows are streamed, not collected, so memory stays one row deep.
     let records = rows
         .query_map([], |row| {
             Ok((
@@ -297,12 +310,15 @@ fn validate(connection: &Connection) -> Result<(), PlanStoreError> {
                 row.get::<_, Vec<u8>>(3)?,
             ))
         })
-        .map_err(|_| PlanStoreError::Unavailable)?
-        .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|_| PlanStoreError::Unavailable)?;
-    for (id, kind, digest, bytes) in records {
+    for record in records {
+        let (id, kind, digest, bytes) = record.map_err(|_| PlanStoreError::Unavailable)?;
         if bytes.len() > MAX_REQUEST_BYTES {
             return Err(PlanStoreError::Unavailable);
+        }
+        let fingerprint = row_fingerprint(&kind, &digest, &bytes);
+        if validated.get(&id) == Some(&fingerprint) {
+            continue;
         }
         let prepared = PreparedPlan::decode(&bytes).map_err(|_| PlanStoreError::Unavailable)?;
         if prepared.id().as_str() != id
@@ -312,8 +328,21 @@ fn validate(connection: &Connection) -> Result<(), PlanStoreError> {
         {
             return Err(PlanStoreError::Unavailable);
         }
+        validated.insert(id, fingerprint);
     }
     Ok(())
+}
+
+/// The SHA-256 of one row's checked columns, with separators so no two
+/// different rows share a preimage.
+fn row_fingerprint(kind: &str, digest: &str, bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    for part in [kind.as_bytes(), digest.as_bytes()] {
+        hasher.update((part.len() as u64).to_be_bytes());
+        hasher.update(part);
+    }
+    hasher.update(bytes);
+    hasher.finalize().into()
 }
 
 fn flags(read_only: bool) -> OpenFlags {
@@ -323,4 +352,39 @@ fn flags(read_only: bool) -> OpenFlags {
         OpenFlags::SQLITE_OPEN_READ_WRITE
     }) | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW
+}
+
+#[cfg(test)]
+mod tests {
+    use super::flags;
+    use rusqlite::Connection;
+    use std::{fs, os::unix::fs::symlink};
+
+    /// W706 (fault injection, W690 misses): both open modes refuse a
+    /// symlinked database and never create a missing one, and the probe's
+    /// read-only mode refuses a write.
+    #[test]
+    fn the_open_flags_refuse_links_and_creation_and_keep_the_probe_read_only() {
+        let dir = std::env::temp_dir().join(format!("ri-plan-flags-{}", std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        let real = dir.join("real.sqlite");
+        Connection::open(&real)
+            .unwrap()
+            .execute_batch("CREATE TABLE t(x)")
+            .unwrap();
+        symlink(&real, dir.join("link.sqlite")).unwrap();
+        for read_only in [true, false] {
+            assert!(
+                Connection::open_with_flags(dir.join("link.sqlite"), flags(read_only)).is_err()
+            );
+            assert!(
+                Connection::open_with_flags(dir.join("absent.sqlite"), flags(read_only)).is_err()
+            );
+        }
+        let probe = Connection::open_with_flags(&real, flags(true)).unwrap();
+        assert!(probe.execute_batch("INSERT INTO t VALUES(1)").is_err());
+        let writer = Connection::open_with_flags(&real, flags(false)).unwrap();
+        writer.execute_batch("INSERT INTO t VALUES(1)").unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

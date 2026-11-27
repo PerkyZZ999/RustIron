@@ -1,4 +1,10 @@
 //! Local human/JSON CLI; no privileged operations or private signing material.
+#![warn(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "W672: production code returns errors; tests may unwrap (clippy.toml)"
+)]
 
 mod apply_cli;
 mod destination_digest;
@@ -283,16 +289,8 @@ enum PlanCommand {
 enum CreateCommand {
     /// A site provision that creates an account and database and does not activate traffic.
     SiteProvision {
-        #[arg(long)]
-        plan_id: String,
-        #[arg(long)]
-        host_id: String,
-        #[arg(long)]
-        host_epoch: String,
-        #[arg(long)]
-        profile_digest: String,
-        #[arg(long)]
-        requester: String,
+        #[command(flatten)]
+        header: plan_create::PlanHeader,
         #[arg(long)]
         site_id: String,
         #[arg(long)]
@@ -319,16 +317,8 @@ enum CreateCommand {
     },
     /// Hand one site's vhost outside Rustiron. Nothing is deleted.
     SiteEject {
-        #[arg(long)]
-        plan_id: String,
-        #[arg(long)]
-        host_id: String,
-        #[arg(long)]
-        host_epoch: String,
-        #[arg(long)]
-        profile_digest: String,
-        #[arg(long)]
-        requester: String,
+        #[command(flatten)]
+        header: plan_create::PlanHeader,
         #[arg(long)]
         site_id: String,
         #[arg(long)]
@@ -352,16 +342,8 @@ enum CreateCommand {
     },
     /// Name the sites an OLS generation should serve. This does not reload the server.
     ConfigActivate {
-        #[arg(long)]
-        plan_id: String,
-        #[arg(long)]
-        host_id: String,
-        #[arg(long)]
-        host_epoch: String,
-        #[arg(long)]
-        profile_digest: String,
-        #[arg(long)]
-        requester: String,
+        #[command(flatten)]
+        header: plan_create::PlanHeader,
         #[arg(long)]
         site_id: Vec<String>,
         #[arg(long)]
@@ -381,16 +363,8 @@ enum CreateCommand {
     },
     /// Name one site for a lab capture. This does not read or copy the site.
     BackupCapture {
-        #[arg(long)]
-        plan_id: String,
-        #[arg(long)]
-        host_id: String,
-        #[arg(long)]
-        host_epoch: String,
-        #[arg(long)]
-        profile_digest: String,
-        #[arg(long)]
-        requester: String,
+        #[command(flatten)]
+        header: plan_create::PlanHeader,
         #[arg(long)]
         site_id: String,
         #[arg(long)]
@@ -402,16 +376,8 @@ enum CreateCommand {
     },
     /// Name one snapshot for a throwaway probe. This does not restore the source site.
     RestoreProbe {
-        #[arg(long)]
-        plan_id: String,
-        #[arg(long)]
-        host_id: String,
-        #[arg(long)]
-        host_epoch: String,
-        #[arg(long)]
-        profile_digest: String,
-        #[arg(long)]
-        requester: String,
+        #[command(flatten)]
+        header: plan_create::PlanHeader,
         #[arg(long)]
         site_id: String,
         #[arg(long)]
@@ -674,11 +640,7 @@ fn main() -> ExitCode {
             return match *command {
                 PlanCommand::Create { command } => match command {
                     CreateCommand::SiteProvision {
-                        plan_id,
-                        host_id,
-                        host_epoch,
-                        profile_digest,
-                        requester,
+                        header,
                         site_id,
                         hostname,
                         recipe,
@@ -690,11 +652,7 @@ fn main() -> ExitCode {
                         quota_block_hard_kib,
                         quota_inode_hard,
                     } => plan_create::site_provision(plan_create::SiteProvision {
-                        plan_id,
-                        host_id,
-                        host_epoch,
-                        profile_digest,
-                        requester,
+                        header,
                         site_id,
                         hostname,
                         recipe,
@@ -706,11 +664,7 @@ fn main() -> ExitCode {
                         quota: quota_block_hard_kib.zip(quota_inode_hard),
                     }),
                     CreateCommand::SiteEject {
-                        plan_id,
-                        host_id,
-                        host_epoch,
-                        profile_digest,
-                        requester,
+                        header,
                         site_id,
                         hostname,
                         alias_hostname,
@@ -722,11 +676,7 @@ fn main() -> ExitCode {
                         compensation_until,
                         limitation,
                     } => plan_create::site_eject(plan_create::SiteEject {
-                        plan_id,
-                        host_id,
-                        host_epoch,
-                        profile_digest,
-                        requester,
+                        header,
                         site_id,
                         hostname,
                         alias_hostname,
@@ -739,11 +689,7 @@ fn main() -> ExitCode {
                         limitations: limitation,
                     }),
                     CreateCommand::ConfigActivate {
-                        plan_id,
-                        host_id,
-                        host_epoch,
-                        profile_digest,
-                        requester,
+                        header,
                         site_id,
                         expected_generation,
                         expected_digest,
@@ -753,11 +699,7 @@ fn main() -> ExitCode {
                         compensation_until,
                         limitation,
                     } => plan_create::config_activate(plan_create::ConfigActivate {
-                        plan_id,
-                        host_id,
-                        host_epoch,
-                        profile_digest,
-                        requester,
+                        header,
                         site_ids: site_id,
                         expected_generation,
                         expected_digest,
@@ -768,43 +710,27 @@ fn main() -> ExitCode {
                         limitations: limitation,
                     }),
                     CreateCommand::BackupCapture {
-                        plan_id,
-                        host_id,
-                        host_epoch,
-                        profile_digest,
-                        requester,
+                        header,
                         site_id,
                         valid_from,
                         expires_at,
                         limitation,
                     } => plan_create::backup_capture(plan_create::BackupCapture {
-                        plan_id,
-                        host_id,
-                        host_epoch,
-                        profile_digest,
-                        requester,
+                        header,
                         site_id,
                         valid_from,
                         expires_at,
                         limitations: limitation,
                     }),
                     CreateCommand::RestoreProbe {
-                        plan_id,
-                        host_id,
-                        host_epoch,
-                        profile_digest,
-                        requester,
+                        header,
                         site_id,
                         snapshot_id,
                         valid_from,
                         expires_at,
                         limitation,
                     } => plan_create::restore_probe(plan_create::RestoreProbe {
-                        plan_id,
-                        host_id,
-                        host_epoch,
-                        profile_digest,
-                        requester,
+                        header,
                         site_id,
                         snapshot_id,
                         valid_from,
@@ -938,8 +864,7 @@ fn main() -> ExitCode {
         return emit(&failure(ErrorCode::InvalidRequest), args.output);
     };
     let request = Request {
-        request_id: Id::try_from(format!("cli-{}", std::process::id()))
-            .expect("PID IDs are bounded ASCII"),
+        request_id: crate::cli_request_id(""),
         command,
     };
     let response = exchange(socket, &request).unwrap_or_else(failure);
@@ -1017,4 +942,13 @@ fn emit(response: &Response, output: Output) -> ExitCode {
         Ok(bytes) if io::stdout().lock().write_all(&bytes).is_ok() => ExitCode::from(status),
         _ => ExitCode::from(7),
     }
+}
+
+/// The coordinator request ID for this CLI process: `cli-<pid><suffix>`.
+#[expect(
+    clippy::expect_used,
+    reason = "a decimal PID with a fixed ASCII prefix and suffix is always a valid Id"
+)]
+pub(crate) fn cli_request_id(suffix: &str) -> Id {
+    Id::try_from(format!("cli-{}{suffix}", std::process::id())).expect("PID IDs are bounded ASCII")
 }

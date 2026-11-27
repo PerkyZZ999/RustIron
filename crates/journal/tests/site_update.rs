@@ -6,9 +6,9 @@ use rustiron_contracts::approval::{
     ComponentSlug, ComponentVersion, Hostname, SiteId, UpdateComponent, UpdateKind,
 };
 use rustiron_journal::{
-    CaptureConsistency, CaptureIntent, CaptureManifest, CaptureMethod, FixtureJournal,
-    JournalError, ProvisionIntent, ProvisionStep, StepState, UpdateIntent, UpdateResult,
-    UpdateState, UpdateStep,
+    Admitted, CaptureConsistency, CaptureIntent, CaptureManifest, CaptureMethod, FixtureJournal,
+    JournalError, ProvisionIntent, ProvisionStep, SiteUpdate, StepState, UpdateIntent, UpdateState,
+    UpdateStep,
 };
 use std::{
     fs,
@@ -165,10 +165,10 @@ fn update(n: u32, name: &str, capture: &str) -> UpdateIntent {
     }
 }
 
-fn new_update(result: UpdateResult) -> rustiron_journal::SiteUpdate {
+fn new_update(result: Admitted<SiteUpdate>) -> rustiron_journal::SiteUpdate {
     match result {
-        UpdateResult::New(update) => update,
-        UpdateResult::Existing(_) => panic!("expected a new update"),
+        Admitted::New(update) => update,
+        Admitted::Existing(_) => panic!("expected a new update"),
     }
 }
 
@@ -187,7 +187,7 @@ fn an_update_records_its_components_and_replays_exactly() {
     assert_eq!(ledger.admission_count().unwrap(), before + 1);
     assert!(matches!(
         ledger.record_update(&intent, time(1101)),
-        Ok(UpdateResult::Existing(_))
+        Ok(Admitted::Existing(_))
     ));
     // The same key with another component or recipe is a conflict.
     let mut other = intent.clone();

@@ -21,15 +21,24 @@ fn review(path: &std::path::Path, format: &str) -> std::process::Output {
 }
 
 struct Temp(PathBuf);
+
+/// W720: a folder-name part that no other test in this process uses. The
+/// clock alone can repeat across parallel tests.
+fn unique_suffix() -> String {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |time| time.as_nanos());
+    let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{nanos}-{next}")
+}
+
 impl Temp {
     fn new() -> Self {
         let directory = std::env::temp_dir().join(format!(
             "ri-review-file-{}-{}",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            unique_suffix()
         ));
         fs::DirBuilder::new()
             .mode(0o700)
@@ -389,8 +398,7 @@ fn product_create(plan: &Value, omitted: Option<&str>) -> std::process::Output {
         let value = &plan[field];
         let argument = value
             .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| value.to_string());
+            .map_or_else(|| value.to_string(), str::to_owned);
         command
             .arg(format!("--{}", field.replace('_', "-")))
             .arg(argument);

@@ -109,7 +109,7 @@ fn each_missing_fact_is_not_bootstrap() {
         (
             "an include target",
             BootstrapFacts {
-                current: Some((real.clone(), real_digest.clone())),
+                current: Some((real, real_digest)),
                 ..fresh()
             },
         ),
@@ -251,7 +251,7 @@ fn the_reconcile_confirms_the_predecessor_only_when_every_fact_holds() {
         (
             "`current` names the journaled target",
             BootstrapFacts {
-                current: Some((real.clone(), real_digest.clone())),
+                current: Some((real, real_digest)),
                 ..fresh()
             },
         ),
@@ -456,10 +456,7 @@ fn the_compensation_records_the_bootstrap_state_only_when_restored() {
         (Err(ExecutorError::StepFailed), Ok(None)),
         (Ok(()), Ok(Some(real.clone()))),
         (Ok(()), Err(ExecutorError::RegistryUnavailable)),
-        (
-            Err(ExecutorError::HelperUnreachable),
-            Ok(Some(real.clone())),
-        ),
+        (Err(ExecutorError::HelperUnreachable), Ok(Some(real))),
     ] {
         assert_eq!(
             bootstrap_restored(&stopped, &current),

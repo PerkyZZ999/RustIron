@@ -8,6 +8,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { type Browser, chromium, type Page } from "playwright";
 
 import index from "../index.html";
+import { consoleApiRoutes } from "../src/api-routes";
 import { createConsoleAuthBackend } from "../src/auth-backend";
 import {
   allowedLoopbackHosts,
@@ -134,30 +135,16 @@ const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
   routes: {
-    "/api/auth/*": authApi.handleAuth,
-    "/api/accounts/status": authApi.status,
-    "/api/accounts/setup": authApi.setupAdmin,
-    "/api/accounts/users": authApi.usersCollection,
-    "/api/accounts/users/:userId": authApi.mutateUser,
-    "/api/accounts/sessions/revoke-others": authApi.revokeOtherSessions,
-    "/api/mail/state": mailApi.getState,
-    "/api/mail/export": mailApi.exportBundle,
-    "/api/mail/mailboxes": mailApi.mailboxesCollection,
-    "/api/mail/mailboxes/:id": mailApi.mutateMailbox,
-    "/api/mail/aliases": mailApi.aliasesCollection,
-    "/api/mail/aliases/:id": mailApi.deleteAlias,
-    "/api/host/logs": hostLogsHandler,
-    "/api/observation": backendApi.observation,
-    "/api/backend/status": backendApi.status,
-    "/api/coordinator/live": backendApi.coordinatorLive,
-    "/api/coordinator/doctor": backendApi.coordinatorDoctor,
-    "/api/coordinator/sites": backendApi.coordinatorSites,
-    "/api/coordinator/sites/:siteId": backendApi.coordinatorSiteInspect,
-    "/api/coordinator/operations/:operationId": backendApi.coordinatorOperationStatus,
-    "/api/coordinator/evidence/:operationId": backendApi.coordinatorEvidenceExport,
-    "/api/write/session": writeApi.session,
-    "/api/write/plan/review": writeApi.review,
-    "/api/write/plan/apply": writeApi.apply,
+    ...consoleApiRoutes(
+      {
+        auth: authApi,
+        readOnly: backendApi,
+        write: writeApi,
+        mail: mailApi,
+        hostLogs: hostLogsHandler,
+      },
+      { production: false },
+    ),
     "/*": index,
   },
   development: false,

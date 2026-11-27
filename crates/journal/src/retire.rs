@@ -12,7 +12,9 @@ use rustiron_contracts::{
     approval::{Sha256Digest, SiteId},
 };
 
-use crate::{FixtureJournal, JournalError, ProvisionState, StepState, provision, storage};
+use crate::{
+    Admitted, FixtureJournal, JournalError, ProvisionState, StepState, provision, storage,
+};
 
 /// An admitted signed retirement; built by the executor from verified inputs.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -50,15 +52,6 @@ pub struct Retirement {
     pub provision_operation_id: Id,
     /// `intent` until its outcome is observed.
     pub state: StepState,
-}
-
-/// A new or an exactly repeated retirement.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RetireResult {
-    /// Recorded now, in `intent`.
-    New(Retirement),
-    /// The same request was recorded before; its stored state.
-    Existing(Retirement),
 }
 
 const COLUMNS: &str = "operation_id, provision_operation_id, idempotency_key, grant_id, nonce, plan_digest, grant_digest, expires_at, state";
@@ -171,7 +164,7 @@ impl FixtureJournal {
         &mut self,
         intent: &RetireIntent,
         now: Timestamp,
-    ) -> Result<RetireResult, JournalError> {
+    ) -> Result<Admitted<Retirement>, JournalError> {
         let signed = self.take_signed(&crate::signed::Expected {
             plan_digest: &intent.plan_digest,
             grant_digest: &intent.grant_digest,
@@ -185,7 +178,7 @@ impl FixtureJournal {
             .map_err(storage::unavailable)?;
         if let Some((exact, existing)) = stored(&transaction, intent)? {
             return if exact {
-                Ok(RetireResult::Existing(existing))
+                Ok(Admitted::Existing(existing))
             } else {
                 Err(JournalError::Conflict)
             };
@@ -231,7 +224,7 @@ impl FixtureJournal {
         crate::signed::insert(&transaction, &intent.operation_id, signed.as_ref())?;
         storage::set_clock(&transaction, now)?;
         transaction.commit().map_err(storage::unavailable)?;
-        Ok(RetireResult::New(Retirement {
+        Ok(Admitted::New(Retirement {
             operation_id: intent.operation_id.clone(),
             provision_operation_id: intent.provision_operation_id.clone(),
             state: StepState::Intent,

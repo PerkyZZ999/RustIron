@@ -5,6 +5,7 @@ use std::{
     fs::{self, File, OpenOptions},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::Path,
+    sync::LazyLock,
     time::Duration,
 };
 
@@ -1178,8 +1179,57 @@ pub(crate) fn consumed(c: &Connection, i: &Intent) -> Result<bool, JournalError>
     consumed_ids(c, &i.operation_id, &i.grant_id, &i.nonce)
 }
 
-/// Whether an operation id, grant or nonce is bound to any fixture,
-/// provision, capture, restore probe, re-adoption or import scrub.
+/// W708: every table that records a signed admission, with the filter that
+/// selects the rows the admission mark counts. Each such table binds an
+/// operation, a grant, and a nonce. A new signed verb adds its table here
+/// once: the replay check ([`consumed_ids`]) and the mark count
+/// ([`admission_count`]) both read this list, and a test refuses a schema
+/// table with a nonce that is not on it.
+const SIGNED_ADMISSIONS: [(&str, &str); 18] = [
+    ("operations", ""),
+    ("provisions", " WHERE state<>'adopted'"),
+    ("captures", ""),
+    ("restore_probes", ""),
+    ("readoptions", ""),
+    ("import_scrubs", " WHERE origin='signed'"),
+    ("certificates", ""),
+    ("retirements", ""),
+    ("updates", ""),
+    ("deletions", ""),
+    ("quota_changes", ""),
+    ("clone_scrub_grants", ""),
+    ("site_restores", ""),
+    ("dns_imports", ""),
+    ("dns_changes", ""),
+    ("app_releases", ""),
+    ("app_lifecycles", ""),
+    ("credential_rotations", ""),
+];
+
+static CONSUMED_SQL: LazyLock<String> = LazyLock::new(|| {
+    let mut checks: Vec<String> = SIGNED_ADMISSIONS
+        .iter()
+        .map(|(table, _)| {
+            format!(
+                "EXISTS(SELECT 1 FROM {table} WHERE operation_id=?1 OR grant_id=?2 OR nonce=?3)"
+            )
+        })
+        .collect();
+    // A renewal is unsigned, but its id must never be reused as an operation id.
+    checks.push("EXISTS(SELECT 1 FROM certificate_renewals WHERE renewal_id=?1)".to_owned());
+    format!("SELECT {}", checks.join(" OR "))
+});
+
+static ADMISSION_COUNT_SQL: LazyLock<String> = LazyLock::new(|| {
+    let counts: Vec<String> = SIGNED_ADMISSIONS
+        .iter()
+        .map(|(table, filter)| format!("(SELECT count(*) FROM {table}{filter})"))
+        .collect();
+    format!("SELECT {}", counts.join(" + "))
+});
+
+/// Whether an operation id, grant or nonce is bound to any signed admission
+/// ([`SIGNED_ADMISSIONS`]), or the id to a certificate renewal.
 pub(crate) fn consumed_ids(
     c: &Connection,
     operation: &Id,
@@ -1187,11 +1237,20 @@ pub(crate) fn consumed_ids(
     nonce: &Id,
 ) -> Result<bool, JournalError> {
     c.query_row(
-        "SELECT EXISTS(SELECT 1 FROM operations WHERE operation_id=?1 OR grant_id=?2 OR nonce=?3) OR EXISTS(SELECT 1 FROM provisions WHERE operation_id=?1 OR grant_id=?2 OR nonce=?3) OR EXISTS(SELECT 1 FROM captures WHERE operation_id=?1 OR grant_id=?2 OR nonce=?3) OR EXISTS(SELECT 1 FROM restore_probes WHERE operation_id=?1 OR grant_id=?2 OR nonce=?3) OR EXISTS(SELECT 1 FROM readoptions WHERE operation_id=?1 OR grant_id=?2 OR nonce=?3) OR EXISTS(SELECT 1 FROM import_scrubs WHERE operation_id=?1 OR grant_id=?2 OR nonce=?3) OR EXISTS(SELECT 1 FROM certificates WHERE operation_id=?1 OR grant_id=?2 OR nonce=?3) OR EXISTS(SELECT 1 FROM retirements WHERE operation_id=?1 OR grant_id=?2 OR nonce=?3) OR EXISTS(SELECT 1 FROM updates WHERE operation_id=?1 OR grant_id=?2 OR nonce=?3) OR EXISTS(SELECT 1 FROM deletions WHERE operation_id=?1 OR grant_id=?2 OR nonce=?3) OR EXISTS(SELECT 1 FROM quota_changes WHERE operation_id=?1 OR grant_id=?2 OR nonce=?3) OR EXISTS(SELECT 1 FROM clone_scrub_grants WHERE operation_id=?1 OR grant_id=?2 OR nonce=?3) OR EXISTS(SELECT 1 FROM site_restores WHERE operation_id=?1 OR grant_id=?2 OR nonce=?3) OR EXISTS(SELECT 1 FROM dns_imports WHERE operation_id=?1 OR grant_id=?2 OR nonce=?3) OR EXISTS(SELECT 1 FROM dns_changes WHERE operation_id=?1 OR grant_id=?2 OR nonce=?3) OR EXISTS(SELECT 1 FROM app_releases WHERE operation_id=?1 OR grant_id=?2 OR nonce=?3) OR EXISTS(SELECT 1 FROM app_lifecycles WHERE operation_id=?1 OR grant_id=?2 OR nonce=?3) OR EXISTS(SELECT 1 FROM credential_rotations WHERE operation_id=?1 OR grant_id=?2 OR nonce=?3) OR EXISTS(SELECT 1 FROM certificate_renewals WHERE renewal_id=?1)",
+        &CONSUMED_SQL,
         params![operation.as_str(), grant.as_str(), nonce.as_str()],
         |row| row.get(0),
     )
     .map_err(unavailable)
+}
+
+/// The admission count that the external mark records: every signed
+/// admission row, never deleted (W048).
+pub(crate) fn admission_count(c: &Connection) -> Result<u64, JournalError> {
+    let count: i64 = c
+        .query_row(&ADMISSION_COUNT_SQL, [], |row| row.get(0))
+        .map_err(unavailable)?;
+    u64::try_from(count).map_err(unavailable)
 }
 
 /// W372: a re-adoption still `verifying` blocks every other admission until
@@ -1241,7 +1300,7 @@ mod migration_crash_tests {
 
     use rustiron_contracts::{Id, Timestamp, approval::Sha256Digest};
 
-    use crate::{FixtureJournal, Intent, RecordResult, RecordedState};
+    use crate::{Admitted, FixtureJournal, Intent, RecordedState};
 
     /// The v24 to v16 steps of the downgrades below: the import (v21) and
     /// later tables and the re-adoption tables dropped and `provisions` rebuilt with the v16 state check.
@@ -1346,7 +1405,7 @@ mod migration_crash_tests {
             } else {
                 FixtureJournal::open(&directory, id("host_fixture"), id("epoch_fixture")).unwrap()
             };
-            let RecordResult::Existing(existing) = reopened
+            let Admitted::Existing(existing) = reopened
                 .record_intent(&admitted, Timestamp::try_from(1001).unwrap())
                 .unwrap()
             else {
@@ -1418,7 +1477,7 @@ mod migration_crash_tests {
             FixtureJournal::open(&directory, id("host_fixture"), id("epoch_fixture"))
                 .expect("hot journal must be rolled back, not refused");
         assert!(!directory.join("fixture-journal.sqlite-journal").exists());
-        let RecordResult::Existing(existing) = reopened
+        let Admitted::Existing(existing) = reopened
             .record_intent(&admitted, Timestamp::try_from(1001).unwrap())
             .unwrap()
         else {
@@ -1463,7 +1522,7 @@ mod migration_crash_tests {
             std::env::temp_dir().join(format!("rustiron-v6-migrate-{}", std::process::id()));
         write_v6(&directory);
         let mut journal = migrate(&directory).unwrap();
-        let RecordResult::Existing(existing) = journal
+        let Admitted::Existing(existing) = journal
             .record_intent(&intent(), Timestamp::try_from(1001).unwrap())
             .unwrap()
         else {
@@ -1473,5 +1532,26 @@ mod migration_crash_tests {
         assert_eq!(journal.admission_count().unwrap(), 1);
         drop(journal);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod signed_admission_tests {
+    use super::{SCHEMA, SIGNED_ADMISSIONS};
+
+    /// W708: the signed-admission list names exactly the schema tables that
+    /// bind a nonce, so a new signed table cannot miss the replay check or
+    /// the admission mark.
+    #[test]
+    fn the_signed_admission_list_is_every_table_with_a_nonce() {
+        let mut with_nonce: Vec<&str> = SCHEMA
+            .iter()
+            .filter(|(_, sql)| sql.starts_with("CREATE TABLE") && sql.contains(" nonce TEXT"))
+            .map(|(name, _)| *name)
+            .collect();
+        let mut listed: Vec<&str> = SIGNED_ADMISSIONS.iter().map(|(name, _)| *name).collect();
+        with_nonce.sort_unstable();
+        listed.sort_unstable();
+        assert_eq!(listed, with_nonce);
     }
 }
