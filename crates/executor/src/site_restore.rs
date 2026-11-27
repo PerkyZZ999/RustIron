@@ -12,7 +12,7 @@
 
 use std::path::PathBuf;
 
-use rustiron_contracts::approval::{AppLifecycleAction, Hostname, RestoreScope};
+use rustiron_contracts::approval::{AppDatabase, AppLifecycleAction, Hostname, RestoreScope};
 use rustiron_journal::{AppFacts, Capture, CaptureState, RestoreFrom, RestoreStep, SiteRestore};
 use std::os::fd::OwnedFd;
 
@@ -36,6 +36,8 @@ pub(crate) struct RestoreContext<'a> {
     pub anchor: &'a TrustAnchor,
     /// W601 (D-096/P30): present when restoring a P27/EmDash app site.
     pub app: Option<&'a AppFacts>,
+    /// W658 (D-102 C2): enrolled database engine when restoring a modern app site.
+    pub app_database: Option<AppDatabase>,
 }
 
 fn failed(what: &'static str) -> ExecutorError {
@@ -93,15 +95,31 @@ fn run_app_step(
         RestoreStep::Fetch => fetch_step(context, layout, uid, level),
         RestoreStep::Database => {
             let fetched = fetched_root(layout)?;
-            let bundle = fetched
-                .join("tmp")
-                .join(crate::layout::APP_SQLITE_BUNDLE_FILE);
-            let target_data = if context.restore.scope == RestoreScope::Database {
-                layout.root.join("data")
-            } else {
-                fetched.join("data")
-            };
-            crate::app_site::restore_app_sqlite(layout, facts, &bundle, &target_data)
+            let database = context.app_database.unwrap_or(AppDatabase::Sqlite);
+            match database {
+                AppDatabase::None => Ok(()),
+                AppDatabase::Sqlite => {
+                    let bundle = fetched
+                        .join("tmp")
+                        .join(crate::layout::APP_SQLITE_BUNDLE_FILE);
+                    let target_data = if context.restore.scope == RestoreScope::Database {
+                        layout.root.join("data")
+                    } else {
+                        fetched.join("data")
+                    };
+                    crate::app_site::restore_app_sqlite(layout, facts, &bundle, &target_data)
+                }
+                AppDatabase::Mariadb => {
+                    let dump = fetched
+                        .join("tmp")
+                        .join(crate::layout::APP_MARIADB_DUMP_FILE);
+                    restore_app_mariadb(layout, level, &dump)
+                }
+                AppDatabase::Postgresql18 => {
+                    let dump = fetched.join("tmp").join(crate::layout::APP_PG_DUMP_FILE);
+                    crate::postgres::restore_database(layout, &dump)
+                }
+            }
         }
         RestoreStep::Files => app_files_step(layout, uid),
         RestoreStep::Reopen => {
@@ -251,12 +269,10 @@ fn fetch_step(
     match context.capture.manifest.as_ref() {
         Some(manifest) if !manifest.truncated => {
             let root = provision::path_str(&layout.root)?;
-            let built = crate::staging_clone::fetched_manifest_for(
-                layout,
-                level,
-                root,
-                context.app.is_some(),
-            )?;
+            let app_db = context
+                .app
+                .map(|_| context.app_database.unwrap_or(AppDatabase::Sqlite));
+            let built = crate::staging_clone::fetched_manifest_for_db(layout, level, root, app_db)?;
             if built.is_some_and(|built| !built.truncated && built.sha256 == manifest.sha256) {
                 Ok(())
             } else {
@@ -306,6 +322,48 @@ fn database_step(layout: &SiteLayout, level: &str) -> Result<(), ExecutorError> 
         return Err(failed("tables left"));
     }
     crate::site_update::import_fetched_dump(layout, level)
+}
+
+/// W658 (D-102 C2): drops tables in a MariaDB modern app site's database as the
+/// site user, verifies an empty schema, and imports the fetched app SQL dump.
+fn restore_app_mariadb(
+    layout: &SiteLayout,
+    level: &str,
+    dump_path: &std::path::Path,
+) -> Result<(), ExecutorError> {
+    let tmp = layout.root.join("tmp");
+    let mut args = provision::job_properties(
+        crate::import::OBSERVE_DOMAIN,
+        &layout.account,
+        level,
+        provision::path_str(&tmp)?,
+    );
+    args.push("--".to_owned());
+    args.push(format!(
+        "{}/{}",
+        crate::layout::JOB_BIN_DIR,
+        crate::manifest::WORKER
+    ));
+    args.push("site-drop-tables".to_owned());
+    args.push(layout.account.clone());
+    let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+    provision::run("/usr/bin/systemd-run", &borrowed)?;
+    let count = provision::spawn(
+        provision::MARIADB,
+        &[
+            "--batch",
+            "--skip-column-names",
+            "--socket",
+            provision::DB_SOCKET,
+        ],
+        true,
+        Some(schema_count_sql(&layout.account).as_bytes()),
+    )?;
+    if count.trim() != "0" {
+        return Err(failed("tables left"));
+    }
+    // W663-E3: import as the site's own database user, as WordPress restores do.
+    crate::site_update::import_dump_file(layout, level, dump_path)
 }
 
 /// The number of tables and views in the site's own database. The name is

@@ -223,6 +223,78 @@ class AdvisoryWatchTests(unittest.TestCase):
             self.assertIn("UNSUPPORTED-SERIES-OPENLITESPEED", ids)
             self.assertIn("BELOW-MINIMUM-MARIADB", ids)
             self.assertNotIn("BELOW-MINIMUM-POWERDNS", ids)
+            self.assertNotIn("BELOW-MINIMUM-POSTGRESQL", ids)
+            self.assertNotIn("BELOW-MINIMUM-CADDY", ids)
+
+    def test_postgres_18_7_and_caddy_support_matrix_floors(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+            bundle = Path(tmp) / "bundle.json"
+            bundle.write_text(
+                json.dumps({
+                    "schema": "rustiron-advisory-bundle/1",
+                    "osv_crates": {},
+                    "osv_npm": {},
+                    "almalinux_errata": {"data": []},
+                }),
+                encoding="utf-8",
+            )
+            obs = Path(tmp) / "obs.json"
+            obs.write_text(
+                json.dumps({
+                    "schema": "rustiron-lab-observation/1",
+                    "host": {"host_id": "lab", "host_epoch": "e1", "packages": []},
+                    "machine": {
+                        "schema": "rustiron-host-status/1",
+                        "os": {"version": "10.3"},
+                        "stack": {
+                            "openlitespeed": "1.9.4",
+                            "mariadb": "10.11.18",
+                            "php": ["8.4.28"],
+                            "caddy": "2.9.1",
+                            "postgresql": "18.6",
+                        },
+                    },
+                }),
+                encoding="utf-8",
+            )
+            report, code = WATCH.run_watch(
+                repo_root=ROOT,
+                observation_path=obs,
+                offline_bundle=bundle,
+                now_unix=NOW_CLEAN,
+            )
+            self.assertEqual(code, 1)
+            ids = {f["advisory_id"] for f in report["findings"]}
+            self.assertIn("BELOW-MINIMUM-CADDY", ids)
+            self.assertIn("BELOW-MINIMUM-POSTGRESQL", ids)
+
+            # Updating to 2.10.0 and 18.7 clears both findings.
+            obs.write_text(
+                json.dumps({
+                    "schema": "rustiron-lab-observation/1",
+                    "host": {"host_id": "lab", "host_epoch": "e1", "packages": []},
+                    "machine": {
+                        "schema": "rustiron-host-status/1",
+                        "os": {"version": "10.3"},
+                        "stack": {
+                            "openlitespeed": "1.9.4",
+                            "mariadb": "10.11.18",
+                            "php": ["8.4.28"],
+                            "caddy": "2.10.0",
+                            "postgresql": "18.7",
+                        },
+                    },
+                }),
+                encoding="utf-8",
+            )
+            clean_report, clean_code = WATCH.run_watch(
+                repo_root=ROOT,
+                observation_path=obs,
+                offline_bundle=bundle,
+                now_unix=NOW_CLEAN,
+            )
+            self.assertEqual(clean_code, 0)
+            self.assertEqual(clean_report["findings"], [])
 
     def test_feed_error_exits_two_and_never_claims_clean(self) -> None:
         def failing_fetcher(_url, _payload=None, _timeout=20):

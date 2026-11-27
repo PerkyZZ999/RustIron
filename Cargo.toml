@@ -3,7 +3,7 @@ members = ["crates/contracts", "crates/core", "crates/control", "crates/cli", "c
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.99.1"
 license = "Apache-2.0"
@@ -13,10 +13,10 @@ publish = false
 clap = { version = "=4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 rustix = { version = "=1.1.5", features = ["net", "process", "event", "system", "fs", "rand", "thread"] }
 rusqlite = { version = "=0.41.0", default-features = false, features = ["bundled"] }
-rustiron-core = { path = "crates/core", version = "=0.1.0" }
-rustiron-contracts = { path = "crates/contracts", version = "=0.1.0" }
-rustiron-control = { path = "crates/control", version = "=0.1.0" }
-rustiron-journal = { path = "crates/journal", version = "=0.1.0" }
+rustiron-core = { path = "crates/core", version = "=0.1.1" }
+rustiron-contracts = { path = "crates/contracts", version = "=0.1.1" }
+rustiron-control = { path = "crates/control", version = "=0.1.1" }
+rustiron-journal = { path = "crates/journal", version = "=0.1.1" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["raw_value"] }
 serde_json_canonicalizer = "=0.4.1"

@@ -42,6 +42,7 @@ MAX_SUMMARY_CHARS = 240
 # Host RPM packages monitored against AlmaLinux 10 security errata.
 WATCHED_ALMA_RPMS = frozenset({
     "almalinux-release",
+    "caddy",
     "dovecot",
     "firewalld",
     "glibc",
@@ -55,6 +56,9 @@ WATCHED_ALMA_RPMS = frozenset({
     "openssl",
     "openssl-libs",
     "postfix",
+    "postgresql18",
+    "postgresql18-libs",
+    "postgresql18-server",
     "restic",
     "selinux-policy",
     "selinux-policy-targeted",

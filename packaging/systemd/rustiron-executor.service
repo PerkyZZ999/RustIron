@@ -20,7 +20,7 @@ NoNewPrivileges=yes
 SecureBits=noroot-locked
 
 ProtectSystem=strict
-ReadWritePaths=/var/lib/rustiron /etc/rustiron-ols /etc/rustiron-ejected
+ReadWritePaths=/var/lib/rustiron /etc/rustiron-ols /etc/rustiron-ejected /etc/rustiron-caddy
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

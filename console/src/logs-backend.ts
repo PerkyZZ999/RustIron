@@ -9,8 +9,10 @@ const ALLOWED_UNITS: Record<string, string> = {
   control: "rustiron-coordinator.service",
   admin: "rustiron-admin-helper.service",
   console: "rustiron-console.service",
+  caddy: "rustiron-caddy.service",
   ols: "lshttpd.service",
   mariadb: "mariadb.service",
+  postgresql: "postgresql-18.service",
   pdns: "pdns.service",
   postfix: "postfix.service",
   dovecot: "dovecot.service",
@@ -34,6 +36,8 @@ const SECRET_PATTERNS: [RegExp, string][] = [
     "$1=[REDACTED]",
   ],
   [/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED]"],
+  // W662: SQL statement form (PostgreSQL/MariaDB error and statement logs).
+  [/(PASSWORD\s+)'[^']*'/gi, "$1'[REDACTED]'"],
 ];
 
 function isAsciiLetter(code: number): boolean {

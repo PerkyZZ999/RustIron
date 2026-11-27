@@ -160,12 +160,15 @@ Blast-radius envelope (D-098): `sites_touched: 1`, `ols_reload: false`, `all_sit
 
 ## Option B: Caddy ingress contract (dedicated or multi-IP hosts)
 
-Reserved for dedicated app-only hosts or multi-IP hosts (post-v1.0 / P28) under [D-056](../decisions/D-056-web-server-per-workload.md):
+Reserved for dedicated app-only hosts or multi-IP hosts (post-v1.0 / P28) under [D-056](../decisions/D-056-web-server-per-workload.md), and expanded for `v0.1.1` under [D-102](../decisions/D-102-caddy-fullstack-and-postgres18.md) (owner-approved **A1 + B1 + C2**):
 
-- **Identity and confinement:** Runs as unprivileged `rustiron-caddy` with `CAP_NET_BIND_SERVICE`, `NoNewPrivileges=yes`, `ProtectSystem=strict`, and a dedicated SELinux domain. The admin API stays off (`admin off`) or on a root-owned `0600` Unix socket.
-- **Trusted generation rendering:** The executor renders an immutable `Caddyfile` from trusted journal records and validates it with `caddy validate`. Reloads swap atomically and roll back on health failure.
-- **Port ownership:** Either binds 80/443 on an app-only host (no OLS installed) or binds a distinct enrolled public IPv4/IPv6 address that never overlaps OLS listeners.
-- **Runtime compatibility:** Runs the exact same `rustiron-app@<site_id>.service`, release bundle, `data/`, and P03 backup formats as Option A.
+- **Identity and confinement:** Runs as unprivileged `rustiron-caddy` with `CAP_NET_BIND_SERVICE`, `NoNewPrivileges=yes`, `ProtectSystem=strict`, and dedicated SELinux domain `rustiron_caddy_t`. The admin API listens only on the `0700` Unix socket `/run/rustiron-caddy/admin.sock` (zero port `2019` exposure), so `systemctl reload` swaps generations without a restart ([D-102 revision W662](../decisions/D-102-caddy-fullstack-and-postgres18.md#revision-2026-11-26-w662)).
+- **Shared TLS custody (B1):** Keeps `rustiron-acme` / Certbot as the single TLS issuer; Caddy runs with `auto_https disable_certs` and reads `/etc/rustiron-tls/<account>/live/` read-only so `rustiron_caddy_t` requires zero outbound internet access.
+- **Proxy headers:** Caddy's defaults replace any client `X-Forwarded-For`, `X-Forwarded-Proto`, and `X-Forwarded-Host` with authentic values, and every `reverse_proxy` overwrites `X-Real-IP`. The renderer adds no `header_up -…` deletions, because Caddy applies them after its own values ([W662-F1](../validation/S10-W662/README.md)).
+- **Trusted generation rendering:** The executor renders an immutable `Caddyfile` from trusted journal records and validates it with `caddy validate --adapter caddyfile`. Reloads swap atomically and roll back on health failure.
+- **Dual-mode port ownership (A1):** Supports `caddy_only` (app-only host), `caddy_multi_ip` (separate public IP), and `caddy_edge_over_ols` (single-IP mixed host where Caddy owns `:80/:443` and proxies WordPress domains to OLS on `127.0.0.1:8080`).
+- **Schema 2 full-stack topologies & selectable databases (C2):** `app_provision` schema 2 adds `static_spa` (`runtime: static_v1`), `backend_api`, `fullstack_split` (static `frontend_dir` + `/api/*` backend), and `fullstack_dual_ssr` (SSR frontend + API backend), optional blue/green standby ports (`standby_port`, `frontend_standby_port`), Caddy SSE (`flush_interval -1`) and prefix stripping, plus selectable `database` (`none`, `sqlite`, `mariadb`, `postgresql_18` `>= 18.7`, EOL `2030-11-14`) with dedicated least-privilege SELinux sub-types (`rustiron_app_mariadb_t`, `rustiron_app_pg_t`).
+- **Runtime compatibility:** Runs the exact same `rustiron-app@<site_id>.service`, release bundle, `data/`, and P03 backup formats as Option A while preserving full schema 1 compatibility.
 
 ## P27 incremental delivery slices
 

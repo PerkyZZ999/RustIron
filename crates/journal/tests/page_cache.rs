@@ -102,7 +102,7 @@ fn a_fresh_journal_has_the_exact_page_cache_tables() {
     let version: i64 = c
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 44);
+    assert_eq!(version, 45);
     for (table, ddl) in [
         ("page_cache_optins", DDL),
         ("page_cache_optouts", DDL_OUT),
@@ -562,7 +562,7 @@ fn a_v18_journal_migrates_in_place_and_keeps_its_recipe() {
     let version: i64 = c
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 44);
+    assert_eq!(version, 45);
 }
 
 /// W395: the cache-on recipe is journaled with its opt-in and named by the

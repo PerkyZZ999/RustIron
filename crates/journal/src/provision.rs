@@ -147,8 +147,11 @@ pub(crate) enum Origin<'a> {
     Clone(&'a crate::site_clone::CloneFacts),
     /// A proxy site with its signed routes (W572, D-095).
     Proxy(&'a crate::proxy::ProxyFacts),
-    /// A modern app site with its signed runtime facts and routes (W597, D-099).
-    App(&'a crate::app::AppFacts),
+    /// A modern app site with its signed runtime facts, routes, and optional D-102 full-stack spec.
+    App(
+        &'a crate::app::AppFacts,
+        Option<&'a crate::app::AppFullstackSpec>,
+    ),
 }
 
 impl<'a> Origin<'a> {
@@ -169,14 +172,23 @@ impl<'a> Origin<'a> {
     fn proxy(self) -> Option<&'a crate::proxy::ProxyFacts> {
         match self {
             Self::Proxy(facts) => Some(facts),
-            Self::App(facts) => Some(&facts.routes),
+            Self::App(facts, _)
+                if !facts.routes.routes.is_empty() || !facts.routes.websockets.is_empty() =>
+            {
+                Some(&facts.routes)
+            }
             _ => None,
         }
     }
 
-    fn app(self) -> Option<&'a crate::app::AppFacts> {
+    fn app(
+        self,
+    ) -> Option<(
+        &'a crate::app::AppFacts,
+        Option<&'a crate::app::AppFullstackSpec>,
+    )> {
         match self {
-            Self::App(facts) => Some(facts),
+            Self::App(facts, spec) => Some((facts, spec)),
             _ => None,
         }
     }
@@ -227,11 +239,16 @@ impl FixtureJournal {
             let cloned = crate::site_clone::facts(&transaction, &existing.intent.operation_id)?;
             let routes = crate::proxy::facts(&transaction, &existing.intent.operation_id)?;
             let app = crate::app::facts(&transaction, &existing.intent.operation_id)?;
+            let fullstack =
+                crate::app::fullstack_spec(&transaction, &existing.intent.operation_id)?;
+            let expected_app = origin.app().map(|(f, _)| f);
+            let expected_fullstack = origin.app().and_then(|(_, s)| s);
             return if existing.intent == *intent
                 && recorded.as_ref() == import
                 && cloned.as_ref() == origin.clone_facts()
                 && routes.as_ref() == origin.proxy()
-                && app.as_ref() == origin.app()
+                && app.as_ref() == expected_app
+                && fullstack.as_ref() == expected_fullstack
             {
                 Ok(ProvisionResult::Existing(existing))
             } else {
@@ -261,10 +278,15 @@ impl FixtureJournal {
         if taken || crate::import::alias_taken(&transaction, &intent.hostname)? {
             return Err(JournalError::Consumed);
         }
-        if let Some(facts) = origin.app()
-            && crate::app::port_taken(&transaction, facts.port)?
-        {
-            return Err(JournalError::Consumed);
+        if let Some((facts, spec)) = origin.app() {
+            let ports = match spec {
+                Some(fs) => fs.all_ports(facts),
+                None if facts.port > 0 => vec![facts.port],
+                None => Vec::new(),
+            };
+            if crate::app::ports_taken(&transaction, &ports)? {
+                return Err(JournalError::Consumed);
+            }
         }
         // D-078: the reservation and the source recheck commit together.
         if let Some(facts) = origin.clone_facts()
@@ -330,8 +352,8 @@ impl FixtureJournal {
         if let Some(facts) = origin.clone_facts() {
             crate::site_clone::insert(&transaction, &intent.operation_id, facts)?;
         }
-        if let Some(facts) = origin.app() {
-            crate::app::insert(&transaction, &intent.operation_id, facts)?;
+        if let Some((facts, spec)) = origin.app() {
+            crate::app::insert(&transaction, &intent.operation_id, facts, spec)?;
         } else if let Some(facts) = origin.proxy() {
             crate::proxy::insert(&transaction, &intent.operation_id, facts)?;
         }

@@ -4300,7 +4300,7 @@ function SettingsAbout({ live, host }: { live: boolean; host: ObservedHost | nul
       </div>
       <dl className="kv">
         <dt>Console</dt>
-        <dd>{live ? "0.1.0 · read-only" : "0.1.0 · fixture preview, read-only"}</dd>
+        <dd>{live ? "0.1.1 · read-only" : "0.1.1 · fixture preview, read-only"}</dd>
         {host ? (
           <>
             <dt>Host</dt>

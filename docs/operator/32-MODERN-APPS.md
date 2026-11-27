@@ -13,6 +13,26 @@ Confirm the pinned runtime binary is installed on the host as a root-owned, non-
 
 No package manager (`npm`, `pnpm`, `bun install`) or user install script ever runs as root on the managed host.
 
+## Full-stack apps behind Caddy (`v0.1.1`)
+
+`v0.1.1` adds schema 2 apps under [D-102](../decisions/D-102-caddy-fullstack-and-postgres18.md): four topologies (`static_spa`, `backend_api`, `fullstack_split`, `fullstack_dual_ssr`), Caddy edge ingress with HTTP/3, blue/green cutover, and a selectable database (`none`, `sqlite`, `mariadb`, `postgresql_18`). The [lab proof](../validation/S10-W662/README.md) lists what was tested on a disposable AlmaLinux 10.3 host and what was not.
+
+1. **Caddy.** Install `caddy` (`>= 2.10.0`) as root-owned `/usr/local/bin/caddy` (mode `0755`, one link). Enroll its SHA-256 with `--caddy-binary-sha256` and pick the ingress mode with the installation wizard. Caddy runs as `rustiron-caddy` in `rustiron_caddy_t`. Its admin API listens only on `/run/rustiron-caddy/admin.sock`; port `2019` never listens. `rustiron-acme` stays the only certificate issuer.
+2. **PostgreSQL 18.** For `postgresql_18` apps, run the wizard step `postgresql_18_setup`. It verifies the pinned PGDG key, installs `postgresql18-server` `>= 18.7`, relabels `/usr/pgsql-18/bin` so the server runs as `postgresql_t`, and installs the loopback and SCRAM-SHA-256 templates. Check with `ps -eZ | grep postgres` (expect `postgresql_t`) and `ss -ltn 'sport = :5432'` (expect `127.0.0.1` only).
+3. **Ports.** Choose app ports in the SELinux `unreserved_port_t` ranges. Some ports above 1024 have their own type (for example `4101`, `4200`, `4321`, `5000`); an app cannot bind them and Caddy cannot proxy to them. Check a port first:
+   ```sh
+   semanage port -l | grep -w <port>
+   ```
+   No output means the port is `unreserved_port_t`.
+4. **Package off-host.** Build the app on a build host, then pack the build output deterministically:
+   ```sh
+   python3 packaging/rustiron-app-pack.py presets
+   python3 packaging/rustiron-app-pack.py pack --preset vite-elysia --site-id <site_id> --release-id <release_id> --frontend-dist ./web/dist --backend-dist ./api/dist --out ./release
+   ```
+   The packager refuses symlinks, special files, setuid or setgid bits, unsafe paths, and `.env` files. It writes `bundle.tar.gz`, `manifest.sha256`, and `release-meta.json`, which holds the intake copy command and the exact `rustiron plan create app-deploy` arguments.
+5. **Deploy.** Stage, sign, and submit as in [Stage and deploy a prebuilt release](#stage-and-deploy-a-prebuilt-release). With `--blue-green-cutover`, the executor starts the standby slot, probes its health, and reloads Caddy onto it without a restart.
+6. **Database backups.** Captures of `postgresql_18` apps hold a `pg_dump` custom-format dump. Restores and pre-migration rollbacks replay it as the site role (password from `private/app.env`), never as the `postgres` superuser.
+
 ## Provision the app site
 
 1. Choose a free site ID, hostname, loopback port (`1024–65535`, excluding 3306, SSH, OLS, and active proxy/app ports), HTTP routes (must include `/`), optional WebSocket prefixes, relative release entrypoint, optional companion worker entrypoint, health check path, sorted uppercase environment variable key names (`env_keys` — names only, never values), and cgroup/disk limits (`memory_max_mib`, `tasks_max`, `quota_mib`).

@@ -87,6 +87,8 @@ fn diagnose_with(merged: &Value, now: u64, matrix: &Value) -> Value {
     pressure(machine, &mut out);
     services(machine, now, &mut out);
     database(machine, &mut out);
+    postgresql(machine, &mut out);
+    caddy(machine, &mut out);
     packages(machine, &mut out);
     backups(merged, now, &mut out);
     unsettled_captures(merged, now, &mut out);
@@ -546,6 +548,95 @@ fn database(machine: &Value, out: &mut Vec<Finding>) {
             "Check that /etc/my.cnf.d/zz-rustiron-loopback.cnf is installed and nothing later sets bind-address, then restart mariadb.",
         )),
         None => {}
+    }
+}
+
+/// W656 (D-102): optional PostgreSQL 18 (`postgresql-18.service`) check;
+/// silent when not installed on this host.
+fn postgresql(machine: &Value, out: &mut Vec<Finding>) {
+    let pg = &machine["postgresql"];
+    if pg["installed"] != true {
+        return;
+    }
+    out.push(match pg["ping"].as_str() {
+        Some("responding") => finding(
+            "database",
+            "ok",
+            "host",
+            "PostgreSQL 18",
+            "PostgreSQL 18 answers on loopback.",
+            "None.",
+        ),
+        Some("not_responding") => finding(
+            "database",
+            "fail",
+            "host",
+            "PostgreSQL 18",
+            "PostgreSQL 18 is installed but does not answer on 127.0.0.1:5432.",
+            "Read `journalctl -u postgresql-18` and check disk space and configuration.",
+        ),
+        _ => finding(
+            "database",
+            "unknown",
+            "host",
+            "PostgreSQL 18",
+            "PostgreSQL 18 health could not be probed.",
+            "Run `/usr/pgsql-18/bin/pg_isready -h 127.0.0.1 -p 5432` as an operator.",
+        ),
+    });
+    match pg["listeners_beyond_loopback"].as_u64() {
+        Some(0) => out.push(finding(
+            "database",
+            "ok",
+            "host",
+            "PostgreSQL 18 network",
+            "PostgreSQL 18 listens on loopback only.",
+            "None.",
+        )),
+        Some(_) => out.push(finding(
+            "database",
+            "fail",
+            "host",
+            "PostgreSQL 18 network",
+            "PostgreSQL 18 listens on an address beyond loopback; Rustiron requires listen_addresses = '127.0.0.1'.",
+            "Set `listen_addresses = '127.0.0.1'` in `/var/lib/pgsql/18/data/postgresql.conf` and restart `postgresql-18`.",
+        )),
+        None => {}
+    }
+}
+
+/// W656 (D-102): optional confined `rustiron-caddy` check; silent when not
+/// installed on this host.
+fn caddy(machine: &Value, out: &mut Vec<Finding>) {
+    let c = &machine["caddy"];
+    if c["installed"] != true {
+        return;
+    }
+    match c["admin_port_listeners"].as_u64() {
+        Some(0) => out.push(finding(
+            "caddy",
+            "ok",
+            "rustiron",
+            "Caddy admin API",
+            "Caddy admin TCP port 2019 is closed (admin API only on /run/rustiron-caddy/admin.sock).",
+            "None.",
+        )),
+        Some(_) => out.push(finding(
+            "caddy",
+            "fail",
+            "rustiron",
+            "Caddy admin API",
+            "A listener is active on Caddy admin TCP port 2019; D-102 allows the admin API only on its Unix socket.",
+            "Verify `/etc/rustiron-caddy/current/Caddyfile` declares `admin unix//run/rustiron-caddy/admin.sock` and reload `rustiron-caddy.service`.",
+        )),
+        None => out.push(finding(
+            "caddy",
+            "unknown",
+            "rustiron",
+            "Caddy admin API",
+            "Caddy admin port listener state could not be read.",
+            "Check `ss -tlnp 'sport = :2019'` as an operator.",
+        )),
     }
 }
 
@@ -1067,6 +1158,29 @@ fn app_units(merged: &Value, out: &mut Vec<Finding>) {
             continue;
         }
         let name = site["site_id"].as_str().unwrap_or("unknown site");
+        if site["app_runtime"].as_str() == Some("static_v1") {
+            let deployed = site["app_active_release"].as_str().is_some();
+            out.push(if deployed {
+                finding(
+                    "app",
+                    "ok",
+                    "host",
+                    name,
+                    "Static SPA app is deployed and served directly by Caddy (no app daemon required).",
+                    "None.",
+                )
+            } else {
+                finding(
+                    "app",
+                    "ok",
+                    "host",
+                    name,
+                    "Static SPA app site is provisioned with no deployed release yet.",
+                    "Deploy a signed static release bundle with app_deploy.",
+                )
+            });
+            continue;
+        }
         let deployed = site["app_active_release"].as_str().is_some();
         let unit = &site["app_unit"];
         let active = unit["active_state"].as_str();
@@ -1128,7 +1242,11 @@ fn app_unit_confinement_finding(name: &str, unit: &Value) -> Finding {
     let net_ok = priv_net == Some("yes")
         || ip_deny
             .is_some_and(|v| v.contains("any") || (v.contains("0.0.0.0/0") && v.contains("::/0")));
-    let mac_ok = selinux.is_some_and(|ctx| ctx.contains(":rustiron_app_t:s0:c"));
+    let mac_ok = selinux.is_some_and(|ctx| {
+        ctx.contains(":rustiron_app_t:s0:c")
+            || ctx.contains(":rustiron_app_mariadb_t:s0:c")
+            || ctx.contains(":rustiron_app_pg_t:s0:c")
+    });
     if !fs_ok || !net_ok {
         return finding(
             "app",
@@ -2086,5 +2204,82 @@ mod tests {
             .as_str()
             .unwrap();
         assert!(reason_unconfined.contains("no dedicated SELinux MCS app domain"));
+    }
+
+    #[test]
+    fn w656_diagnoses_postgresql_18_caddy_static_spa_and_app_db_selinux_subtypes() {
+        let mut host = healthy();
+        host["machine"]["stack"]["caddy"] = json!("2.10.2");
+        host["machine"]["stack"]["postgresql"] = json!("18.7");
+        host["machine"]["postgresql"] = json!({
+            "installed": true,
+            "ping": "responding",
+            "listeners_beyond_loopback": 0,
+        });
+        host["machine"]["caddy"] = json!({
+            "installed": true,
+            "admin_port_listeners": 0,
+        });
+        host["sites"] = json!([
+            {
+                "site_id": "docs1",
+                "hostname": "docs.example.test",
+                "state": "succeeded",
+                "app_runtime": "static_v1",
+                "app_active_release": "rel_1"
+            },
+            {
+                "site_id": "pgapp",
+                "hostname": "pg.example.test",
+                "state": "succeeded",
+                "app_runtime": "bun_1_v1",
+                "app_active_release": "rel_1",
+                "app_unit": {
+                    "unit": "rustiron-app@rs_pgapp.service",
+                    "active_state": "active",
+                    "no_new_privileges": "yes",
+                    "protect_system": "strict",
+                    "ip_address_deny": "0.0.0.0/0 ::/0",
+                    "private_network": "no",
+                    "selinux_context": "system_u:system_r:rustiron_app_pg_t:s0:c240"
+                }
+            }
+        ]);
+        let diag = super::diagnose(&host, 1_795_478_400);
+        assert_eq!(states(&diag, "caddy"), ["ok"]);
+        assert_eq!(states(&diag, "app"), ["ok", "ok"]);
+        let findings = diag["findings"].as_array().unwrap();
+        assert!(findings.iter().any(|f| f["check"] == "support"
+            && f["subject"] == "PostgreSQL"
+            && f["state"] == "ok"));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f["check"] == "support" && f["subject"] == "Caddy" && f["state"] == "ok")
+        );
+        assert!(findings.iter().any(|f| {
+            f["check"] == "app"
+                && f["subject"] == "pgapp"
+                && f["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("SELinux MCS confinement")
+        }));
+
+        // Exposed PostgreSQL 5432, exposed Caddy 2019, and PostgreSQL 18.6 (< 18.7 floor) must fail.
+        host["machine"]["stack"]["postgresql"] = json!("18.6");
+        host["machine"]["postgresql"]["listeners_beyond_loopback"] = json!(1);
+        host["machine"]["caddy"]["admin_port_listeners"] = json!(1);
+        let bad = super::diagnose(&host, 1_795_478_400);
+        assert_eq!(states(&bad, "caddy"), ["fail"]);
+        let bad_findings = bad["findings"].as_array().unwrap();
+        assert!(bad_findings.iter().any(|f| {
+            f["check"] == "database"
+                && f["subject"] == "PostgreSQL 18 network"
+                && f["state"] == "fail"
+        }));
+        assert!(bad_findings.iter().any(|f| {
+            f["check"] == "support" && f["subject"] == "PostgreSQL" && f["state"] == "fail"
+        }));
     }
 }

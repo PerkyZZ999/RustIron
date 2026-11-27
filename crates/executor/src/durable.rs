@@ -96,8 +96,12 @@ pub(crate) enum StepRecipe<'a> {
     Clone(&'a rustiron_journal::CloneFacts),
     /// W572 (D-095): a proxy site: the identity file only, no PHP or database.
     Proxy,
-    /// W598 (D-099): a P27 modern app site (Node.js or Bun behind CP08 proxy).
-    App(&'a rustiron_journal::AppFacts),
+    /// W598 (D-099) & W658 (D-102): a modern app site (Node.js, Bun, or Static SPA)
+    /// with optional v2 full-stack/DB specification.
+    App(
+        &'a rustiron_journal::AppFacts,
+        Option<&'a rustiron_journal::AppFullstackSpec>,
+    ),
 }
 
 /// W499 (D-078): the Recipe step's recorded name of a staging clone.
@@ -116,7 +120,7 @@ impl StepRecipe<'_> {
             Self::Import(_) => IMPORT_RECIPE,
             Self::Clone(_) => CLONE_RECIPE,
             Self::Proxy => crate::proxy_site::PROXY_RECIPE,
-            Self::App(_) => crate::app_site::APP_RECIPE,
+            Self::App(_, _) => crate::app_site::APP_RECIPE,
         }
     }
 
@@ -125,7 +129,7 @@ impl StepRecipe<'_> {
     fn site(self) -> SiteRecipe {
         match self {
             Self::Site(recipe) => recipe,
-            Self::Import(_) | Self::Clone(_) | Self::Proxy | Self::App(_) => {
+            Self::Import(_) | Self::Clone(_) | Self::Proxy | Self::App(_, _) => {
                 SiteRecipe::Wordpress713InstallV1
             }
         }
@@ -1288,8 +1292,9 @@ impl Executor {
         self.run_provision_steps(&operation, &intent, &enrolled, quota, StepRecipe::Proxy)
     }
 
-    /// W598 (D-099): admits one signed `app_provision` (Node.js or Bun) and
-    /// runs its confined provision steps in journal order.
+    /// W598 (D-099) & W659 (D-102): admits one signed `app_provision` (v1 or v2
+    /// full-stack/Caddy/PostgreSQL 18) and runs its confined provision steps in
+    /// journal order.
     pub fn provision_app(
         &mut self,
         request: &AdmissionRequest<'_>,
@@ -1298,12 +1303,17 @@ impl Executor {
             intent,
             enrolled,
             facts,
+            fullstack,
         } = crate::verified_app_provision(&self.anchor, request)?;
         self.check_identity(&intent.host_id, &intent.host_epoch)?;
         let now = request.now.ok_or(ExecutorError::TimeDenied)?;
         if let Some(existing) = self.journal.provision_status(&intent.operation_id)? {
             let recorded = self.journal.app_facts(&intent.operation_id)?;
-            return if existing.intent == intent && recorded.as_ref() == Some(&facts) {
+            let recorded_spec = self.journal.app_fullstack_spec(&intent.operation_id)?;
+            return if existing.intent == intent
+                && recorded.as_ref() == Some(&facts)
+                && recorded_spec == fullstack
+            {
                 Ok(ProvisionResult::Existing(existing))
             } else {
                 Err(ExecutorError::ReplayDenied)
@@ -1323,8 +1333,9 @@ impl Executor {
             }
             None => None,
         };
-        let operation = match self.admit(signed_inputs(request)?, |journal| {
-            journal.record_app_provision(&intent, &facts, now)
+        let operation = match self.admit(signed_inputs(request)?, |journal| match &fullstack {
+            Some(spec) => journal.record_fullstack_app_provision(&intent, &facts, spec, now),
+            None => journal.record_app_provision(&intent, &facts, now),
         })? {
             ProvisionResult::Existing(existing) => return Ok(ProvisionResult::Existing(existing)),
             ProvisionResult::New(created) => created.intent.operation_id,
@@ -1335,20 +1346,38 @@ impl Executor {
             &intent,
             &enrolled,
             quota,
-            StepRecipe::App(&facts),
+            StepRecipe::App(&facts, fullstack.as_ref()),
         )
     }
 
-    /// W598 (D-099): admits one signed `app_deploy` release bundle and runs
-    /// `Unpack` -> optional `Migrate` -> `Activate` -> `Health`, automatically
-    /// running `Rollback` on any failure.
+    /// W598 (D-099) & W659 (D-102): admits one signed `app_deploy` release
+    /// bundle and runs `Unpack` -> optional `Migrate` -> `Activate` -> `Health`
+    /// -> optional blue/green Caddy cutover, automatically running `Rollback`
+    /// on any failure.
     pub fn deploy_app(
         &mut self,
         request: &AdmissionRequest<'_>,
     ) -> Result<rustiron_journal::AppReleaseResult, ExecutorError> {
-        let intent = crate::verified_app_deploy(&self.anchor, request)?;
+        let crate::VerifiedAppDeploy {
+            intent,
+            blue_green_cutover,
+        } = crate::verified_app_deploy(&self.anchor, request)?;
         self.check_identity(&intent.host_id, &intent.host_epoch)?;
         let now = request.now.ok_or(ExecutorError::TimeDenied)?;
+        // Pre-intent checks: site must exist as an app, runtime must match, and
+        // blue/green cutover requires a blue/green-provisioned app.
+        if self.journal.app_release(&intent.operation_id)?.is_none() {
+            let Some(facts) = self.journal.app_facts_by_site(&intent.site_id)? else {
+                return Err(ExecutorError::PreconditionChanged);
+            };
+            if facts.runtime != intent.runtime {
+                return Err(ExecutorError::BindingDenied);
+            }
+            let spec = self.journal.app_fullstack_spec_by_site(&intent.site_id)?;
+            if blue_green_cutover && !spec.as_ref().is_some_and(|s| s.blue_green) {
+                return Err(ExecutorError::BindingDenied);
+            }
+        }
         let previous = self
             .journal
             .latest_app_release(&intent.site_id)?
@@ -1365,6 +1394,8 @@ impl Executor {
             .journal
             .app_facts_by_site(&intent.site_id)?
             .ok_or(ExecutorError::PreconditionChanged)?;
+        let spec = self.journal.app_fullstack_spec_by_site(&intent.site_id)?;
+        let effective_bg = blue_green_cutover && spec.as_ref().is_some_and(|s| s.blue_green);
         let layout = provision::SiteLayout::derive(&intent.site_id);
         let mut steps = vec![rustiron_journal::AppReleaseStep::Unpack];
         if release.migration_entrypoint.is_some() {
@@ -1387,8 +1418,10 @@ impl Executor {
                         step,
                         &layout,
                         &facts,
+                        spec.as_ref(),
                         &release,
                         previous.as_deref(),
+                        effective_bg,
                     )
                 },
             );
@@ -1397,6 +1430,121 @@ impl Executor {
             if let Err(err) = outcome {
                 failed_error = Some(err);
                 break;
+            }
+        }
+        // W659 (D-102): post-health zero-downtime blue/green slot flip and/or
+        // Caddy generation activation. Any failure reverts the slot in journal
+        // and runs `Rollback` before settling.
+        if failed_error.is_none()
+            && let Some(ref s) = spec
+            && (effective_bg || s.ingress == rustiron_contracts::approval::IngressEngine::Caddy)
+        {
+            let prov_op = self
+                .journal
+                .provision_for_site(&intent.site_id)?
+                .map(|p| p.intent.operation_id)
+                .ok_or(ExecutorError::PreconditionChanged)?;
+            let old_slot = s.active_slot;
+            if effective_bg {
+                self.journal
+                    .set_app_active_slot(&prov_op, old_slot.opposite())?;
+            }
+            let cutover_res: Result<(), ExecutorError> = (|| {
+                if s.ingress == rustiron_contracts::approval::IngressEngine::Caddy {
+                    let owner = self.anchor.owner_uid;
+                    let loaded = policy::load(
+                        &files::open_trusted_directory(&self.anchor.policy_dir, owner)?,
+                        owner,
+                    )?;
+                    let caddy_policy = loaded
+                        .policy
+                        .caddy
+                        .as_ref()
+                        .ok_or(ExecutorError::Unavailable)?;
+                    let render_cfg = crate::caddy::render_config_from_policy(caddy_policy)?;
+                    let payload = if let Some(socket) = self.anchor.admin_socket.as_deref() {
+                        match admin_helper::request(
+                            socket,
+                            &AdminRequest {
+                                operation_id: intent.operation_id.clone(),
+                                step: AdminStep::AppCaddyActivate,
+                            },
+                        )? {
+                            admin_helper::Reply::Done(Some(text)) => text,
+                            admin_helper::Reply::Done(None) => {
+                                return Err(ExecutorError::Unavailable);
+                            }
+                            admin_helper::Reply::Refused(err) => return Err(err),
+                        }
+                    } else {
+                        let records = FixtureJournal::records_as_process_owner(
+                            &self.anchor.journal_dir,
+                            &intent.host_id,
+                            &intent.host_epoch,
+                            &intent.operation_id,
+                            Some(&crate::ols::bootstrap_generation()),
+                        )?;
+                        let sites = crate::caddy::sites_from_records(caddy_policy, &records)?;
+                        let generation = crate::caddy::render(&render_cfg, &sites)?;
+                        let (gen_id, gen_digest, _) = crate::caddy::activate_live(
+                            &generation,
+                            &intent.operation_id,
+                            &caddy_policy.binary_sha256,
+                            &|| Ok(()),
+                        )?;
+                        if effective_bg {
+                            crate::app_site::finish_blue_green_cutover(
+                                &layout,
+                                &facts,
+                                s,
+                                &release.release_id,
+                                old_slot,
+                            )?;
+                        }
+                        format!(
+                            "{} {} {}",
+                            gen_id.as_str(),
+                            gen_digest.as_str(),
+                            sites.len()
+                        )
+                    };
+                    let parts: Vec<&str> = payload.split_whitespace().collect();
+                    if parts.len() != 3 {
+                        return Err(ExecutorError::Unavailable);
+                    }
+                    let gen_id = Id::try_from(parts[0].to_owned())
+                        .map_err(|_| ExecutorError::Unavailable)?;
+                    let config_sha256 = Sha256Digest::try_from(parts[1].to_owned())
+                        .map_err(|_| ExecutorError::Unavailable)?;
+                    let site_count: u64 =
+                        parts[2].parse().map_err(|_| ExecutorError::Unavailable)?;
+                    self.journal.record_active_caddy_generation(
+                        &rustiron_journal::CaddyGeneration {
+                            generation_id: gen_id,
+                            operation_id: intent.operation_id.clone(),
+                            ingress_mode: render_cfg.mode,
+                            config_sha256,
+                            site_count,
+                            created_at: now,
+                            state: rustiron_journal::CaddyGenerationState::Active,
+                        },
+                    )?;
+                } else if effective_bg {
+                    crate::app_site::finish_blue_green_cutover(
+                        &layout,
+                        &facts,
+                        s,
+                        &release.release_id,
+                        old_slot,
+                    )?;
+                }
+                Ok(())
+            })();
+            if let Err(err) = cutover_res {
+                if effective_bg {
+                    let _ = self.journal.set_app_active_slot(&prov_op, old_slot);
+                }
+                failed_error = Some(err);
             }
         }
         if let Some(err) = failed_error {
@@ -1415,8 +1563,10 @@ impl Executor {
                         rustiron_journal::AppReleaseStep::Rollback,
                         &layout,
                         &facts,
+                        spec.as_ref(),
                         &release,
                         previous.as_deref(),
+                        effective_bg,
                     )
                 },
             );
@@ -1441,8 +1591,8 @@ impl Executor {
         Ok(rustiron_journal::AppReleaseResult::New(settled))
     }
 
-    /// W598 (D-099): admits one signed `app_lifecycle` (`start`/`stop`/`restart`)
-    /// and applies it through the admin helper.
+    /// W598 (D-099) & W659 (D-102): admits one signed `app_lifecycle`
+    /// (`start`/`stop`/`restart`) and applies it through the admin helper.
     pub fn app_lifecycle(
         &mut self,
         request: &AdmissionRequest<'_>,
@@ -1450,6 +1600,14 @@ impl Executor {
         let intent = crate::verified_app_lifecycle(&self.anchor, request)?;
         self.check_identity(&intent.host_id, &intent.host_epoch)?;
         let now = request.now.ok_or(ExecutorError::TimeDenied)?;
+        if self.journal.app_lifecycle(&intent.operation_id)?.is_none()
+            && self
+                .journal
+                .app_fullstack_spec_by_site(&intent.site_id)?
+                .is_some_and(|s| s.topology == rustiron_contracts::approval::AppTopology::StaticSpa)
+        {
+            return Err(ExecutorError::BindingDenied);
+        }
         let lifecycle = match self.admit(signed_inputs(request)?, |journal| {
             journal.record_app_lifecycle(&intent, now)
         })? {
@@ -1462,6 +1620,7 @@ impl Executor {
             .journal
             .app_facts_by_site(&intent.site_id)?
             .ok_or(ExecutorError::PreconditionChanged)?;
+        let spec = self.journal.app_fullstack_spec_by_site(&intent.site_id)?;
         let layout = provision::SiteLayout::derive(&intent.site_id);
         let outcome = admin_helper::route(
             self.anchor.admin_socket.as_deref(),
@@ -1470,9 +1629,10 @@ impl Executor {
                 step: AdminStep::AppLifecycle,
             },
             || {
-                crate::app_site::run_lifecycle(
+                crate::app_site::run_lifecycle_for(
                     &layout.account,
                     facts.worker_entrypoint.is_some(),
+                    spec.as_ref(),
                     lifecycle.action,
                 )
             },
@@ -1551,8 +1711,18 @@ impl Executor {
                 _ if matches!(recipe, StepRecipe::Proxy) && crate::proxy_site::skips(step) => {
                     Ok((format!("{plain} not used (proxy site)"), 0))
                 }
-                // W598 (D-099): an app site journals PHP/DB steps without an effect.
-                _ if matches!(recipe, StepRecipe::App(_)) && crate::app_site::skips(step) => {
+                // W598 (D-099) & W658 (D-102 C2): an app site skips PHP units
+                // always, and skips DB/Credentials only for none/sqlite.
+                _ if matches!(recipe, StepRecipe::App(_, _)) && {
+                    let db = match recipe {
+                        StepRecipe::App(_, spec) => spec
+                            .map(|s| s.database)
+                            .unwrap_or(rustiron_contracts::approval::AppDatabase::Sqlite),
+                        _ => rustiron_contracts::approval::AppDatabase::Sqlite,
+                    };
+                    crate::app_site::skips(step, db)
+                } =>
+                {
                     Ok((format!("{plain} not used (app site)"), 0))
                 }
                 _ => Ok((plain.clone(), 0)),
@@ -1591,19 +1761,40 @@ impl Executor {
                     continue;
                 }
             }
-            if let StepRecipe::App(facts) = recipe {
-                if crate::app_site::skips(step) {
+            if let StepRecipe::App(facts, spec) = recipe {
+                let app_db = spec
+                    .map(|s| s.database)
+                    .unwrap_or(rustiron_contracts::approval::AppDatabase::Sqlite);
+                if crate::app_site::skips(step, app_db) {
                     self.journal.finish_step(&operation, step, true)?;
                     continue;
                 }
-                if matches!(step, ProvisionStep::Recipe | ProvisionStep::Verify) {
+                if matches!(
+                    step,
+                    ProvisionStep::Database
+                        | ProvisionStep::Credentials
+                        | ProvisionStep::Recipe
+                        | ProvisionStep::Verify
+                ) {
                     let outcome = admin_helper::route(
                         self.anchor.admin_socket.as_deref(),
                         &AdminRequest {
                             operation_id: operation.clone(),
                             step: AdminStep::ProvisionStep,
                         },
-                        || crate::app_site::run_provision_step(step, &layout, facts),
+                        || match step {
+                            ProvisionStep::Database => {
+                                crate::app_site::run_database_step(&layout, app_db)
+                                    .map(|secret| password = Some(secret))
+                            }
+                            ProvisionStep::Credentials => match password.take() {
+                                Some(secret) => {
+                                    crate::app_site::run_credentials_step(&layout, app_db, &secret)
+                                }
+                                None => Err(ExecutorError::StepFailed),
+                            },
+                            _ => crate::app_site::run_provision_step(step, &layout, facts, spec),
+                        },
                     );
                     self.journal
                         .finish_step(&operation, step, outcome.is_ok())?;

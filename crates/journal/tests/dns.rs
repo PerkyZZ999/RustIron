@@ -199,7 +199,7 @@ fn a_v37_journal_migrates_and_a_bad_row_is_refused() {
     let state = State::new();
     let ledger = state.init();
     drop(ledger);
-    state.sql(&format!("DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; DROP TABLE proxy_routes; DROP TABLE dns_change_sets; DROP TABLE dns_changes; DROP TABLE dns_imports; {TO_V40_DELETIONS} PRAGMA user_version=37;"));
+    state.sql(&format!("DROP TABLE caddy_generations; DROP TABLE app_fullstack_specs; DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; DROP TABLE proxy_routes; DROP TABLE dns_change_sets; DROP TABLE dns_changes; DROP TABLE dns_imports; {TO_V40_DELETIONS} PRAGMA user_version=37;"));
     assert_eq!(state.open().err(), Some(JournalError::Unavailable));
     let mut ledger = state.migrate().unwrap();
     ledger
@@ -406,7 +406,7 @@ fn a_v38_journal_migrates_and_an_inconsistent_change_is_refused() {
     let mut ledger = state.init();
     owned(&mut ledger);
     drop(ledger);
-    state.sql(&format!("DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; DROP TABLE proxy_routes; DROP TABLE dns_change_sets; DROP TABLE dns_changes; {TO_V40_DELETIONS} PRAGMA user_version=38;"));
+    state.sql(&format!("DROP TABLE caddy_generations; DROP TABLE app_fullstack_specs; DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; DROP TABLE proxy_routes; DROP TABLE dns_change_sets; DROP TABLE dns_changes; {TO_V40_DELETIONS} PRAGMA user_version=38;"));
     assert_eq!(state.open().err(), Some(JournalError::Unavailable));
     let mut ledger = state.migrate().unwrap();
     ledger

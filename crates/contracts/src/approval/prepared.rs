@@ -180,16 +180,16 @@ impl PreparedPlan {
             (PlanKind::ProxySiteProvision, 1) => {
                 ProxyPlan::decode(canonical.as_bytes())?;
             }
-            (PlanKind::AppProvision, 1) => {
+            (PlanKind::AppProvision, 1 | 2) => {
                 AppProvisionPlan::decode(canonical.as_bytes())?;
             }
-            (PlanKind::AppDeploy, 1) => {
+            (PlanKind::AppDeploy, 1 | 2) => {
                 AppDeployPlan::decode(canonical.as_bytes())?;
             }
             (PlanKind::AppLifecycle, 1) => {
                 AppLifecyclePlan::decode(canonical.as_bytes())?;
             }
-            (PlanKind::SiteCredentialRotate, 1) => {
+            (PlanKind::SiteCredentialRotate, 1 | 2) => {
                 CredentialRotatePlan::decode(canonical.as_bytes())?;
             }
             _ => return Err(ApprovalError::UnsupportedVersion),

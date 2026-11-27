@@ -696,6 +696,31 @@ pub fn envelope_for_plan(bytes: &[u8]) -> Option<BlastRadiusEnvelope> {
         } else {
             ""
         };
+        let extra_v2 = if plan.schema_version() == 2 {
+            let bg = if plan.blue_green() {
+                ", blue/green"
+            } else {
+                ""
+            };
+            format!(
+                ", ingress {}, topology {}, db {}{bg}",
+                plan.ingress().as_str(),
+                plan.topology().as_str(),
+                plan.database().as_str(),
+            )
+        } else {
+            String::new()
+        };
+        let port_text = if plan.port() == 0 {
+            "static (no loopback port)".to_owned()
+        } else if let Some(fp) = plan.frontend_port() {
+            format!(
+                "loopback 127.0.0.1:{} + frontend 127.0.0.1:{fp}",
+                plan.port()
+            )
+        } else {
+            format!("loopback 127.0.0.1:{}", plan.port())
+        };
         return Some(BlastRadiusEnvelope {
             verb: PlanKind::AppProvision.as_str().to_owned(),
             scope: ImpactScope::SingleSite,
@@ -707,24 +732,34 @@ pub fn envelope_for_plan(bytes: &[u8]) -> Option<BlastRadiusEnvelope> {
             max_operations: 1,
             time_window_seconds,
             resource_budget: format!(
-                "{}, loopback 127.0.0.1:{}, {} MiB RAM, {} tasks, {} MiB quota, {} route(s), {} websocket(s){worker}",
+                "{}, {port_text}, {} MiB RAM, {} tasks, {} MiB quota, {} route(s), {} websocket(s){worker}{extra_v2}",
                 plan.runtime().as_str(),
-                plan.port(),
                 plan.memory_max_mib(),
                 plan.tasks_max(),
                 plan.quota_mib(),
                 plan.routes().len(),
                 plan.websockets().len(),
             ),
-            privilege_boundary:
+            privilege_boundary: if plan.database().provisions_server_db() {
+                format!(
+                    "executor + admin_helper (site account, SELinux MCS, confined systemd unit, per-site {} database; no ingress reload, no root package scripts)",
+                    plan.database().as_str()
+                )
+            } else {
                 "executor + admin_helper (site account, SELinux MCS, confined systemd unit; no OLS reload, no root package scripts)"
-                    .to_owned(),
+                    .to_owned()
+            },
             all_site_ols_impact: None,
         });
     }
     if let Ok(plan) = AppDeployPlan::decode(bytes) {
         let migration = if plan.migration_entrypoint().is_some() {
             ", bounded unprivileged migration with capture rollback"
+        } else {
+            ""
+        };
+        let bg = if plan.blue_green_cutover() {
+            ", blue/green Caddy cutover"
         } else {
             ""
         };
@@ -739,15 +774,19 @@ pub fn envelope_for_plan(bytes: &[u8]) -> Option<BlastRadiusEnvelope> {
             max_operations: 1,
             time_window_seconds,
             resource_budget: format!(
-                "{} release {}: {} file(s), {} bytes{migration}, bounded health probe + auto-rollback",
+                "{} release {}: {} file(s), {} bytes{migration}{bg}, bounded health probe + auto-rollback",
                 plan.runtime().as_str(),
                 plan.release_id(),
                 plan.file_count(),
                 plan.total_bytes(),
             ),
-            privilege_boundary:
+            privilege_boundary: if plan.blue_green_cutover() {
+                "executor + unprivileged site unpack/migration + blue/green standby start + atomic Caddy reload (no OLS reload, no root package scripts)"
+                    .to_owned()
+            } else {
                 "executor + unprivileged site unpack/migration + systemd unit restart (no OLS reload, no root package scripts)"
-                    .to_owned(),
+                    .to_owned()
+            },
             all_site_ols_impact: None,
         });
     }

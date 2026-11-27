@@ -329,6 +329,61 @@ def blast_radius(args) -> dict | None:
     return section
 
 
+CADDY_MODES = ("caddy_only", "caddy_multi_ip", "caddy_edge_over_ols")
+CADDY_FORBIDDEN_PORTS = (2019, 3306, 5432)
+
+
+def caddy(args, ols_section: dict | None = None) -> dict | None:
+    """W657 (D-102, Decision A1): enrolled Caddy edge ingress section."""
+    mode = getattr(args, "caddy_mode", None)
+    http_addr = getattr(args, "caddy_http_address", None)
+    https_addr = getattr(args, "caddy_https_address", None)
+    ols_upstream = getattr(args, "caddy_ols_upstream", None)
+    binary_sha256 = getattr(args, "caddy_binary_sha256", None)
+    fields = (mode, http_addr, https_addr, binary_sha256)
+    if all(field is None for field in (*fields, ols_upstream)):
+        return None
+    if any(field is None for field in fields):
+        raise Refused(
+            "the caddy section needs --caddy-mode, --caddy-http-address, "
+            "--caddy-https-address, and --caddy-binary-sha256"
+        )
+    if mode not in CADDY_MODES:
+        raise Refused(f"--caddy-mode must be one of {', '.join(CADDY_MODES)}")
+    http_port = address_port("--caddy-http-address", http_addr)
+    https_port = address_port("--caddy-https-address", https_addr)
+    if http_port == https_port:
+        raise Refused("--caddy-http-address and --caddy-https-address must use distinct ports")
+    if http_port in CADDY_FORBIDDEN_PORTS or https_port in CADDY_FORBIDDEN_PORTS:
+        raise Refused("Caddy listener ports must not be 2019, 3306, or 5432")
+    section: dict[str, str] = {
+        "mode": mode,
+        "http_address": http_addr,
+        "https_address": https_addr,
+        "binary_sha256": digest("--caddy-binary-sha256", binary_sha256),
+    }
+    if mode == "caddy_edge_over_ols":
+        if ols_upstream is None:
+            raise Refused("--caddy-ols-upstream is required when --caddy-mode is caddy_edge_over_ols")
+        up_port = address_port("--caddy-ols-upstream", ols_upstream)
+        if up_port in CADDY_FORBIDDEN_PORTS:
+            raise Refused("--caddy-ols-upstream must not use port 2019, 3306, or 5432")
+        up_host = ols_upstream.rpartition(":")[0].strip("[]")
+        if not ipaddress.ip_address(up_host).is_loopback:
+            raise Refused("--caddy-ols-upstream must be a loopback IP:PORT (e.g. 127.0.0.1:8080)")
+        if ols_section is not None and ols_section.get("address") != ols_upstream:
+            raise Refused("--caddy-ols-upstream must match enrolled ols.address")
+        section["ols_upstream"] = ols_upstream
+    else:
+        if ols_upstream is not None:
+            raise Refused("--caddy-ols-upstream is only allowed with --caddy-mode caddy_edge_over_ols")
+        if mode == "caddy_multi_ip" and ols_section is not None:
+            ols_addrs = {ols_section.get("address"), ols_section.get("tls_address")}
+            if http_addr in ols_addrs or https_addr in ols_addrs:
+                raise Refused("caddy_multi_ip addresses must not collide with ols listener addresses")
+    return section
+
+
 def product_backup(args) -> dict | None:
     """W374: the schema 2 pin of the reviewed product backup projection."""
     fields = (args.product_backup_destination_id, args.product_backup_digest)
@@ -360,7 +415,9 @@ def policy(args) -> bytes:
     if not 1 <= args.requester_uid < 2**32 - 1:
         raise Refused("--requester-uid must be a non-root UID")
     provisioning_section = provisioning(args)
-    for name, section in (("provisioning", provisioning_section), ("ols", ols(args)),
+    ols_section = ols(args)
+    for name, section in (("provisioning", provisioning_section), ("ols", ols_section),
+                          ("caddy", caddy(args, ols_section)),
                           ("acme", acme(args)),
                           ("migration", migration(args, provisioning_section)), ("dns", dns(args)),
                           ("firewall", firewall(args)), ("blast_radius", blast_radius(args))):
@@ -469,6 +526,8 @@ def parser() -> argparse.ArgumentParser:
     first.add_argument("--requester-uid", type=int, required=True)
     for name in ("--wordpress-sha256", "--uid-range", "--category-range",
                  "--ols-listener", "--ols-address", "--ols-parent-sha256", "--ols-tls-address",
+                 "--caddy-mode", "--caddy-http-address", "--caddy-https-address",
+                 "--caddy-ols-upstream", "--caddy-binary-sha256",
                  "--acme-directory", "--acme-ca-bundle",
                  "--product-backup-destination-id", "--product-backup-digest",
                  "--migration-php-versions", "--dns-listen", "--dns-name-servers",
@@ -510,7 +569,18 @@ def parser() -> argparse.ArgumentParser:
     for name in ("--policy", "--out", "--acme-directory"):
         seventh.add_argument(name, required=True)
     seventh.add_argument("--acme-ca-bundle")
+    eighth = commands.add_parser("caddy", help="set the caddy section in a copy of the policy")
+    for name in ("--policy", "--out", "--caddy-mode", "--caddy-http-address",
+                 "--caddy-https-address", "--caddy-binary-sha256"):
+        eighth.add_argument(name, required=True)
+    eighth.add_argument("--caddy-ols-upstream")
     return root
+
+
+def with_caddy(args) -> bytes:
+    document = installed_policy(args.policy)
+    section = caddy(args, document.get("ols"))
+    return with_section(args, "caddy", section)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -521,7 +591,8 @@ def main(argv: list[str] | None = None) -> int:
                    "firewall": lambda args: with_section(args, "firewall", firewall(args)),
                    "dns": lambda args: with_section(args, "dns", dns(args)),
                    "blast-radius": lambda args: with_section(args, "blast_radius", blast_radius(args)),
-                   "acme": lambda args: with_section(args, "acme", acme(args))}[args.command](args)
+                   "acme": lambda args: with_section(args, "acme", acme(args)),
+                   "caddy": with_caddy}[args.command](args)
         write_new(args.out, content)
     except (Refused, OSError) as error:
         print(f"REFUSED {error}", file=sys.stderr)

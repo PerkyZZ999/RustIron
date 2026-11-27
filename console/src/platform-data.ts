@@ -18,9 +18,13 @@ export type AppRecord = {
   id: string;
   siteId: string;
   hostname: string;
-  kind: "EmDash CMS" | "Node.js app" | "Bun app";
+  kind: "EmDash CMS" | "Full-stack app" | "Node.js app" | "Bun app" | "Static SPA";
   runtime: string;
-  runtimeProfile: "node_22_v1" | "bun_1_v1";
+  runtimeProfile: "node_22_v1" | "bun_1_v1" | "static_v1";
+  ingress: "OpenLiteSpeed" | "Caddy (HTTP/3)";
+  topology: "static_spa" | "backend_api" | "fullstack_split" | "fullstack_dual_ssr";
+  database: "none" | "sqlite" | "mariadb" | "postgresql_18";
+  blueGreen?: { activeSlot: "a" | "b"; standbyPort: number };
   serving: "Serving" | "Degraded" | "Stopped";
   servingKind: "ok" | "err" | "muted";
   health: string;
@@ -101,12 +105,59 @@ export type MigrationRecord = {
 
 export const fixtureApps: AppRecord[] = [
   {
+    id: "app_saas",
+    siteId: "saasapp",
+    hostname: "app.lab.test",
+    kind: "Full-stack app",
+    runtime: "Vite SPA + Bun 1.4 Elysia · PostgreSQL 18.7",
+    runtimeProfile: "bun_1_v1",
+    ingress: "Caddy (HTTP/3)",
+    topology: "fullstack_split",
+    database: "postgresql_18",
+    blueGreen: { activeSlot: "a", standbyPort: 3302 },
+    serving: "Serving",
+    servingKind: "ok",
+    health: "Passing · /api/health 200",
+    healthKind: "ok",
+    healthPath: "/api/health",
+    port: 3301,
+    websocketPrefix: "/ws/",
+    account: "rs_saasapp",
+    unit: "rustiron-app@rs_saasapp.service",
+    workerUnit: null,
+    limits: "768 MiB · 64 tasks · rustiron_app_pg_t · blue/green",
+    envKeys: ["DATABASE_URL", "SESSION_SECRET", "PUBLIC_ORIGIN"],
+    sqliteBackup: "Encrypted restic + COMPLIANCE 30d · PostgreSQL 18 pg_dump verified 1 h ago",
+    currentRelease: "rel-20261126-04",
+    failedReleaseNote: null,
+    releases: [
+      {
+        releaseId: "rel-20261126-04",
+        version: "App 1.4.2 (Slot A)",
+        state: "active",
+        when: "1 h ago",
+        note: "Zero-downtime Caddy blue/green cutover after /api/health 200 on standby slot.",
+        migration: "api/migrate.js (pg18)",
+      },
+      {
+        releaseId: "rel-20261124-03",
+        version: "App 1.4.1 (Slot B)",
+        state: "superseded",
+        when: "2 d ago",
+        note: "Previous healthy release retained read-only under releases/.",
+      },
+    ],
+  },
+  {
     id: "app_emdash",
     siteId: "emdash1",
     hostname: "emdash.lab.test",
     kind: "EmDash CMS",
     runtime: "Node.js 22.23.4 · SQLite FTS5",
     runtimeProfile: "node_22_v1",
+    ingress: "OpenLiteSpeed",
+    topology: "backend_api",
+    database: "sqlite",
     serving: "Serving",
     servingKind: "ok",
     health: "Passing · /health 200",
@@ -153,8 +204,11 @@ export const fixtureApps: AppRecord[] = [
     siteId: "bunapi",
     hostname: "api.lab.test",
     kind: "Bun app",
-    runtime: "Bun 1.4.2 · companion worker",
+    runtime: "Bun 1.4.2 · MariaDB 10.11 · companion worker",
     runtimeProfile: "bun_1_v1",
+    ingress: "Caddy (HTTP/3)",
+    topology: "backend_api",
+    database: "mariadb",
     serving: "Serving",
     servingKind: "ok",
     health: "Passing · /health 200",
@@ -165,9 +219,9 @@ export const fixtureApps: AppRecord[] = [
     account: "rs_bunapi",
     unit: "rustiron-app@rs_bunapi.service",
     workerUnit: "rustiron-app-worker@rs_bunapi.service",
-    limits: "512 MiB · 64 tasks · loopback proxy",
-    envKeys: ["API_SIGNING_SECRET", "PUBLIC_ORIGIN"],
-    sqliteBackup: "Encrypted restic + COMPLIANCE 30d · data/ verified 4 h ago",
+    limits: "512 MiB · 64 tasks · rustiron_app_mariadb_t",
+    envKeys: ["API_SIGNING_SECRET", "DATABASE_URL", "PUBLIC_ORIGIN"],
+    sqliteBackup: "Encrypted restic + COMPLIANCE 30d · MariaDB dump verified 4 h ago",
     currentRelease: "rel-20261123-02",
     failedReleaseNote: null,
     releases: [
@@ -176,7 +230,7 @@ export const fixtureApps: AppRecord[] = [
         version: "API 2.4.1",
         state: "active",
         when: "4 h ago",
-        note: "Zero-downtime loopback cutover behind OpenLiteSpeed proxy.",
+        note: "Zero-downtime loopback cutover behind Caddy HTTP/3 edge ingress.",
       },
       {
         releaseId: "rel-20261120-01",
@@ -194,6 +248,9 @@ export const fixtureApps: AppRecord[] = [
     kind: "Node.js app",
     runtime: "Node.js 22.23.4 LTS",
     runtimeProfile: "node_22_v1",
+    ingress: "OpenLiteSpeed",
+    topology: "backend_api",
+    database: "sqlite",
     serving: "Serving",
     servingKind: "ok",
     health: "rel-0009 rolled back",
@@ -441,6 +498,32 @@ const fixtureSupportComponents: SupportComponent[] = [
     stateLabel: "Supported",
     packagePin: "bun 1.4.5 (/usr/local/bin/bun)",
     note: "Optional runtime for Bun apps and the Console Admin Panel (checked when installed).",
+    optional: true,
+  },
+  {
+    id: "comp-caddy",
+    component: "Caddy",
+    series: "2.10+",
+    observed: "2.10.2",
+    minimumPatch: "2.10.0",
+    endOfLife: "Upstream rolling 2.x",
+    state: "supported",
+    stateLabel: "Supported",
+    packagePin: "caddy 2.10.2 (/usr/local/bin/caddy)",
+    note: "Optional confined HTTP/3 edge ingress (rustiron_caddy_t, admin API on a 0700 Unix socket only, auto_https disable_certs) serving modern full-stack apps and bridging WordPress/PHP to OpenLiteSpeed.",
+    optional: true,
+  },
+  {
+    id: "comp-pg",
+    component: "PostgreSQL",
+    series: "18",
+    observed: "18.7",
+    minimumPatch: "18.7",
+    endOfLife: "14 Nov 2030",
+    state: "supported",
+    stateLabel: "Supported",
+    packagePin: "postgresql18-server 18.7 (PGDG EL-10)",
+    note: "Optional per-app PostgreSQL 18 database bound strictly to 127.0.0.1:5432 with SCRAM-SHA-256 authentication and opt-in rustiron_app_pg_t confinement (checked only when installed).",
     optional: true,
   },
   {
@@ -803,6 +886,61 @@ function storageFinding(disk: Machine["disk"]): DiagnosisFinding | null {
   };
 }
 
+function postgresqlFinding(pg: Machine["postgresql"]): DiagnosisFinding | null {
+  if (!pg || !pg.installed) return null;
+  if ((pg.listeners_beyond_loopback ?? 0) > 0) {
+    return {
+      id: "live-pg18-bind",
+      state: "fail",
+      check: "PostgreSQL 18",
+      subject: `${pg.listeners_beyond_loopback} external listener(s) on :5432`,
+      owner: "host",
+      seen: "live",
+      reason: "PostgreSQL 18 must listen strictly on 127.0.0.1:5432 and never bind externally.",
+      action: "Set listen_addresses = '127.0.0.1' in postgresql.conf and restart postgresql-18.",
+      command: "sudo systemctl restart postgresql-18 && ss -tlnp '( sport = :5432 )'",
+      runbook: "PostgreSQL 18 guide",
+      guideSlug: "postgresql-18",
+    };
+  }
+  const ok = pg.ping === "responding";
+  return {
+    id: "live-pg18",
+    state: ok ? "ok" : pg.ping === "not_responding" ? "fail" : "unknown",
+    check: "PostgreSQL 18",
+    subject: ok ? "127.0.0.1:5432 responding · loopback only" : `PostgreSQL 18 ${pg.ping}`,
+    owner: "host",
+    seen: "live",
+    reason: "Loopback pg_isready and socket listener check on 127.0.0.1:5432.",
+    action: ok ? "No action required." : "Inspect postgresql-18.service logs on the host.",
+    runbook: "PostgreSQL 18 guide",
+    guideSlug: "postgresql-18",
+  };
+}
+
+function caddyFinding(caddy: Machine["caddy"]): DiagnosisFinding | null {
+  if (!caddy || !caddy.installed) return null;
+  const adminExposed = (caddy.admin_port_listeners ?? 0) > 0;
+  return {
+    id: "live-caddy",
+    state: adminExposed ? "fail" : "ok",
+    check: "Caddy ingress",
+    subject: adminExposed
+      ? "admin API listener detected on :2019"
+      : "confined · admin API disabled",
+    owner: "rustiron",
+    seen: "live",
+    reason: adminExposed
+      ? "Caddy must expose its admin API only on /run/rustiron-caddy/admin.sock, never TCP :2019."
+      : "Confined rustiron-caddy runs without an admin API listener.",
+    action: adminExposed
+      ? "Confirm `admin unix//run/rustiron-caddy/admin.sock` in /etc/rustiron-caddy/current/Caddyfile and reload rustiron-caddy.service."
+      : "No action required.",
+    runbook: "Full-stack & Caddy guide",
+    guideSlug: "fullstack-caddy",
+  };
+}
+
 function machineFindings(machine: Machine): DiagnosisFinding[] {
   const out: DiagnosisFinding[] = [selinuxFinding(machine.selinux)];
   if (machine.clock) out.push(clockFinding(machine.clock));
@@ -811,6 +949,10 @@ function machineFindings(machine: Machine): DiagnosisFinding[] {
   const fw = firewallFinding(machine.firewall, machine.services);
   if (fw) out.push(fw);
   if (machine.database) out.push(databaseFinding(machine.database));
+  const pg = postgresqlFinding(machine.postgresql);
+  if (pg) out.push(pg);
+  const caddy = caddyFinding(machine.caddy);
+  if (caddy) out.push(caddy);
   const disk = storageFinding(machine.disk);
   if (disk) out.push(disk);
   return out;
@@ -897,15 +1039,18 @@ export function liveDomains(sites: Site[], observation: Observation): DomainReco
 
 type StackLookup = { value: string | null; explicitNull: boolean };
 
-const OPTIONAL_STACK_KEYS: Record<string, "nodejs" | "bun" | "powerdns"> = {
-  "comp-node": "nodejs",
-  "comp-bun": "bun",
-  "comp-pdns": "powerdns",
-};
+const OPTIONAL_STACK_KEYS: Record<string, "nodejs" | "bun" | "powerdns" | "caddy" | "postgresql"> =
+  {
+    "comp-node": "nodejs",
+    "comp-bun": "bun",
+    "comp-pdns": "powerdns",
+    "comp-caddy": "caddy",
+    "comp-pg": "postgresql",
+  };
 
 function optionalStackKey(
   stack: Machine["stack"],
-  key: "nodejs" | "bun" | "powerdns",
+  key: "nodejs" | "bun" | "powerdns" | "caddy" | "postgresql",
 ): StackLookup {
   if (!stack || !(key in stack)) return { value: null, explicitNull: false };
   const val = stack[key] ?? null;
@@ -958,8 +1103,11 @@ type ObservedSite = Observation["sites"][number];
 function appKindForSite(
   site: ObservedSite,
   runtimeProfile: AppRecord["runtimeProfile"],
+  topology: AppRecord["topology"],
 ): AppRecord["kind"] {
   if (site.site_id.includes("emdash") || site.hostname.includes("emdash")) return "EmDash CMS";
+  if (topology === "static_spa" || runtimeProfile === "static_v1") return "Static SPA";
+  if (topology === "fullstack_split" || topology === "fullstack_dual_ssr") return "Full-stack app";
   return runtimeProfile === "bun_1_v1" ? "Bun app" : "Node.js app";
 }
 
@@ -995,22 +1143,69 @@ function appHealthSummary(status: number | undefined): {
   return { health: `HTTP ${status}`, healthKind: status < 400 ? "ok" : "muted" };
 }
 
-function appRuntimeMeta(kind: AppRecord["kind"], profile: AppRecord["runtimeProfile"]) {
+function appRuntimeMeta(
+  kind: AppRecord["kind"],
+  profile: AppRecord["runtimeProfile"],
+  database: AppRecord["database"],
+) {
   const isEmDash = kind === "EmDash CMS";
+  const runtimeLabel =
+    profile === "static_v1"
+      ? "Static SPA (no daemon)"
+      : profile === "bun_1_v1"
+        ? "Bun 1.4 (bun_1_v1)"
+        : "Node.js 22 (node_22_v1)";
+  const backupLabel =
+    database === "postgresql_18"
+      ? "PostgreSQL 18 pg_dump + encrypted site backup"
+      : database === "mariadb"
+        ? "MariaDB logical dump + encrypted site backup"
+        : isEmDash
+          ? "SQLite WAL online backup"
+          : "Encrypted site backup";
   return {
-    runtime: profile === "bun_1_v1" ? "Bun 1.4 (bun_1_v1)" : "Node.js 22 (node_22_v1)",
+    runtime: runtimeLabel,
     websocketPrefix: isEmDash ? "/_emdash/api/content/" : null,
-    sqliteBackup: isEmDash ? "SQLite WAL online backup" : "Encrypted site backup",
+    sqliteBackup: backupLabel,
   };
 }
 
+function parseLiveTopology(raw: string | null | undefined): AppRecord["topology"] {
+  if (raw === "static_spa" || raw === "fullstack_split" || raw === "fullstack_dual_ssr") {
+    return raw;
+  }
+  return "backend_api";
+}
+
+function parseLiveDatabase(
+  raw: string | null | undefined,
+  isEmDash: boolean,
+): AppRecord["database"] {
+  if (raw === "none" || raw === "sqlite" || raw === "mariadb" || raw === "postgresql_18") {
+    return raw;
+  }
+  return isEmDash ? "sqlite" : "none";
+}
+
+function parseLiveRuntime(raw: string | null | undefined): AppRecord["runtimeProfile"] {
+  if (raw === "static_v1" || raw === "bun_1_v1") return raw;
+  return "node_22_v1";
+}
+
+function liveAppUnit(siteId: string, profile: AppRecord["runtimeProfile"]): string {
+  return profile === "static_v1" ? "Static (served by Caddy)" : `rustiron-app@${siteId}.service`;
+}
+
 function toLiveAppRecord(site: ObservedSite): AppRecord {
-  const runtimeProfile: AppRecord["runtimeProfile"] =
-    site.app_runtime === "bun_1_v1" ? "bun_1_v1" : "node_22_v1";
-  const kind = appKindForSite(site, runtimeProfile);
+  const runtimeProfile = parseLiveRuntime(site.app_runtime);
+  const topology = parseLiveTopology(site.app_topology);
+  const kind = appKindForSite(site, runtimeProfile, topology);
+  const database = parseLiveDatabase(site.app_database, kind === "EmDash CMS");
+  const ingress: AppRecord["ingress"] =
+    site.app_ingress === "caddy" ? "Caddy (HTTP/3)" : "OpenLiteSpeed";
   const { serving, servingKind } = appServingState(site.state);
   const { health, healthKind } = appHealthSummary(site.http_status);
-  const meta = appRuntimeMeta(kind, runtimeProfile);
+  const meta = appRuntimeMeta(kind, runtimeProfile, database);
   return {
     id: site.site_id,
     siteId: site.site_id,
@@ -1018,15 +1213,18 @@ function toLiveAppRecord(site: ObservedSite): AppRecord {
     kind,
     runtime: meta.runtime,
     runtimeProfile,
+    ingress,
+    topology,
+    database,
     serving,
     servingKind,
     health,
     healthKind,
-    healthPath: "/healthz",
+    healthPath: runtimeProfile === "static_v1" ? "/" : "/healthz",
     port: site.proxy_ports?.[0] ?? 0,
     websocketPrefix: meta.websocketPrefix,
     account: `rs_${site.site_id}`,
-    unit: `rustiron-app@${site.site_id}.service`,
+    unit: liveAppUnit(site.site_id, runtimeProfile),
     workerUnit: null,
     limits: "Enrolled systemd cgroup limits",
     envKeys: [],

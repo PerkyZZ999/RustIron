@@ -17,14 +17,16 @@ use std::{
 };
 
 use rustiron_contracts::approval::{
-    AppLifecycleAction, AppRuntime, MAX_APP_RELEASE_BYTES, MAX_APP_RELEASE_FILES,
-    valid_manifest_path,
+    AppDatabase, AppLifecycleAction, AppRuntime, AppTopology, MAX_APP_RELEASE_BYTES,
+    MAX_APP_RELEASE_FILES, valid_manifest_path,
 };
-use rustiron_journal::{AppFacts, AppRelease, AppReleaseStep, ProvisionStep};
+use rustiron_journal::{
+    AppFacts, AppFullstackSpec, AppRelease, AppReleaseStep, AppSlot, ProvisionStep,
+};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ExecutorError,
+    ExecutorError, files, postgres,
     provision::{self, SiteLayout},
 };
 
@@ -46,6 +48,7 @@ pub(crate) const fn runtime_binary(runtime: AppRuntime) -> &'static str {
     match runtime {
         AppRuntime::Node22V1 => "/usr/bin/node",
         AppRuntime::Bun1V1 => "/usr/local/bin/bun",
+        AppRuntime::StaticV1 => "",
     }
 }
 
@@ -56,6 +59,7 @@ const fn runtime_trusted_dir(runtime: AppRuntime) -> &'static str {
     match runtime {
         AppRuntime::Node22V1 => "/usr/bin",
         AppRuntime::Bun1V1 => "/usr/local/bin",
+        AppRuntime::StaticV1 => "",
     }
 }
 
@@ -68,15 +72,98 @@ pub(crate) fn runtime_env_arg(runtime: AppRuntime, root: &Path) -> String {
     match runtime {
         AppRuntime::Node22V1 => format!("--env-file-if-exists={env_str}"),
         AppRuntime::Bun1V1 => format!("--env-file={env_str}"),
+        AppRuntime::StaticV1 => String::new(),
     }
 }
 
-/// Whether an app site journals `step` done without PHP/database effects.
-pub(crate) fn skips(step: ProvisionStep) -> bool {
-    matches!(
-        step,
-        ProvisionStep::Database | ProvisionStep::Credentials | ProvisionStep::PhpUnits
-    )
+/// W658 (D-102 Decision C2): returns the least-privilege MCS-constrained
+/// SELinux domain for an app site's enrolled database engine.
+///
+/// - `none` / `sqlite` -> `rustiron_app_t` (zero outbound TCP connect).
+/// - `mariadb` -> `rustiron_app_mariadb_t` (only MariaDB socket + 3306).
+/// - `postgresql_18` -> `rustiron_app_pg_t` (only PostgreSQL socket + 5432).
+pub(crate) const fn app_selinux_domain(database: AppDatabase) -> &'static str {
+    match database {
+        AppDatabase::None | AppDatabase::Sqlite => "rustiron_app_t",
+        AppDatabase::Mariadb => "rustiron_app_mariadb_t",
+        AppDatabase::Postgresql18 => "rustiron_app_pg_t",
+    }
+}
+
+/// Whether an app site journals `step` done without host PHP/database effects.
+///
+/// `PhpUnits` is always skipped for modern apps. `Database` and `Credentials`
+/// are skipped only for `none`/`sqlite`; `mariadb` and `postgresql_18` run
+/// database provisioning and `private/app.env` credential writing.
+pub(crate) fn skips(step: ProvisionStep, database: AppDatabase) -> bool {
+    match step {
+        ProvisionStep::PhpUnits => true,
+        ProvisionStep::Database | ProvisionStep::Credentials => {
+            matches!(database, AppDatabase::None | AppDatabase::Sqlite)
+        }
+        _ => false,
+    }
+}
+
+/// W658 (D-102 C2): runs `ProvisionStep::Database` for a MariaDB or
+/// PostgreSQL 18 modern app site, returning the generated password kept only
+/// in memory until `ProvisionStep::Credentials`.
+pub(crate) fn run_database_step(
+    layout: &SiteLayout,
+    database: AppDatabase,
+) -> Result<String, ExecutorError> {
+    match database {
+        AppDatabase::Mariadb => provision::create_database(layout).map(|(_, secret)| secret),
+        AppDatabase::Postgresql18 => {
+            postgres::create_database_and_role(layout).map(|(_, secret)| secret)
+        }
+        AppDatabase::None | AppDatabase::Sqlite => Err(ExecutorError::BindingDenied),
+    }
+}
+
+/// W658 (D-102 C2): runs `ProvisionStep::Credentials` for a MariaDB or
+/// PostgreSQL 18 modern app site, writing `private/app.env` (`0400`) with
+/// `DATABASE_URL` (plus `private/db.cnf` for MariaDB) and verifying live login.
+pub(crate) fn run_credentials_step(
+    layout: &SiteLayout,
+    database: AppDatabase,
+    password: &str,
+) -> Result<(), ExecutorError> {
+    let passwd = provision::read_etc("passwd")?;
+    let uid = provision::account_uid(&passwd, &layout.account).ok_or(ExecutorError::StepFailed)?;
+    let private = layout.root.join("private");
+    let private_dir = files::open_traversable_directory(&private, uid)?;
+    match database {
+        AppDatabase::Mariadb => {
+            provision::write_credentials(layout, password)?;
+            postgres::atomic_upsert_app_env_database_url(
+                &private_dir,
+                uid,
+                AppDatabase::Mariadb,
+                &layout.account,
+                password,
+                "prov",
+                true,
+            )
+        }
+        AppDatabase::Postgresql18 => {
+            postgres::atomic_upsert_app_env_database_url(
+                &private_dir,
+                uid,
+                AppDatabase::Postgresql18,
+                &layout.account,
+                password,
+                "prov",
+                true,
+            )?;
+            postgres::verify_login(
+                &layout.account,
+                password,
+                &format!("prov-{}", layout.account),
+            )
+        }
+        AppDatabase::None | AppDatabase::Sqlite => Err(ExecutorError::BindingDenied),
+    }
 }
 
 /// Verifies the pinned host runtime binary is a root-owned, non-world-writable
@@ -103,29 +190,143 @@ pub(crate) fn verify_runtime_binary(runtime: AppRuntime) -> Result<&'static str,
     Ok(path)
 }
 
+/// Systemd backend unit name for `account` in slot `slot`.
+pub(crate) fn backend_unit_for_slot(account: &str, slot: AppSlot) -> String {
+    match slot {
+        AppSlot::A => format!("rustiron-app@{account}.service"),
+        AppSlot::B => format!("rustiron-app-b@{account}.service"),
+    }
+}
+
+/// Systemd backend drop-in prefix for `slot`.
+pub(crate) const fn backend_prefix_for_slot(slot: AppSlot) -> &'static str {
+    match slot {
+        AppSlot::A => crate::layout::SITE_APP_UNIT_PREFIX,
+        AppSlot::B => crate::layout::SITE_APP_B_UNIT_PREFIX,
+    }
+}
+
+/// Systemd frontend SSR unit name for `account` in slot `slot` (`fullstack_dual_ssr`).
+pub(crate) fn web_unit_for_slot(account: &str, slot: AppSlot) -> String {
+    match slot {
+        AppSlot::A => format!("rustiron-app-web@{account}.service"),
+        AppSlot::B => format!("rustiron-app-web-b@{account}.service"),
+    }
+}
+
+/// Systemd frontend SSR drop-in prefix for `slot`.
+pub(crate) const fn web_prefix_for_slot(slot: AppSlot) -> &'static str {
+    match slot {
+        AppSlot::A => crate::layout::SITE_APP_WEB_UNIT_PREFIX,
+        AppSlot::B => crate::layout::SITE_APP_WEB_B_UNIT_PREFIX,
+    }
+}
+
+/// Effective backend port for `slot`.
+pub(crate) fn backend_port_for_slot(
+    facts: &AppFacts,
+    spec: Option<&AppFullstackSpec>,
+    slot: AppSlot,
+) -> Result<u16, ExecutorError> {
+    match slot {
+        AppSlot::A => Ok(facts.port),
+        AppSlot::B => spec
+            .and_then(|s| s.standby_port)
+            .ok_or(ExecutorError::BindingDenied),
+    }
+}
+
+/// Effective frontend SSR port for `slot` (`fullstack_dual_ssr`).
+pub(crate) fn frontend_port_for_slot(
+    spec: &AppFullstackSpec,
+    slot: AppSlot,
+) -> Result<u16, ExecutorError> {
+    match slot {
+        AppSlot::A => spec.frontend_port.ok_or(ExecutorError::BindingDenied),
+        AppSlot::B => spec
+            .frontend_standby_port
+            .ok_or(ExecutorError::BindingDenied),
+    }
+}
+
+/// Deterministic systemd drop-in (`10-rustiron-app.conf`) for `rustiron-app@` or `rustiron-app-b@`.
+pub(crate) fn render_app_slot_dropin(
+    root: &Path,
+    facts: &AppFacts,
+    runtime_bin: &str,
+    level: &str,
+    database: AppDatabase,
+    port: u16,
+    release_subpath: &str,
+) -> String {
+    let root_str = root.to_string_lossy();
+    let env_arg = runtime_env_arg(facts.runtime, root);
+    let domain = app_selinux_domain(database);
+    format!(
+        "# Managed by Rustiron (D-099, C-01, D-102); do not edit by hand.\n\
+         [Service]\n\
+         SELinuxContext=system_u:system_r:{domain}:{level}\n\
+         Environment=PORT={port} HOST=127.0.0.1 NODE_ENV=production TMPDIR={root_str}/tmp RUSTIRON_APP_DATA={root_str}/data\n\
+         MemoryMax={mem}M\n\
+         TasksMax={tasks}\n\
+         ExecStart=\n\
+         ExecStart={runtime_bin} {env_arg} {root_str}/{release_subpath}/{entry}\n",
+        mem = facts.memory_max_mib,
+        tasks = facts.tasks_max,
+        entry = facts.entrypoint,
+    )
+}
+
 /// Deterministic systemd drop-in (`10-rustiron-app.conf`) for `rustiron-app@<account>.service`.
 pub(crate) fn render_app_dropin(
     root: &Path,
     facts: &AppFacts,
     runtime_bin: &str,
     level: &str,
+    database: AppDatabase,
 ) -> String {
+    render_app_slot_dropin(
+        root,
+        facts,
+        runtime_bin,
+        level,
+        database,
+        facts.port,
+        "current",
+    )
+}
+
+/// Deterministic systemd drop-in (`10-rustiron-app.conf`) for `rustiron-app-web@` or `rustiron-app-web-b@`
+/// (`fullstack_dual_ssr`).
+pub(crate) fn render_web_slot_dropin(
+    root: &Path,
+    facts: &AppFacts,
+    spec: &AppFullstackSpec,
+    frontend_bin: &str,
+    level: &str,
+    port: u16,
+    release_subpath: &str,
+) -> Result<String, ExecutorError> {
+    let frontend_runtime = spec.frontend_runtime.ok_or(ExecutorError::BindingDenied)?;
+    let frontend_entry = spec
+        .frontend_entrypoint
+        .as_deref()
+        .ok_or(ExecutorError::BindingDenied)?;
     let root_str = root.to_string_lossy();
-    let env_arg = runtime_env_arg(facts.runtime, root);
-    format!(
-        "# Managed by Rustiron (D-099, C-01); do not edit by hand.\n\
+    let env_arg = runtime_env_arg(frontend_runtime, root);
+    let domain = app_selinux_domain(spec.database);
+    Ok(format!(
+        "# Managed by Rustiron (D-102 fullstack_dual_ssr); do not edit by hand.\n\
          [Service]\n\
-         SELinuxContext=system_u:system_r:rustiron_app_t:{level}\n\
+         SELinuxContext=system_u:system_r:{domain}:{level}\n\
          Environment=PORT={port} HOST=127.0.0.1 NODE_ENV=production TMPDIR={root_str}/tmp RUSTIRON_APP_DATA={root_str}/data\n\
          MemoryMax={mem}M\n\
          TasksMax={tasks}\n\
          ExecStart=\n\
-         ExecStart={runtime_bin} {env_arg} {root_str}/current/{entry}\n",
-        port = facts.port,
+         ExecStart={frontend_bin} {env_arg} {root_str}/{release_subpath}/{frontend_entry}\n",
         mem = facts.memory_max_mib,
         tasks = facts.tasks_max,
-        entry = facts.entrypoint,
-    )
+    ))
 }
 
 /// Deterministic systemd drop-in (`10-rustiron-app.conf`) for `rustiron-app-worker@<account>.service`.
@@ -135,13 +336,15 @@ pub(crate) fn render_worker_dropin(
     worker_entrypoint: &str,
     runtime_bin: &str,
     level: &str,
+    database: AppDatabase,
 ) -> String {
     let root_str = root.to_string_lossy();
     let env_arg = runtime_env_arg(facts.runtime, root);
+    let domain = app_selinux_domain(database);
     format!(
-        "# Managed by Rustiron (D-099, C-01); do not edit by hand.\n\
+        "# Managed by Rustiron (D-099, C-01, D-102); do not edit by hand.\n\
          [Service]\n\
-         SELinuxContext=system_u:system_r:rustiron_app_t:{level}\n\
+         SELinuxContext=system_u:system_r:{domain}:{level}\n\
          Environment=NODE_ENV=production TMPDIR={root_str}/tmp RUSTIRON_APP_DATA={root_str}/data\n\
          MemoryMax={mem}M\n\
          TasksMax={tasks}\n\
@@ -174,7 +377,11 @@ pub(crate) fn run_provision_step(
     step: ProvisionStep,
     layout: &SiteLayout,
     facts: &AppFacts,
+    spec: Option<&AppFullstackSpec>,
 ) -> Result<(), ExecutorError> {
+    let database = spec.map(|s| s.database).unwrap_or(AppDatabase::Sqlite);
+    let topology = spec.map(|s| s.topology).unwrap_or(AppTopology::BackendApi);
+    let is_static = topology == AppTopology::StaticSpa;
     match step {
         ProvisionStep::Recipe => {
             provision::write_site_marker(layout)?;
@@ -194,24 +401,26 @@ pub(crate) fn run_provision_step(
                 fs::set_permissions(&dir, fs::Permissions::from_mode(0o750))
                     .map_err(|_| ExecutorError::StepFailed)?;
             }
-            let env_path = layout.root.join("private").join("app.env");
-            if !env_path.exists() {
-                let mut file = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o400)
-                    .open(&env_path)
+            if !is_static {
+                let env_path = layout.root.join("private").join("app.env");
+                if !env_path.exists() {
+                    let mut file = OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(0o400)
+                        .open(&env_path)
+                        .map_err(|_| ExecutorError::StepFailed)?;
+                    file.write_all(
+                        b"# Rustiron app runtime environment (0400, secrets never in plans)\n",
+                    )
                     .map_err(|_| ExecutorError::StepFailed)?;
-                file.write_all(
-                    b"# Rustiron app runtime environment (0400, secrets never in plans)\n",
-                )
-                .map_err(|_| ExecutorError::StepFailed)?;
-                rustix::fs::chown(
-                    &env_path,
-                    Some(rustix::process::Uid::from_raw(uid)),
-                    Some(rustix::process::Gid::from_raw(uid)),
-                )
-                .map_err(|_| ExecutorError::StepFailed)?;
+                    rustix::fs::chown(
+                        &env_path,
+                        Some(rustix::process::Uid::from_raw(uid)),
+                        Some(rustix::process::Gid::from_raw(uid)),
+                    )
+                    .map_err(|_| ExecutorError::StepFailed)?;
+                }
             }
             let level = crate::capture::site_level(layout)?;
             let root_str = layout.root.to_string_lossy();
@@ -219,7 +428,7 @@ pub(crate) fn run_provision_step(
             let data_dir = layout.root.join("data");
             let data_str = data_dir.to_string_lossy();
             // W640 (C-01): label app data/ as httpd_sys_rw_content_t at the site's
-            // MCS level so rustiron_app_t:s0:c<N> writes only its own data/ and tmp/.
+            // MCS level so app domains write only their own data/ and tmp/.
             let existing = provision::output("/usr/sbin/semanage", &["fcontext", "--list", "-C"])?;
             if !existing.contains(&data_pattern) {
                 provision::run(
@@ -237,15 +446,75 @@ pub(crate) fn run_provision_step(
                 )?;
             }
             provision::run("/usr/sbin/restorecon", &["-R", "--", &data_str])?;
+            if is_static {
+                return Ok(());
+            }
             let bin = runtime_binary(facts.runtime);
-            let dropin = render_app_dropin(&layout.root, facts, bin, &level);
+            let dropin = render_app_dropin(&layout.root, facts, bin, &level, database);
             write_dropin(
                 crate::layout::SITE_APP_UNIT_PREFIX,
                 &layout.account,
                 &dropin,
             )?;
+            if let Some(s) = spec {
+                if s.blue_green
+                    && let Some(standby_port) = s.standby_port
+                {
+                    let standby_dropin = render_app_slot_dropin(
+                        &layout.root,
+                        facts,
+                        bin,
+                        &level,
+                        database,
+                        standby_port,
+                        "current",
+                    );
+                    write_dropin(
+                        crate::layout::SITE_APP_B_UNIT_PREFIX,
+                        &layout.account,
+                        &standby_dropin,
+                    )?;
+                }
+                if s.topology == AppTopology::FullstackDualSsr {
+                    let fe_rt = s.frontend_runtime.ok_or(ExecutorError::BindingDenied)?;
+                    let fe_bin = runtime_binary(fe_rt);
+                    let fe_port = frontend_port_for_slot(s, AppSlot::A)?;
+                    let web_dropin = render_web_slot_dropin(
+                        &layout.root,
+                        facts,
+                        s,
+                        fe_bin,
+                        &level,
+                        fe_port,
+                        "current",
+                    )?;
+                    write_dropin(
+                        crate::layout::SITE_APP_WEB_UNIT_PREFIX,
+                        &layout.account,
+                        &web_dropin,
+                    )?;
+                    if s.blue_green {
+                        let fe_b_port = frontend_port_for_slot(s, AppSlot::B)?;
+                        let web_b_dropin = render_web_slot_dropin(
+                            &layout.root,
+                            facts,
+                            s,
+                            fe_bin,
+                            &level,
+                            fe_b_port,
+                            "current",
+                        )?;
+                        write_dropin(
+                            crate::layout::SITE_APP_WEB_B_UNIT_PREFIX,
+                            &layout.account,
+                            &web_b_dropin,
+                        )?;
+                    }
+                }
+            }
             if let Some(worker) = facts.worker_entrypoint.as_deref() {
-                let worker_dropin = render_worker_dropin(&layout.root, facts, worker, bin, &level);
+                let worker_dropin =
+                    render_worker_dropin(&layout.root, facts, worker, bin, &level, database);
                 write_dropin(
                     crate::layout::SITE_APP_WORKER_UNIT_PREFIX,
                     &layout.account,
@@ -256,16 +525,28 @@ pub(crate) fn run_provision_step(
         }
         ProvisionStep::Verify => {
             crate::proxy_site::run_step(ProvisionStep::Verify, layout)?;
-            let dropin = PathBuf::from(format!(
-                "{}{}.service.d/10-rustiron-app.conf",
-                crate::layout::SITE_APP_UNIT_PREFIX,
-                layout.account
-            ));
-            if !dropin.is_file()
-                || !layout.root.join("releases").is_dir()
-                || !layout.root.join("data").is_dir()
-            {
+            if !layout.root.join("releases").is_dir() || !layout.root.join("data").is_dir() {
                 return Err(ExecutorError::StepFailed);
+            }
+            if !is_static {
+                let dropin = PathBuf::from(format!(
+                    "{}{}.service.d/10-rustiron-app.conf",
+                    crate::layout::SITE_APP_UNIT_PREFIX,
+                    layout.account
+                ));
+                if !dropin.is_file() {
+                    return Err(ExecutorError::StepFailed);
+                }
+                if topology == AppTopology::FullstackDualSsr {
+                    let web_dropin = PathBuf::from(format!(
+                        "{}{}.service.d/10-rustiron-app.conf",
+                        crate::layout::SITE_APP_WEB_UNIT_PREFIX,
+                        layout.account
+                    ));
+                    if !web_dropin.is_file() {
+                        return Err(ExecutorError::StepFailed);
+                    }
+                }
             }
             Ok(())
         }
@@ -529,12 +810,68 @@ fn sha256_file(path: &Path, max_bytes: u64) -> Result<(String, u64), ExecutorErr
     Ok((digest, total))
 }
 
+/// Verifies that the parsed manifest contains every required entrypoint or
+/// frontend index file for the site's enrolled topology (W659, D-102).
+pub(crate) fn verify_manifest_entrypoints(
+    entries: &BTreeMap<String, String>,
+    facts: &AppFacts,
+    spec: Option<&AppFullstackSpec>,
+    migration_entrypoint: Option<&str>,
+) -> Result<(), ExecutorError> {
+    let topology = spec.map(|s| s.topology).unwrap_or(AppTopology::BackendApi);
+    match topology {
+        AppTopology::StaticSpa => {
+            let dir = spec
+                .and_then(|s| s.frontend_dir.as_deref())
+                .ok_or(ExecutorError::PreconditionChanged)?;
+            let index = format!("{dir}/index.html");
+            if !entries.contains_key(&index) {
+                return Err(ExecutorError::PreconditionChanged);
+            }
+        }
+        AppTopology::BackendApi => {
+            if !entries.contains_key(&facts.entrypoint) {
+                return Err(ExecutorError::PreconditionChanged);
+            }
+        }
+        AppTopology::FullstackSplit => {
+            let dir = spec
+                .and_then(|s| s.frontend_dir.as_deref())
+                .ok_or(ExecutorError::PreconditionChanged)?;
+            let index = format!("{dir}/index.html");
+            if !entries.contains_key(&facts.entrypoint) || !entries.contains_key(&index) {
+                return Err(ExecutorError::PreconditionChanged);
+            }
+        }
+        AppTopology::FullstackDualSsr => {
+            let fe_entry = spec
+                .and_then(|s| s.frontend_entrypoint.as_deref())
+                .ok_or(ExecutorError::PreconditionChanged)?;
+            if !entries.contains_key(&facts.entrypoint) || !entries.contains_key(fe_entry) {
+                return Err(ExecutorError::PreconditionChanged);
+            }
+        }
+    }
+    if let Some(worker) = facts.worker_entrypoint.as_deref()
+        && !entries.contains_key(worker)
+    {
+        return Err(ExecutorError::PreconditionChanged);
+    }
+    if let Some(migration) = migration_entrypoint
+        && !entries.contains_key(migration)
+    {
+        return Err(ExecutorError::PreconditionChanged);
+    }
+    Ok(())
+}
+
 /// Verifies the intake archive and manifest SHA-256 digests and `app.env` keys
 /// before committing or executing an `app_deploy`.
 pub(crate) fn verify_intake(
     intake_root: &Path,
     release: &AppRelease,
     facts: &AppFacts,
+    spec: Option<&AppFullstackSpec>,
     site_root: &Path,
 ) -> Result<(PathBuf, BTreeMap<String, String>), ExecutorError> {
     let dir = intake_root
@@ -556,20 +893,15 @@ pub(crate) fn verify_intake(
     if entries.len() as u64 != release.file_count {
         return Err(ExecutorError::PreconditionChanged);
     }
-    if !entries.contains_key(&facts.entrypoint) {
-        return Err(ExecutorError::PreconditionChanged);
+    verify_manifest_entrypoints(
+        &entries,
+        facts,
+        spec,
+        release.migration_entrypoint.as_deref(),
+    )?;
+    if spec.map(|s| s.topology) != Some(AppTopology::StaticSpa) {
+        verify_env_keys_present(&site_root.join("private").join("app.env"), &facts.env_keys)?;
     }
-    if let Some(worker) = facts.worker_entrypoint.as_deref()
-        && !entries.contains_key(worker)
-    {
-        return Err(ExecutorError::PreconditionChanged);
-    }
-    if let Some(migration) = release.migration_entrypoint.as_deref()
-        && !entries.contains_key(migration)
-    {
-        return Err(ExecutorError::PreconditionChanged);
-    }
-    verify_env_keys_present(&site_root.join("private").join("app.env"), &facts.env_keys)?;
     Ok((bundle, entries))
 }
 
@@ -633,8 +965,13 @@ pub(crate) fn probe_loopback_http(
     Err(ExecutorError::StepFailed)
 }
 
-/// Runs one confined command as `account` with zero network access via `systemd-run`,
-/// optionally entering a dedicated SELinux MCS context (`domain:level`).
+/// Runs one confined command as `account` via `systemd-run`, optionally
+/// entering a dedicated SELinux MCS context (`domain:level`). When
+/// `allow_loopback_db` is `false` (default for unpack and SQLite/none jobs),
+/// `PrivateNetwork=yes` is enforced; when `true` (MariaDB/PostgreSQL 18
+/// migrations), `IPAddressDeny=any` + `IPAddressAllow=127.0.0.1/32` permits
+/// loopback DB connectivity only while blocking all external networks.
+#[allow(clippy::too_many_arguments)]
 fn run_confined_as_site(
     account: &str,
     selinux_context: Option<&str>,
@@ -642,6 +979,7 @@ fn run_confined_as_site(
     env: &[(&str, &str)],
     memory_mib: u64,
     tasks_max: u64,
+    allow_loopback_db: bool,
     argv: &[&str],
 ) -> Result<(), ExecutorError> {
     let mut args: Vec<String> = vec![
@@ -655,13 +993,18 @@ fn run_confined_as_site(
         "--property=ProtectHome=yes".to_owned(),
         "--property=PrivateTmp=yes".to_owned(),
         "--property=PrivateDevices=yes".to_owned(),
-        "--property=PrivateNetwork=yes".to_owned(),
         "--property=CapabilityBoundingSet=".to_owned(),
         "--property=RestrictSUIDSGID=yes".to_owned(),
         "--property=RuntimeMaxSec=120".to_owned(),
         format!("--property=MemoryMax={memory_mib}M"),
         format!("--property=TasksMax={tasks_max}"),
     ];
+    if allow_loopback_db {
+        args.push("--property=IPAddressDeny=any".to_owned());
+        args.push("--property=IPAddressAllow=127.0.0.1/32".to_owned());
+    } else {
+        args.push("--property=PrivateNetwork=yes".to_owned());
+    }
     if let Some(ctx) = selinux_context {
         args.push(format!("--property=SELinuxContext={ctx}"));
     }
@@ -739,28 +1082,98 @@ fn switch_current_symlink(root: &Path, target: Option<&str>) -> Result<(), Execu
     }
 }
 
-/// Runs one journaled step of an open `app_deploy`.
+/// W658 (D-102 C2): snapshots an app site's MariaDB database into root-only
+/// `0600` `snap_dir/pre-migrate.sql` via `--single-transaction`.
+fn snapshot_mariadb_for_migration(account: &str, snap_dir: &Path) -> Result<(), ExecutorError> {
+    fs::create_dir_all(snap_dir).map_err(|_| ExecutorError::StepFailed)?;
+    fs::set_permissions(snap_dir, fs::Permissions::from_mode(0o700))
+        .map_err(|_| ExecutorError::StepFailed)?;
+    let dump_path = snap_dir.join("pre-migrate.sql");
+    let _ = fs::remove_file(&dump_path);
+    let dump = provision::spawn(
+        "/usr/bin/mariadb-dump",
+        &[
+            "--socket",
+            provision::DB_SOCKET,
+            "--single-transaction",
+            "--routines",
+            "--triggers",
+            "--add-drop-table",
+            "--",
+            account,
+        ],
+        true,
+        None,
+    )?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(&dump_path)
+        .map_err(|_| ExecutorError::StepFailed)?;
+    file.write_all(dump.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|_| ExecutorError::StepFailed)
+}
+
+/// W658 (D-102 C2): restores a root-only pre-migration MariaDB SQL snapshot.
+fn restore_mariadb_snapshot(account: &str, snap_dir: &Path) -> Result<(), ExecutorError> {
+    let dump_path = snap_dir.join("pre-migrate.sql");
+    let (mut file, _) =
+        open_regular_nofollow(&dump_path, Some(0), true).map_err(|_| ExecutorError::StepFailed)?;
+    let mut sql = Vec::new();
+    file.read_to_end(&mut sql)
+        .map_err(|_| ExecutorError::StepFailed)?;
+    provision::spawn(
+        provision::MARIADB,
+        &["--batch", "--socket", provision::DB_SOCKET, account],
+        false,
+        Some(&sql),
+    )
+    .map(drop)
+}
+
+/// Runs one journaled step of an open `app_deploy` across all 4 D-102
+/// topologies (`static_spa`, `backend_api`, `fullstack_split`,
+/// `fullstack_dual_ssr`) and optional blue/green standby cutover.
 pub(crate) fn run_deploy_step(
     step: AppReleaseStep,
     layout: &SiteLayout,
     facts: &AppFacts,
+    spec: Option<&AppFullstackSpec>,
     release: &AppRelease,
     previous_release_id: Option<&str>,
+    blue_green_cutover: bool,
 ) -> Result<(), ExecutorError> {
+    let database = spec.map(|s| s.database).unwrap_or(AppDatabase::Sqlite);
+    let topology = spec.map(|s| s.topology).unwrap_or(AppTopology::BackendApi);
+    let is_static = topology == AppTopology::StaticSpa;
+    let current_slot = spec.map(|s| s.active_slot).unwrap_or(AppSlot::A);
+    let target_slot = if blue_green_cutover && spec.is_some_and(|s| s.blue_green) {
+        current_slot.opposite()
+    } else {
+        current_slot
+    };
     let release_dir = layout.root.join("releases").join(&release.release_id);
     let release_str = release_dir.to_string_lossy().into_owned();
     let data_dir = layout.root.join("data");
     let data_str = data_dir.to_string_lossy().into_owned();
     let tmp_dir = layout.root.join("tmp");
     let tmp_str = tmp_dir.to_string_lossy().into_owned();
-    let app_unit = format!("rustiron-app@{}.service", layout.account);
+    let target_app_unit = backend_unit_for_slot(&layout.account, target_slot);
+    let target_web_unit = web_unit_for_slot(&layout.account, target_slot);
+    let current_app_unit = backend_unit_for_slot(&layout.account, current_slot);
+    let current_web_unit = web_unit_for_slot(&layout.account, current_slot);
     let worker_unit = format!("rustiron-app-worker@{}.service", layout.account);
+    let is_dual_ssr = topology == AppTopology::FullstackDualSsr;
     match step {
         AppReleaseStep::Unpack => {
             let (bundle, entries) = verify_intake(
                 Path::new(crate::layout::APP_INTAKE_DIR),
                 release,
                 facts,
+                spec,
                 &layout.root,
             )?;
             let passwd = provision::read_etc("passwd")?;
@@ -770,20 +1183,29 @@ pub(crate) fn run_deploy_step(
                 return Err(ExecutorError::PreconditionChanged);
             }
             fs::create_dir(&release_dir).map_err(|_| ExecutorError::StepFailed)?;
-            rustix::fs::chown(
+            // W663: fchown through a no-follow descriptor; releases/ is site-owned.
+            let release_fd = rustix::fs::open(
                 &release_dir,
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::DIRECTORY
+                    | rustix::fs::OFlags::NOFOLLOW
+                    | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .map_err(|_| ExecutorError::StepFailed)?;
+            rustix::fs::fchown(
+                &release_fd,
                 Some(rustix::process::Uid::from_raw(uid)),
                 Some(rustix::process::Gid::from_raw(uid)),
             )
             .map_err(|_| ExecutorError::StepFailed)?;
             let staged_bundle = tmp_dir.join(format!("bundle-{}.tar.gz", release.release_id));
-            fs::copy(&bundle, &staged_bundle).map_err(|_| ExecutorError::StepFailed)?;
-            rustix::fs::chown(
-                &staged_bundle,
-                Some(rustix::process::Uid::from_raw(uid)),
-                Some(rustix::process::Gid::from_raw(uid)),
-            )
-            .map_err(|_| ExecutorError::StepFailed)?;
+            // W663-E1: tmp/ is writable by the site, so a planted symlink or file
+            // here must never be followed: unlink the name, then create it
+            // O_EXCL|O_NOFOLLOW and fchown the new file.
+            let _ = fs::remove_file(&staged_bundle);
+            let (mut bundle_file, _) = open_regular_nofollow(&bundle, Some(0), false)?;
+            copy_verified_file(&mut bundle_file, &staged_bundle, 0o600, Some(uid))?;
             let level = crate::capture::site_level(layout)?;
             let unpack_ctx = format!("system_u:system_r:rustiron_unpack_t:{level}");
             let staged_str = staged_bundle.to_string_lossy().into_owned();
@@ -794,6 +1216,7 @@ pub(crate) fn run_deploy_step(
                 &[],
                 facts.memory_max_mib,
                 facts.tasks_max,
+                false,
                 &[
                     "/usr/bin/tar",
                     "-xzf",
@@ -807,9 +1230,13 @@ pub(crate) fn run_deploy_step(
             let _ = fs::remove_file(&staged_bundle);
             unpack_res?;
             verify_unpacked_tree(&release_dir, &entries, release.total_bytes)?;
-            provision::output("/usr/bin/chmod", &["-R", "a-w", "--", &release_str]).map(drop)
+            provision::output("/usr/bin/chmod", &["-R", "a-w", "--", &release_str])?;
+            provision::run("/usr/sbin/restorecon", &["-R", "--", &release_str])
         }
         AppReleaseStep::Migrate => {
+            if is_static {
+                return Err(ExecutorError::BindingDenied);
+            }
             let migration = release
                 .migration_entrypoint
                 .as_deref()
@@ -820,17 +1247,41 @@ pub(crate) fn run_deploy_step(
             let passwd = provision::read_etc("passwd")?;
             let uid = provision::account_uid(&passwd, &layout.account)
                 .ok_or(ExecutorError::StepFailed)?;
-            // W603-F4: stop the running app before pre-migration SQLite copy so
-            // WAL frames flush cleanly and rollback restores exact pre-migration state.
-            let _ = provision::output("/usr/bin/systemctl", &["stop", "--", &app_unit]);
-            if facts.worker_entrypoint.is_some() {
-                let _ = provision::output("/usr/bin/systemctl", &["stop", "--", &worker_unit]);
+            // Stop running units before SQLite WAL snapshot (or non-blue-green
+            // migration); for MariaDB/PostgreSQL 18 blue/green cutover, online
+            // consistent dumps keep the live slot serving.
+            if !blue_green_cutover || database == AppDatabase::Sqlite {
+                let _ = provision::output("/usr/bin/systemctl", &["stop", "--", &current_app_unit]);
+                if is_dual_ssr {
+                    let _ =
+                        provision::output("/usr/bin/systemctl", &["stop", "--", &current_web_unit]);
+                }
+                if facts.worker_entrypoint.is_some() {
+                    let _ = provision::output("/usr/bin/systemctl", &["stop", "--", &worker_unit]);
+                }
             }
-            // W633 (H-21): keep snapshot dir root-owned (0700) and copy only verified
-            // site-owned single-link regular DB files via O_NOFOLLOW|O_NONBLOCK.
-            snapshot_sqlite_for_migration(&data_dir, &snap_dir, uid)?;
+            match database {
+                AppDatabase::Sqlite => snapshot_sqlite_for_migration(&data_dir, &snap_dir, uid)?,
+                AppDatabase::Mariadb => {
+                    snapshot_mariadb_for_migration(&layout.account, &snap_dir)?;
+                }
+                AppDatabase::Postgresql18 => {
+                    fs::create_dir_all(&snap_dir).map_err(|_| ExecutorError::StepFailed)?;
+                    fs::set_permissions(&snap_dir, fs::Permissions::from_mode(0o700))
+                        .map_err(|_| ExecutorError::StepFailed)?;
+                    postgres::dump_database(
+                        &layout.account,
+                        &snap_dir.join("pre-migrate.dump"),
+                        None,
+                    )?;
+                }
+                AppDatabase::None => {}
+            }
             let level = crate::capture::site_level(layout)?;
-            let app_ctx = format!("system_u:system_r:rustiron_app_t:{level}");
+            let domain = app_selinux_domain(database);
+            let app_ctx = format!("system_u:system_r:{domain}:{level}");
+            let allow_loopback_db =
+                matches!(database, AppDatabase::Mariadb | AppDatabase::Postgresql18);
             let root_str = layout.root.to_string_lossy().into_owned();
             let script_path = release_dir.join(migration).to_string_lossy().into_owned();
             run_confined_as_site(
@@ -844,20 +1295,60 @@ pub(crate) fn run_deploy_step(
                 ],
                 facts.memory_max_mib,
                 facts.tasks_max,
+                allow_loopback_db,
                 &[bin, &env_arg, &script_path],
             )
         }
         AppReleaseStep::Activate => {
+            if is_static {
+                switch_current_symlink(&layout.root, Some(&release.release_id))?;
+                return Ok(());
+            }
             let bin = verify_runtime_binary(release.runtime)?;
             let level = crate::capture::site_level(layout)?;
-            let dropin = render_app_dropin(&layout.root, facts, bin, &level);
+            let target_port = backend_port_for_slot(facts, spec, target_slot)?;
+            let release_subpath = if blue_green_cutover {
+                format!("releases/{}", release.release_id)
+            } else {
+                "current".to_owned()
+            };
+            let dropin = render_app_slot_dropin(
+                &layout.root,
+                facts,
+                bin,
+                &level,
+                database,
+                target_port,
+                &release_subpath,
+            );
             write_dropin(
-                crate::layout::SITE_APP_UNIT_PREFIX,
+                backend_prefix_for_slot(target_slot),
                 &layout.account,
                 &dropin,
             )?;
-            if let Some(worker) = facts.worker_entrypoint.as_deref() {
-                let worker_dropin = render_worker_dropin(&layout.root, facts, worker, bin, &level);
+            if is_dual_ssr {
+                let s = spec.ok_or(ExecutorError::BindingDenied)?;
+                let fe_rt = s.frontend_runtime.ok_or(ExecutorError::BindingDenied)?;
+                let fe_bin = verify_runtime_binary(fe_rt)?;
+                let fe_port = frontend_port_for_slot(s, target_slot)?;
+                let web_dropin = render_web_slot_dropin(
+                    &layout.root,
+                    facts,
+                    s,
+                    fe_bin,
+                    &level,
+                    fe_port,
+                    &release_subpath,
+                )?;
+                write_dropin(
+                    web_prefix_for_slot(target_slot),
+                    &layout.account,
+                    &web_dropin,
+                )?;
+            }
+            if !blue_green_cutover && let Some(worker) = facts.worker_entrypoint.as_deref() {
+                let worker_dropin =
+                    render_worker_dropin(&layout.root, facts, worker, bin, &level, database);
                 write_dropin(
                     crate::layout::SITE_APP_WORKER_UNIT_PREFIX,
                     &layout.account,
@@ -866,47 +1357,131 @@ pub(crate) fn run_deploy_step(
             }
             provision::run("/usr/sbin/restorecon", &["-R", "--", &data_str])?;
             provision::output("/usr/bin/systemctl", &["daemon-reload"])?;
-            switch_current_symlink(&layout.root, Some(&release.release_id))?;
-            provision::output("/usr/bin/systemctl", &["enable", "--", &app_unit])?;
-            provision::output("/usr/bin/systemctl", &["restart", "--", &app_unit])?;
-            if facts.worker_entrypoint.is_some() {
+            if !blue_green_cutover {
+                switch_current_symlink(&layout.root, Some(&release.release_id))?;
+            }
+            provision::output("/usr/bin/systemctl", &["enable", "--", &target_app_unit])?;
+            provision::output("/usr/bin/systemctl", &["restart", "--", &target_app_unit])?;
+            if is_dual_ssr {
+                provision::output("/usr/bin/systemctl", &["enable", "--", &target_web_unit])?;
+                provision::output("/usr/bin/systemctl", &["restart", "--", &target_web_unit])?;
+            }
+            if !blue_green_cutover && facts.worker_entrypoint.is_some() {
                 provision::output("/usr/bin/systemctl", &["enable", "--", &worker_unit])?;
                 provision::output("/usr/bin/systemctl", &["restart", "--", &worker_unit])?;
             }
             Ok(())
         }
         AppReleaseStep::Health => {
-            let state = provision::output("/usr/bin/systemctl", &["is-active", "--", &app_unit])?;
+            if is_static {
+                let dir = spec
+                    .and_then(|s| s.frontend_dir.as_deref())
+                    .ok_or(ExecutorError::StepFailed)?;
+                let index_path = layout.root.join("current").join(dir).join("index.html");
+                let meta = fs::metadata(&index_path).map_err(|_| ExecutorError::StepFailed)?;
+                return if meta.is_file() {
+                    Ok(())
+                } else {
+                    Err(ExecutorError::StepFailed)
+                };
+            }
+            let state =
+                provision::output("/usr/bin/systemctl", &["is-active", "--", &target_app_unit])?;
             if state.trim() != "active" {
                 return Err(ExecutorError::StepFailed);
             }
-            if facts.worker_entrypoint.is_some() {
+            if is_dual_ssr {
+                let wstate = provision::output(
+                    "/usr/bin/systemctl",
+                    &["is-active", "--", &target_web_unit],
+                )?;
+                if wstate.trim() != "active" {
+                    return Err(ExecutorError::StepFailed);
+                }
+            }
+            if !blue_green_cutover && facts.worker_entrypoint.is_some() {
                 let wstate =
                     provision::output("/usr/bin/systemctl", &["is-active", "--", &worker_unit])?;
                 if wstate.trim() != "active" {
                     return Err(ExecutorError::StepFailed);
                 }
             }
-            probe_loopback_http(&layout.account, facts.port, &release.health_path)
+            let target_port = backend_port_for_slot(facts, spec, target_slot)?;
+            probe_loopback_http(&layout.account, target_port, &release.health_path)?;
+            if is_dual_ssr {
+                let s = spec.ok_or(ExecutorError::BindingDenied)?;
+                let fe_port = frontend_port_for_slot(s, target_slot)?;
+                probe_loopback_http(&layout.account, fe_port, "/")?;
+            }
+            Ok(())
         }
         AppReleaseStep::Rollback => {
-            switch_current_symlink(&layout.root, previous_release_id)?;
+            if is_static {
+                return switch_current_symlink(&layout.root, previous_release_id);
+            }
+            if blue_green_cutover {
+                // Standby slot failed; stop it and keep the live slot untouched.
+                let _ = provision::output("/usr/bin/systemctl", &["stop", "--", &target_app_unit]);
+                if is_dual_ssr {
+                    let _ =
+                        provision::output("/usr/bin/systemctl", &["stop", "--", &target_web_unit]);
+                }
+            } else {
+                switch_current_symlink(&layout.root, previous_release_id)?;
+            }
             if release.migration_entrypoint.is_some() {
                 let snap_dir = tmp_dir.join(format!("pre-migrate-{}", release.release_id));
                 let passwd = provision::read_etc("passwd")?;
                 let uid = provision::account_uid(&passwd, &layout.account)
                     .ok_or(ExecutorError::StepFailed)?;
-                restore_sqlite_snapshot(&snap_dir, &data_dir, Some(uid))?;
-                provision::run("/usr/sbin/restorecon", &["-R", "--", &data_str])?;
+                match database {
+                    AppDatabase::Sqlite => {
+                        restore_sqlite_snapshot(&snap_dir, &data_dir, Some(uid))?;
+                        provision::run("/usr/sbin/restorecon", &["-R", "--", &data_str])?;
+                    }
+                    AppDatabase::Mariadb => restore_mariadb_snapshot(&layout.account, &snap_dir)?,
+                    AppDatabase::Postgresql18 => {
+                        postgres::restore_database(layout, &snap_dir.join("pre-migrate.dump"))?;
+                    }
+                    AppDatabase::None => {}
+                }
+            }
+            if blue_green_cutover {
+                // Live slot stayed active (or re-verify it if SQLite migration paused it).
+                if database == AppDatabase::Sqlite && previous_release_id.is_some() {
+                    provision::output("/usr/bin/systemctl", &["restart", "--", &current_app_unit])?;
+                    if is_dual_ssr {
+                        provision::output(
+                            "/usr/bin/systemctl",
+                            &["restart", "--", &current_web_unit],
+                        )?;
+                    }
+                    if facts.worker_entrypoint.is_some() {
+                        provision::output("/usr/bin/systemctl", &["restart", "--", &worker_unit])?;
+                    }
+                }
+                if previous_release_id.is_some() {
+                    let live_port = backend_port_for_slot(facts, spec, current_slot)?;
+                    probe_loopback_http(&layout.account, live_port, &facts.health_path)?;
+                }
+                return Ok(());
             }
             if previous_release_id.is_some() {
-                provision::output("/usr/bin/systemctl", &["restart", "--", &app_unit])?;
+                provision::output("/usr/bin/systemctl", &["restart", "--", &current_app_unit])?;
+                if is_dual_ssr {
+                    provision::output("/usr/bin/systemctl", &["restart", "--", &current_web_unit])?;
+                }
                 if facts.worker_entrypoint.is_some() {
                     provision::output("/usr/bin/systemctl", &["restart", "--", &worker_unit])?;
                 }
-                probe_loopback_http(&layout.account, facts.port, &facts.health_path)
+                let live_port = backend_port_for_slot(facts, spec, current_slot)?;
+                probe_loopback_http(&layout.account, live_port, &facts.health_path)
             } else {
-                let _ = provision::output("/usr/bin/systemctl", &["stop", "--", &app_unit]);
+                let _ = provision::output("/usr/bin/systemctl", &["stop", "--", &current_app_unit]);
+                if is_dual_ssr {
+                    let _ =
+                        provision::output("/usr/bin/systemctl", &["stop", "--", &current_web_unit]);
+                }
                 if facts.worker_entrypoint.is_some() {
                     let _ = provision::output("/usr/bin/systemctl", &["stop", "--", &worker_unit]);
                 }
@@ -916,15 +1491,76 @@ pub(crate) fn run_deploy_step(
     }
 }
 
-/// Runs a signed `start`, `stop`, or `restart` on the app's systemd unit(s).
+/// W659 (D-102): completes a verified blue/green cutover AFTER Caddy has
+/// atomically switched traffic to the new active slot: updates `<site>/current`
+/// for static assets and workers, stops the drained previous slot unit(s), and
+/// restarts any companion background worker.
+pub(crate) fn finish_blue_green_cutover(
+    layout: &SiteLayout,
+    facts: &AppFacts,
+    spec: &AppFullstackSpec,
+    release_id: &str,
+    drained_slot: AppSlot,
+) -> Result<(), ExecutorError> {
+    switch_current_symlink(&layout.root, Some(release_id))?;
+    let old_app_unit = backend_unit_for_slot(&layout.account, drained_slot);
+    let _ = provision::output(
+        "/usr/bin/systemctl",
+        &["disable", "--now", "--", &old_app_unit],
+    );
+    if spec.topology == AppTopology::FullstackDualSsr {
+        let old_web_unit = web_unit_for_slot(&layout.account, drained_slot);
+        let _ = provision::output(
+            "/usr/bin/systemctl",
+            &["disable", "--now", "--", &old_web_unit],
+        );
+    }
+    if let Some(worker) = facts.worker_entrypoint.as_deref() {
+        let bin = verify_runtime_binary(facts.runtime)?;
+        let level = crate::capture::site_level(layout)?;
+        let worker_dropin =
+            render_worker_dropin(&layout.root, facts, worker, bin, &level, spec.database);
+        write_dropin(
+            crate::layout::SITE_APP_WORKER_UNIT_PREFIX,
+            &layout.account,
+            &worker_dropin,
+        )?;
+        provision::output("/usr/bin/systemctl", &["daemon-reload"])?;
+        let worker_unit = format!("rustiron-app-worker@{}.service", layout.account);
+        provision::output("/usr/bin/systemctl", &["enable", "--", &worker_unit])?;
+        provision::output("/usr/bin/systemctl", &["restart", "--", &worker_unit])?;
+    }
+    Ok(())
+}
+
+/// Runs a signed `start`, `stop`, or `restart` on the app's active systemd unit(s).
 pub(crate) fn run_lifecycle(
     account: &str,
     has_worker: bool,
     action: AppLifecycleAction,
 ) -> Result<(), ExecutorError> {
+    run_lifecycle_for(account, has_worker, None, action)
+}
+
+/// W659 (D-102): runs a signed lifecycle action respecting topology (`static_spa`
+/// has no daemon), dual-SSR frontend unit, and active blue/green slot.
+pub(crate) fn run_lifecycle_for(
+    account: &str,
+    has_worker: bool,
+    spec: Option<&AppFullstackSpec>,
+    action: AppLifecycleAction,
+) -> Result<(), ExecutorError> {
+    if spec.map(|s| s.topology) == Some(AppTopology::StaticSpa) {
+        return Err(ExecutorError::BindingDenied);
+    }
+    let slot = spec.map(|s| s.active_slot).unwrap_or(AppSlot::A);
     let verb = action.as_str();
-    let app_unit = format!("rustiron-app@{account}.service");
+    let app_unit = backend_unit_for_slot(account, slot);
     provision::output("/usr/bin/systemctl", &[verb, "--", &app_unit])?;
+    if spec.map(|s| s.topology) == Some(AppTopology::FullstackDualSsr) {
+        let web_unit = web_unit_for_slot(account, slot);
+        provision::output("/usr/bin/systemctl", &[verb, "--", &web_unit])?;
+    }
     if has_worker {
         let worker_unit = format!("rustiron-app-worker@{account}.service");
         provision::output("/usr/bin/systemctl", &[verb, "--", &worker_unit])?;
@@ -936,6 +1572,101 @@ pub(crate) fn run_lifecycle(
 // W601 (D-096 / P30): App-data consistent SQLite online backup, marker, freeze,
 // and verified restore helpers.
 // ============================================================================
+
+/// W658 (D-102 C2): returns the tmp dump file path for an app site's DB engine.
+pub(crate) fn app_db_dump_path(root: &str, database: AppDatabase) -> String {
+    let file = match database {
+        AppDatabase::None | AppDatabase::Sqlite => crate::layout::APP_SQLITE_BUNDLE_FILE,
+        AppDatabase::Mariadb => crate::layout::APP_MARIADB_DUMP_FILE,
+        AppDatabase::Postgresql18 => crate::layout::APP_PG_DUMP_FILE,
+    };
+    format!("{root}/tmp/{file}")
+}
+
+/// W658 (D-102 C2): removes the temporary app DB dump file after capture.
+pub(crate) fn remove_app_db_dump(
+    layout: &SiteLayout,
+    database: AppDatabase,
+) -> Result<(), ExecutorError> {
+    let file = match database {
+        AppDatabase::None | AppDatabase::Sqlite => crate::layout::APP_SQLITE_BUNDLE_FILE,
+        AppDatabase::Mariadb => crate::layout::APP_MARIADB_DUMP_FILE,
+        AppDatabase::Postgresql18 => crate::layout::APP_PG_DUMP_FILE,
+    };
+    let path = layout.root.join("tmp").join(file);
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(ExecutorError::StepFailed),
+    }
+}
+
+/// W658 (D-102 C2): prepares a consistent PostgreSQL 18 or MariaDB dump inside
+/// `<site>/tmp/` owned by the site account (and relabeled) so the confined
+/// restic worker can back it up alongside `data/`.
+pub(crate) fn dump_app_external_db(
+    layout: &SiteLayout,
+    database: AppDatabase,
+) -> Result<(), ExecutorError> {
+    let passwd = provision::read_etc("passwd")?;
+    let uid = provision::account_uid(&passwd, &layout.account).ok_or(ExecutorError::StepFailed)?;
+    let dump_path = match database {
+        AppDatabase::Postgresql18 => {
+            let p = layout
+                .root
+                .join("tmp")
+                .join(crate::layout::APP_PG_DUMP_FILE);
+            postgres::dump_database(&layout.account, &p, Some(uid))?;
+            p
+        }
+        AppDatabase::Mariadb => {
+            let p = layout
+                .root
+                .join("tmp")
+                .join(crate::layout::APP_MARIADB_DUMP_FILE);
+            let _ = fs::remove_file(&p);
+            let dump = provision::spawn(
+                "/usr/bin/mariadb-dump",
+                &[
+                    "--socket",
+                    provision::DB_SOCKET,
+                    "--single-transaction",
+                    "--routines",
+                    "--triggers",
+                    "--add-drop-table",
+                    "--",
+                    &layout.account,
+                ],
+                true,
+                None,
+            )?;
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+                .open(&p)
+                .map_err(|_| ExecutorError::StepFailed)?;
+            // W663-E2: fchown the descriptor; tmp/ is site-writable, so a path
+            // chown could follow a symlink swapped in after the create.
+            rustix::fs::fchown(
+                &file,
+                Some(rustix::process::Uid::from_raw(uid)),
+                Some(rustix::process::Gid::from_raw(uid)),
+            )
+            .map_err(|_| ExecutorError::StepFailed)?;
+            file.write_all(dump.as_bytes())
+                .and_then(|()| file.sync_all())
+                .map_err(|_| ExecutorError::StepFailed)?;
+            p
+        }
+        AppDatabase::None | AppDatabase::Sqlite => return Err(ExecutorError::BindingDenied),
+    };
+    provision::run(
+        "/usr/sbin/restorecon",
+        &["-F", "--", provision::path_str(&dump_path)?],
+    )
+}
 
 /// Consistent SQLite online-backup tar path inside `<site>/tmp`.
 pub(crate) fn app_bundle_path(root: &str) -> String {
@@ -1065,6 +1796,7 @@ pub(crate) fn restore_app_sqlite(
         &[],
         facts.memory_max_mib,
         facts.tasks_max,
+        false,
         &refs,
     )
 }
@@ -1198,7 +1930,13 @@ mod tests {
     fn dropin_renders_bound_port_limits_and_pinned_binary() {
         let facts = sample_facts();
         let root = Path::new("/srv/sites/rs_emdash1");
-        let app = render_app_dropin(root, &facts, "/usr/bin/node", "s0:c233");
+        let app = render_app_dropin(
+            root,
+            &facts,
+            "/usr/bin/node",
+            "s0:c233",
+            AppDatabase::Sqlite,
+        );
         assert!(app.contains("SELinuxContext=system_u:system_r:rustiron_app_t:s0:c233"));
         assert!(app.contains("PORT=43187 HOST=127.0.0.1 NODE_ENV=production"));
         assert!(app.contains("MemoryMax=512M"));
@@ -1206,8 +1944,14 @@ mod tests {
         assert!(app.contains(
             "ExecStart=/usr/bin/node --env-file-if-exists=/srv/sites/rs_emdash1/private/app.env /srv/sites/rs_emdash1/current/dist/server/entry.mjs"
         ));
-        let worker =
-            render_worker_dropin(root, &facts, "dist/worker.mjs", "/usr/bin/node", "s0:c233");
+        let worker = render_worker_dropin(
+            root,
+            &facts,
+            "dist/worker.mjs",
+            "/usr/bin/node",
+            "s0:c233",
+            AppDatabase::Sqlite,
+        );
         assert!(worker.contains("SELinuxContext=system_u:system_r:rustiron_app_t:s0:c233"));
         assert!(!worker.contains("PORT="));
         assert!(worker.contains(
@@ -1215,10 +1959,56 @@ mod tests {
         ));
         let mut bun_facts = sample_facts();
         bun_facts.runtime = AppRuntime::Bun1V1;
-        let bun_app = render_app_dropin(root, &bun_facts, "/usr/local/bin/bun", "s0:c234");
+        let bun_app = render_app_dropin(
+            root,
+            &bun_facts,
+            "/usr/local/bin/bun",
+            "s0:c234",
+            AppDatabase::None,
+        );
         assert!(bun_app.contains("SELinuxContext=system_u:system_r:rustiron_app_t:s0:c234"));
         assert!(bun_app.contains(
             "ExecStart=/usr/local/bin/bun --env-file=/srv/sites/rs_emdash1/private/app.env /srv/sites/rs_emdash1/current/dist/server/entry.mjs"
+        ));
+
+        // W658 (D-102 C2): MariaDB and PostgreSQL 18 opt-in SELinux domains & skips().
+        let mariadb_app = render_app_dropin(
+            root,
+            &bun_facts,
+            "/usr/local/bin/bun",
+            "s0:c235",
+            AppDatabase::Mariadb,
+        );
+        assert!(
+            mariadb_app.contains("SELinuxContext=system_u:system_r:rustiron_app_mariadb_t:s0:c235")
+        );
+        let pg_app = render_app_dropin(
+            root,
+            &bun_facts,
+            "/usr/local/bin/bun",
+            "s0:c236",
+            AppDatabase::Postgresql18,
+        );
+        assert!(pg_app.contains("SELinuxContext=system_u:system_r:rustiron_app_pg_t:s0:c236"));
+        let pg_worker = render_worker_dropin(
+            root,
+            &bun_facts,
+            "dist/worker.mjs",
+            "/usr/local/bin/bun",
+            "s0:c236",
+            AppDatabase::Postgresql18,
+        );
+        assert!(pg_worker.contains("SELinuxContext=system_u:system_r:rustiron_app_pg_t:s0:c236"));
+
+        assert!(skips(ProvisionStep::PhpUnits, AppDatabase::Postgresql18));
+        assert!(skips(ProvisionStep::Database, AppDatabase::None));
+        assert!(skips(ProvisionStep::Database, AppDatabase::Sqlite));
+        assert!(!skips(ProvisionStep::Database, AppDatabase::Mariadb));
+        assert!(!skips(ProvisionStep::Database, AppDatabase::Postgresql18));
+        assert!(!skips(ProvisionStep::Credentials, AppDatabase::Mariadb));
+        assert!(!skips(
+            ProvisionStep::Credentials,
+            AppDatabase::Postgresql18
         ));
     }
 
@@ -1348,6 +2138,33 @@ mod tests {
     }
 
     #[test]
+    fn w663_bundle_staging_never_writes_through_a_planted_name() {
+        let base = std::env::temp_dir().join(format!("ri-w663-e1-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let victim = base.join("other-site-file");
+        fs::write(&victim, b"VICTIM").unwrap();
+        let bundle = base.join("bundle.tar.gz");
+        fs::write(&bundle, b"BUNDLE").unwrap();
+        let staged = base.join("bundle-r1.tar.gz");
+        let uid = rustix::process::getuid().as_raw();
+
+        // A planted symlink (or file) at the staged name is refused, never followed.
+        symlink(&victim, &staged).unwrap();
+        let (mut src, _) = open_regular_nofollow(&bundle, Some(uid), false).unwrap();
+        assert!(copy_verified_file(&mut src, &staged, 0o600, Some(uid)).is_err());
+        assert_eq!(fs::read(&victim).unwrap(), b"VICTIM");
+
+        // After the unlink the Unpack step does first, staging works.
+        fs::remove_file(&staged).unwrap();
+        let (mut src, _) = open_regular_nofollow(&bundle, Some(uid), false).unwrap();
+        copy_verified_file(&mut src, &staged, 0o600, Some(uid)).unwrap();
+        assert_eq!(fs::read(&staged).unwrap(), b"BUNDLE");
+        assert_eq!(fs::symlink_metadata(&staged).unwrap().mode() & 0o777, 0o600);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
     fn w633_sha256_and_migration_snapshot_refuse_symlinks_hardlinks_and_fifos() {
         use std::process::Command;
 
@@ -1395,5 +2212,148 @@ mod tests {
         assert_eq!(fs::read(&secret).unwrap(), b"SUPER_SECRET_CREDENTIAL");
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn w659_fullstack_topologies_manifest_checks_and_blue_green_slot_dropins() {
+        use rustiron_contracts::approval::IngressEngine;
+
+        let root = Path::new("/srv/sites/rs_shop");
+        let digest = "b".repeat(64);
+
+        // 1. static_spa requires <frontend_dir>/index.html, zero backend entrypoint.
+        let mut spa_facts = sample_facts();
+        spa_facts.runtime = AppRuntime::StaticV1;
+        spa_facts.port = 0;
+        spa_facts.entrypoint.clear();
+        spa_facts.worker_entrypoint = None;
+        let spa_spec = AppFullstackSpec {
+            ingress: IngressEngine::Caddy,
+            topology: AppTopology::StaticSpa,
+            database: AppDatabase::None,
+            blue_green: false,
+            active_slot: AppSlot::A,
+            standby_port: None,
+            spa_fallback: true,
+            frontend_dir: Some("frontend".to_owned()),
+            frontend_runtime: None,
+            frontend_entrypoint: None,
+            frontend_port: None,
+            frontend_standby_port: None,
+            sse_prefixes: vec![],
+            strip_api_prefixes: vec![],
+        };
+        let mut entries = BTreeMap::new();
+        entries.insert("frontend/index.html".to_owned(), digest.clone());
+        assert!(verify_manifest_entrypoints(&entries, &spa_facts, Some(&spa_spec), None).is_ok());
+        let empty_entries = BTreeMap::from([("frontend/app.js".to_owned(), digest.clone())]);
+        assert!(
+            verify_manifest_entrypoints(&empty_entries, &spa_facts, Some(&spa_spec), None).is_err()
+        );
+        // Lifecycle actions on static_spa are refused fail-closed.
+        assert_eq!(
+            run_lifecycle_for(
+                "rs_shop",
+                false,
+                Some(&spa_spec),
+                AppLifecycleAction::Restart
+            ),
+            Err(ExecutorError::BindingDenied)
+        );
+
+        // 2. fullstack_split requires both backend entrypoint AND frontend/index.html.
+        let mut split_facts = sample_facts();
+        split_facts.runtime = AppRuntime::Bun1V1;
+        split_facts.port = 43210;
+        split_facts.entrypoint = "backend/server.ts".to_owned();
+        split_facts.worker_entrypoint = None;
+        let split_spec = AppFullstackSpec {
+            ingress: IngressEngine::Caddy,
+            topology: AppTopology::FullstackSplit,
+            database: AppDatabase::Postgresql18,
+            blue_green: true,
+            active_slot: AppSlot::A,
+            standby_port: Some(43211),
+            spa_fallback: true,
+            frontend_dir: Some("frontend".to_owned()),
+            frontend_runtime: None,
+            frontend_entrypoint: None,
+            frontend_port: None,
+            frontend_standby_port: None,
+            sse_prefixes: vec!["/api/events/".to_owned()],
+            strip_api_prefixes: vec!["/api/".to_owned()],
+        };
+        let mut split_entries = BTreeMap::new();
+        split_entries.insert("backend/server.ts".to_owned(), digest.clone());
+        assert!(
+            verify_manifest_entrypoints(&split_entries, &split_facts, Some(&split_spec), None)
+                .is_err()
+        );
+        split_entries.insert("frontend/index.html".to_owned(), digest.clone());
+        assert!(
+            verify_manifest_entrypoints(&split_entries, &split_facts, Some(&split_spec), None)
+                .is_ok()
+        );
+
+        // Blue/green standby slot B drop-in binds standby_port and pins exact release subpath.
+        let slot_b_port =
+            backend_port_for_slot(&split_facts, Some(&split_spec), AppSlot::B).unwrap();
+        assert_eq!(slot_b_port, 43211);
+        let slot_b_dropin = render_app_slot_dropin(
+            root,
+            &split_facts,
+            "/usr/local/bin/bun",
+            "s0:c240",
+            AppDatabase::Postgresql18,
+            slot_b_port,
+            "releases/rel-2",
+        );
+        assert!(
+            slot_b_dropin.contains("SELinuxContext=system_u:system_r:rustiron_app_pg_t:s0:c240")
+        );
+        assert!(slot_b_dropin.contains("PORT=43211 HOST=127.0.0.1"));
+        assert!(slot_b_dropin.contains("/srv/sites/rs_shop/releases/rel-2/backend/server.ts"));
+
+        // 3. fullstack_dual_ssr requires both backend and frontend SSR entrypoints & renders web slot.
+        let dual_spec = AppFullstackSpec {
+            ingress: IngressEngine::Caddy,
+            topology: AppTopology::FullstackDualSsr,
+            database: AppDatabase::Mariadb,
+            blue_green: true,
+            active_slot: AppSlot::A,
+            standby_port: Some(43211),
+            spa_fallback: false,
+            frontend_dir: None,
+            frontend_runtime: Some(AppRuntime::Node22V1),
+            frontend_entrypoint: Some("frontend/server.js".to_owned()),
+            frontend_port: Some(43220),
+            frontend_standby_port: Some(43221),
+            sse_prefixes: vec![],
+            strip_api_prefixes: vec![],
+        };
+        let mut dual_entries = BTreeMap::new();
+        dual_entries.insert("backend/server.ts".to_owned(), digest.clone());
+        assert!(
+            verify_manifest_entrypoints(&dual_entries, &split_facts, Some(&dual_spec), None)
+                .is_err()
+        );
+        dual_entries.insert("frontend/server.js".to_owned(), digest);
+        assert!(
+            verify_manifest_entrypoints(&dual_entries, &split_facts, Some(&dual_spec), None)
+                .is_ok()
+        );
+        let web_b = render_web_slot_dropin(
+            root,
+            &split_facts,
+            &dual_spec,
+            "/usr/bin/node",
+            "s0:c241",
+            frontend_port_for_slot(&dual_spec, AppSlot::B).unwrap(),
+            "releases/rel-2",
+        )
+        .unwrap();
+        assert!(web_b.contains("SELinuxContext=system_u:system_r:rustiron_app_mariadb_t:s0:c241"));
+        assert!(web_b.contains("PORT=43221 HOST=127.0.0.1"));
+        assert!(web_b.contains("/srv/sites/rs_shop/releases/rel-2/frontend/server.js"));
     }
 }

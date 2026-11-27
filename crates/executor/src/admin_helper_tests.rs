@@ -283,7 +283,7 @@ fn quota_tools_can_write_their_unit_output_and_nothing_more() {
 fn mariadb_unit_file_stat_is_refused_without_audit() {
     let admin = rules(ADMIN_TE);
     assert!(admin.contains("dontaudit rustiron_admin_t mysqld_unit_file_t:file getattr;"));
-    assert!(admin.contains("policy_module(rustiron_admin, 0.5.4)"));
+    assert!(admin.contains("policy_module(rustiron_admin, 0.5.6)"));
     for broad in [
         "allow rustiron_admin_t mysqld_unit_file_t",
         "mysqld_unit_file_t:service",
@@ -2142,7 +2142,7 @@ mod authorize {
         .unwrap();
         let mut helper = Helper::new(TrustAnchor::lab(), None);
         assert_eq!(
-            helper.provision_step(&action, &record, None, None, None, false),
+            helper.provision_step(&action, &record, None, None, None, None, false),
             Err(ExecutorError::BindingDenied)
         );
     }
@@ -2167,7 +2167,7 @@ mod authorize {
             )
             .unwrap();
             assert_eq!(
-                helper.provision_step(&action, &record, None, None, None, true),
+                helper.provision_step(&action, &record, None, None, None, None, true),
                 Err(ExecutorError::BindingDenied),
                 "{step:?}"
             );

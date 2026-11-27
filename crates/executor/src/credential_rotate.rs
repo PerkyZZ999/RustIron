@@ -33,11 +33,15 @@ use std::{
     process::{Command, Stdio},
 };
 
-use rustiron_contracts::{Id, approval::Hostname};
+use rustiron_contracts::{
+    Id,
+    approval::{AppDatabase, CredentialTarget, Hostname},
+};
+use rustiron_journal::AppFacts;
 use rustix::fs::{AtFlags, Mode, OFlags};
 
 use crate::{
-    ExecutorError, files,
+    ExecutorError, files, postgres,
     provision::{self, DB_SOCKET, MARIADB, SiteLayout},
 };
 
@@ -236,8 +240,20 @@ fn alter_mariadb_password(account: &str, password: &str) -> Result<(), ExecutorE
     .map(drop)
 }
 
+/// Logs in with the site's `private/db.cnf` credentials and checks the session
+/// sees only the site's own database.
+///
+/// W663-E4: root never passes the site-owned file to the client, because an
+/// option file can name `tee`, `socket`, `plugin-dir`, or `default-auth`. The
+/// file is read by descriptor and strictly parsed, and the client gets a
+/// root-only copy holding only `user` and `password`.
 fn verify_db_cnf(cnf_path: &Path, account: &str) -> Result<(), ExecutorError> {
-    let defaults = format!("--defaults-file={}", provision::path_str(cnf_path)?);
+    let passwd = provision::read_etc("passwd")?;
+    let uid = provision::account_uid(&passwd, account).ok_or(ExecutorError::StepFailed)?;
+    let private = cnf_path.parent().ok_or(ExecutorError::StepFailed)?;
+    let private_dir = files::open_traversable_directory(private, uid)?;
+    let password = parse_db_cnf(&read_db_cnf(&private_dir, uid)?, account)?;
+    let (_guard, defaults) = write_temp_cnf(account, &password, "credrot-verify.cnf")?;
     let seen = provision::spawn(
         MARIADB,
         &[&defaults, "--batch", "--skip-column-names"],
@@ -257,6 +273,36 @@ fn verify_db_cnf(cnf_path: &Path, account: &str) -> Result<(), ExecutorError> {
     Ok(())
 }
 
+/// Writes a root-only `0600` client option file with only `account` and
+/// `password` beside the admin socket, returning its RAII guard and the
+/// `--defaults-file=` argument.
+fn write_temp_cnf(
+    account: &str,
+    password: &str,
+    file_name: &str,
+) -> Result<(TempCheckCnf, String), ExecutorError> {
+    let check_dir = Path::new(crate::layout::ADMIN_SOCKET)
+        .parent()
+        .ok_or(ExecutorError::StepFailed)?;
+    let dir = files::open_traversable_directory(check_dir, 0)?;
+    let _ = rustix::fs::unlinkat(&dir, file_name, AtFlags::empty());
+    let fd = rustix::fs::openat(
+        &dir,
+        file_name,
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o600),
+    )
+    .map_err(|_| ExecutorError::StepFailed)?;
+    let full_path = check_dir.join(file_name);
+    let guard = TempCheckCnf(full_path.clone());
+    let mut file = File::from(fd);
+    file.write_all(provision::credentials_text(account, password).as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|_| ExecutorError::StepFailed)?;
+    let defaults = format!("--defaults-file={}", provision::path_str(&full_path)?);
+    Ok((guard, defaults))
+}
+
 /// RAII temp `0600` root-only defaults file so the old password never touches
 /// argv or `/proc/*/environ` and is unlinked even on panic or error.
 struct TempCheckCnf(PathBuf);
@@ -272,29 +318,8 @@ fn verify_password_rejected(
     old_password: &str,
     operation_id: &Id,
 ) -> Result<(), ExecutorError> {
-    let check_dir = Path::new(crate::layout::ADMIN_SOCKET)
-        .parent()
-        .ok_or(ExecutorError::StepFailed)?;
-    let dir = files::open_traversable_directory(check_dir, 0)?;
     let file_name = format!("credrot-oldcheck-{}.cnf", operation_id.as_str());
-    let _ = rustix::fs::unlinkat(&dir, file_name.as_str(), AtFlags::empty());
-    let fd = rustix::fs::openat(
-        &dir,
-        file_name.as_str(),
-        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::from_raw_mode(0o600),
-    )
-    .map_err(|_| ExecutorError::StepFailed)?;
-    let full_path = check_dir.join(&file_name);
-    let _guard = TempCheckCnf(full_path.clone());
-    let mut file = File::from(fd);
-    let text = provision::credentials_text(account, old_password);
-    file.write_all(text.as_bytes())
-        .and_then(|()| file.sync_all())
-        .map_err(|_| ExecutorError::StepFailed)?;
-    drop(file);
-
-    let defaults = format!("--defaults-file={}", provision::path_str(&full_path)?);
+    let (_guard, defaults) = write_temp_cnf(account, old_password, &file_name)?;
     let mut child = Command::new(MARIADB)
         .args([defaults.as_str(), "--batch", "--skip-column-names"])
         .stdin(Stdio::piped())
@@ -452,6 +477,288 @@ pub(crate) fn verify_live_credentials(
     let _ = parse_db_cnf(&bytes, &layout.account)?;
     verify_db_cnf(&private.join("db.cnf"), &layout.account)?;
     crate::site_update::site_answers(address, tls_address, hostname, layout)
+}
+
+fn restart_app_units(account: &str, has_worker: bool) -> Result<(), ExecutorError> {
+    crate::app_site::run_lifecycle(
+        account,
+        has_worker,
+        rustiron_contracts::approval::AppLifecycleAction::Restart,
+    )
+}
+
+/// W658 (D-102 C2): rotates a modern app site's MariaDB password across
+/// MariaDB, `private/db.cnf`, and `private/app.env` (`DATABASE_URL`), restarts
+/// the app service (+ optional worker), verifies new login, old rejection, and
+/// loopback HTTP health, with 1-attempt bounded compensation on failure.
+pub(crate) fn rotate_app_mariadb_password(
+    layout: &SiteLayout,
+    facts: &AppFacts,
+    operation_id: &Id,
+) -> Result<RotateOutcome, ExecutorError> {
+    let passwd = provision::read_etc("passwd")?;
+    let Some(uid) = provision::account_uid(&passwd, &layout.account) else {
+        log_outcome(RotateOutcome::Failed, "account_missing");
+        return Ok(RotateOutcome::Failed);
+    };
+    let private = layout.root.join("private");
+    let Ok(private_dir) = files::open_traversable_directory(&private, uid) else {
+        log_outcome(RotateOutcome::Failed, "private_dir");
+        return Ok(RotateOutcome::Failed);
+    };
+    let Ok(old_cnf_bytes) = read_db_cnf(&private_dir, uid) else {
+        log_outcome(RotateOutcome::Failed, "read_db_cnf");
+        return Ok(RotateOutcome::Failed);
+    };
+    let Ok(old_password) = parse_db_cnf(&old_cnf_bytes, &layout.account) else {
+        log_outcome(RotateOutcome::Failed, "parse_db_cnf");
+        return Ok(RotateOutcome::Failed);
+    };
+    let Ok(old_env_bytes) = postgres::read_app_env_verified(&private_dir, uid, false) else {
+        log_outcome(RotateOutcome::Failed, "read_app_env");
+        return Ok(RotateOutcome::Failed);
+    };
+    let Ok(env_password) =
+        postgres::parse_app_env_database_url(&old_env_bytes, &layout.account, AppDatabase::Mariadb)
+    else {
+        log_outcome(RotateOutcome::Failed, "parse_app_env");
+        return Ok(RotateOutcome::Failed);
+    };
+    if env_password != old_password {
+        log_outcome(RotateOutcome::Failed, "credential_drift");
+        return Ok(RotateOutcome::Failed);
+    }
+    let cnf_path = private.join("db.cnf");
+    if verify_db_cnf(&cnf_path, &layout.account).is_err() {
+        log_outcome(RotateOutcome::Failed, "precheck_db_login");
+        return Ok(RotateOutcome::Failed);
+    }
+
+    let mut new_password = provision::random_secret()?;
+    if new_password == old_password {
+        new_password = provision::random_secret()?;
+    }
+    if new_password == old_password {
+        log_outcome(RotateOutcome::Failed, "entropy_collision");
+        return Ok(RotateOutcome::Failed);
+    }
+
+    if alter_mariadb_password(&layout.account, &new_password).is_err() {
+        let outcome = if verify_db_cnf(&cnf_path, &layout.account).is_ok() {
+            RotateOutcome::Failed
+        } else {
+            RotateOutcome::NeedsAttention
+        };
+        log_outcome(outcome, "alter_user");
+        return Ok(outcome);
+    }
+
+    let has_worker = facts.worker_entrypoint.is_some();
+    let apply_stage: Result<(), &'static str> = (|| {
+        atomic_write_db_cnf(
+            &private_dir,
+            uid,
+            &layout.account,
+            &new_password,
+            operation_id.as_str(),
+        )
+        .map_err(|_| "write_db_cnf")?;
+        postgres::atomic_upsert_app_env_database_url(
+            &private_dir,
+            uid,
+            AppDatabase::Mariadb,
+            &layout.account,
+            &new_password,
+            operation_id.as_str(),
+            false,
+        )
+        .map_err(|_| "write_app_env")?;
+        restart_app_units(&layout.account, has_worker).map_err(|_| "restart_app")?;
+        verify_db_cnf(&cnf_path, &layout.account).map_err(|_| "verify_new_db")?;
+        verify_password_rejected(&layout.account, &old_password, operation_id)
+            .map_err(|_| "verify_old_rejected")?;
+        crate::app_site::probe_loopback_http(&layout.account, facts.port, &facts.health_path)
+            .map_err(|_| "app_health")?;
+        Ok(())
+    })();
+
+    if apply_stage.is_ok() {
+        log_outcome(RotateOutcome::Done, "verified");
+        return Ok(RotateOutcome::Done);
+    }
+
+    let failed_stage = apply_stage.unwrap_err();
+    let comp_ok = (|| -> Result<(), ExecutorError> {
+        alter_mariadb_password(&layout.account, &old_password)?;
+        let comp_suffix = format!("{}.comp", operation_id.as_str());
+        atomic_write_db_cnf(
+            &private_dir,
+            uid,
+            &layout.account,
+            &old_password,
+            &comp_suffix,
+        )?;
+        postgres::atomic_write_app_env_bytes(&private_dir, uid, &old_env_bytes, &comp_suffix)?;
+        restart_app_units(&layout.account, has_worker)?;
+        verify_db_cnf(&cnf_path, &layout.account)?;
+        crate::app_site::probe_loopback_http(&layout.account, facts.port, &facts.health_path)?;
+        Ok(())
+    })();
+
+    let outcome = if comp_ok.is_ok() {
+        RotateOutcome::FailedCompensated
+    } else {
+        RotateOutcome::NeedsAttention
+    };
+    log_outcome(outcome, failed_stage);
+    Ok(outcome)
+}
+
+/// W658 (D-102 C2): rotates a modern app site's PostgreSQL 18 role password
+/// across PostgreSQL 18 and `private/app.env` (`DATABASE_URL`), restarts the
+/// app service (+ optional worker), verifies new login via `.pgpass`, verifies
+/// old password rejection, and probes loopback HTTP health, with 1-attempt
+/// bounded compensation on failure.
+pub(crate) fn rotate_app_postgres_password(
+    layout: &SiteLayout,
+    facts: &AppFacts,
+    operation_id: &Id,
+) -> Result<RotateOutcome, ExecutorError> {
+    let passwd = provision::read_etc("passwd")?;
+    let Some(uid) = provision::account_uid(&passwd, &layout.account) else {
+        log_outcome(RotateOutcome::Failed, "account_missing");
+        return Ok(RotateOutcome::Failed);
+    };
+    let private = layout.root.join("private");
+    let Ok(private_dir) = files::open_traversable_directory(&private, uid) else {
+        log_outcome(RotateOutcome::Failed, "private_dir");
+        return Ok(RotateOutcome::Failed);
+    };
+    let Ok(old_env_bytes) = postgres::read_app_env_verified(&private_dir, uid, false) else {
+        log_outcome(RotateOutcome::Failed, "read_app_env");
+        return Ok(RotateOutcome::Failed);
+    };
+    let Ok(old_password) = postgres::parse_app_env_database_url(
+        &old_env_bytes,
+        &layout.account,
+        AppDatabase::Postgresql18,
+    ) else {
+        log_outcome(RotateOutcome::Failed, "parse_app_env");
+        return Ok(RotateOutcome::Failed);
+    };
+    let pre_tag = format!("pre-{}", operation_id.as_str());
+    if postgres::verify_login(&layout.account, &old_password, &pre_tag).is_err() {
+        log_outcome(RotateOutcome::Failed, "precheck_pg_login");
+        return Ok(RotateOutcome::Failed);
+    }
+
+    let mut new_password = provision::random_secret()?;
+    if new_password == old_password {
+        new_password = provision::random_secret()?;
+    }
+    if new_password == old_password {
+        log_outcome(RotateOutcome::Failed, "entropy_collision");
+        return Ok(RotateOutcome::Failed);
+    }
+
+    if postgres::alter_role_password(&layout.account, &new_password).is_err() {
+        let outcome = if postgres::verify_login(&layout.account, &old_password, &pre_tag).is_ok() {
+            RotateOutcome::Failed
+        } else {
+            RotateOutcome::NeedsAttention
+        };
+        log_outcome(outcome, "alter_role");
+        return Ok(outcome);
+    }
+
+    let has_worker = facts.worker_entrypoint.is_some();
+    let new_tag = format!("new-{}", operation_id.as_str());
+    let apply_stage: Result<(), &'static str> = (|| {
+        postgres::atomic_upsert_app_env_database_url(
+            &private_dir,
+            uid,
+            AppDatabase::Postgresql18,
+            &layout.account,
+            &new_password,
+            operation_id.as_str(),
+            false,
+        )
+        .map_err(|_| "write_app_env")?;
+        restart_app_units(&layout.account, has_worker).map_err(|_| "restart_app")?;
+        postgres::verify_login(&layout.account, &new_password, &new_tag)
+            .map_err(|_| "verify_new_pg")?;
+        postgres::verify_password_rejected(&layout.account, &old_password, operation_id)
+            .map_err(|_| "verify_old_rejected")?;
+        crate::app_site::probe_loopback_http(&layout.account, facts.port, &facts.health_path)
+            .map_err(|_| "app_health")?;
+        Ok(())
+    })();
+
+    if apply_stage.is_ok() {
+        log_outcome(RotateOutcome::Done, "verified");
+        return Ok(RotateOutcome::Done);
+    }
+
+    let failed_stage = apply_stage.unwrap_err();
+    let comp_tag = format!("comp-{}", operation_id.as_str());
+    let comp_ok = (|| -> Result<(), ExecutorError> {
+        postgres::alter_role_password(&layout.account, &old_password)?;
+        let comp_suffix = format!("{}.comp", operation_id.as_str());
+        postgres::atomic_write_app_env_bytes(&private_dir, uid, &old_env_bytes, &comp_suffix)?;
+        restart_app_units(&layout.account, has_worker)?;
+        postgres::verify_login(&layout.account, &old_password, &comp_tag)?;
+        crate::app_site::probe_loopback_http(&layout.account, facts.port, &facts.health_path)?;
+        Ok(())
+    })();
+
+    let outcome = if comp_ok.is_ok() {
+        RotateOutcome::FailedCompensated
+    } else {
+        RotateOutcome::NeedsAttention
+    };
+    log_outcome(outcome, failed_stage);
+    Ok(outcome)
+}
+
+/// W658 (D-102 C2): read-only live verification used by
+/// `credential-rotate-reconcile` for modern app MariaDB or PostgreSQL 18 sites.
+pub(crate) fn verify_live_app_credentials(
+    layout: &SiteLayout,
+    facts: &AppFacts,
+    target: CredentialTarget,
+    operation_id: &Id,
+) -> Result<(), ExecutorError> {
+    let passwd = provision::read_etc("passwd")?;
+    let uid = provision::account_uid(&passwd, &layout.account).ok_or(ExecutorError::StepFailed)?;
+    let private = layout.root.join("private");
+    let private_dir = files::open_traversable_directory(&private, uid)?;
+    let env_bytes = postgres::read_app_env_verified(&private_dir, uid, false)?;
+    match target {
+        CredentialTarget::AppMariadbPassword => {
+            let cnf_bytes = read_db_cnf(&private_dir, uid)?;
+            let cnf_pw = parse_db_cnf(&cnf_bytes, &layout.account)?;
+            let env_pw = postgres::parse_app_env_database_url(
+                &env_bytes,
+                &layout.account,
+                AppDatabase::Mariadb,
+            )?;
+            if cnf_pw != env_pw {
+                return Err(ExecutorError::StepFailed);
+            }
+            verify_db_cnf(&private.join("db.cnf"), &layout.account)?;
+        }
+        CredentialTarget::AppPostgresql18Password => {
+            let env_pw = postgres::parse_app_env_database_url(
+                &env_bytes,
+                &layout.account,
+                AppDatabase::Postgresql18,
+            )?;
+            let tag = format!("rec-{}", operation_id.as_str());
+            postgres::verify_login(&layout.account, &env_pw, &tag)?;
+        }
+        CredentialTarget::MariadbUserPassword => return Err(ExecutorError::BindingDenied),
+    }
+    crate::app_site::probe_loopback_http(&layout.account, facts.port, &facts.health_path)
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
 # review open). Admission, journal, sockets, owned OLS generations and the
 # fixed lshttpd reload. Accounts, the policy store, unit files, relabels and
 # job launches belong to rustiron_admin_t.
-policy_module(rustiron_executor, 0.1.0)
+policy_module(rustiron_executor, 0.2.0)
 
 gen_require(`
 	type rustiron_admin_t, rustiron_admin_run_t;
@@ -25,6 +25,9 @@ type rustiron_executor_run_t;
 files_pid_file(rustiron_executor_run_t)
 type rustiron_ols_generation_t;
 files_type(rustiron_ols_generation_t)
+# W657 (D-102): immutable Caddy generation roots under /etc/rustiron-caddy.
+type rustiron_caddy_generation_t;
+files_type(rustiron_caddy_generation_t)
 
 allow rustiron_executor_t self:process { signal sigchld };
 # SQLite keeps the root owner of new journal files (fchown to itself).
@@ -50,6 +53,9 @@ manage_dirs_pattern(rustiron_executor_t, rustiron_executor_run_t, rustiron_execu
 manage_files_pattern(rustiron_executor_t, rustiron_ols_generation_t, rustiron_ols_generation_t)
 manage_dirs_pattern(rustiron_executor_t, rustiron_ols_generation_t, rustiron_ols_generation_t)
 manage_lnk_files_pattern(rustiron_executor_t, rustiron_ols_generation_t, rustiron_ols_generation_t)
+manage_files_pattern(rustiron_executor_t, rustiron_caddy_generation_t, rustiron_caddy_generation_t)
+manage_dirs_pattern(rustiron_executor_t, rustiron_caddy_generation_t, rustiron_caddy_generation_t)
+manage_lnk_files_pattern(rustiron_executor_t, rustiron_caddy_generation_t, rustiron_caddy_generation_t)
 
 # Signature verification runs ssh-keygen in this domain.
 ssh_exec_keygen(rustiron_executor_t)

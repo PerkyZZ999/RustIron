@@ -285,7 +285,7 @@ pub fn step_allowed(verb: Verb, step: AdminStep) -> bool {
         Verb::SiteRestore => step == S::RestoreStep,
         Verb::DnsZoneImport => matches!(step, S::DnsImport | S::DnsZoneRead),
         Verb::DnsChange => step == S::DnsChange,
-        Verb::AppDeploy => step == S::AppDeployStep,
+        Verb::AppDeploy => matches!(step, S::AppDeployStep | S::AppCaddyActivate),
         Verb::AppLifecycle => step == S::AppLifecycle,
         Verb::SiteCredentialRotate => {
             matches!(step, S::SiteCredentialRotate | S::SiteCredentialVerify)
@@ -615,14 +615,27 @@ pub fn authorize(
             crate::dns::PDNS_USER.to_owned(),
             PathBuf::from(crate::dns::PDNS_STATE_DIR),
         ),
-        // W598 (D-099): only while the release and its last step are open.
+        // W598 (D-099) & W659 (D-102): `AppDeployStep` while its last step is
+        // open; `AppCaddyActivate` while the release is open and `Health` is done.
         Record::AppRelease(row) => {
             let layout = SiteLayout::derive(&row.site_id);
-            let current = row.state == rustiron_journal::AppReleaseState::Intent
-                && row
-                    .steps
-                    .last()
-                    .is_some_and(|last| last.state == StepState::Intent);
+            let current = match step {
+                AdminStep::AppDeployStep => {
+                    row.state == rustiron_journal::AppReleaseState::Intent
+                        && row
+                            .steps
+                            .last()
+                            .is_some_and(|last| last.state == StepState::Intent)
+                }
+                AdminStep::AppCaddyActivate => {
+                    row.state == rustiron_journal::AppReleaseState::Intent
+                        && row.steps.iter().any(|s| {
+                            s.step == rustiron_journal::AppReleaseStep::Health
+                                && s.state == StepState::Done
+                        })
+                }
+                _ => false,
+            };
             (
                 &row.operation_id,
                 Verb::AppDeploy,
@@ -1110,6 +1123,7 @@ impl Helper {
                     records.import.as_ref(),
                     records.site_clone.as_ref(),
                     records.app.as_ref(),
+                    records.app_fullstack.as_ref(),
                     records.proxy.is_some(),
                 )
                 .map(|()| None),
@@ -1124,20 +1138,67 @@ impl Helper {
                     account: action.account.clone(),
                     root: action.root.clone(),
                 };
+                let blue_green_cutover =
+                    records.app_fullstack.as_ref().is_some_and(|s| s.blue_green);
                 crate::app_site::run_deploy_step(
                     open.step,
                     &layout,
                     facts,
+                    records.app_fullstack.as_ref(),
                     release,
                     records.app_previous_release_id.as_deref(),
+                    blue_green_cutover,
                 )
                 .map(|()| None)
             }
+            (AdminStep::AppCaddyActivate, Record::AppRelease(release)) => {
+                let facts = records.app.as_ref().ok_or(ExecutorError::BindingDenied)?;
+                let spec = records
+                    .app_fullstack
+                    .as_ref()
+                    .ok_or(ExecutorError::BindingDenied)?;
+                if spec.ingress != rustiron_contracts::approval::IngressEngine::Caddy {
+                    return Err(ExecutorError::BindingDenied);
+                }
+                let caddy_policy = self.enrolled_caddy()?;
+                let render_cfg = crate::caddy::render_config_from_policy(&caddy_policy)?;
+                let sites = crate::caddy::sites_from_records(&caddy_policy, &records)?;
+                let generation = crate::caddy::render(&render_cfg, &sites)?;
+                let (gen_id, gen_digest, _) = crate::caddy::activate_live(
+                    &generation,
+                    &release.operation_id,
+                    &caddy_policy.binary_sha256,
+                    &|| Ok(()),
+                )?;
+                if spec.blue_green {
+                    let layout = SiteLayout {
+                        account: action.account.clone(),
+                        root: action.root.clone(),
+                    };
+                    // `active_slot` was already flipped to the new slot in the journal;
+                    // drain the opposite (old) slot now that Caddy serves the new slot.
+                    let drained_slot = spec.active_slot.opposite();
+                    crate::app_site::finish_blue_green_cutover(
+                        &layout,
+                        facts,
+                        spec,
+                        &release.release_id,
+                        drained_slot,
+                    )?;
+                }
+                Ok(Some(format!(
+                    "{} {} {}",
+                    gen_id.as_str(),
+                    gen_digest.as_str(),
+                    sites.len()
+                )))
+            }
             (AdminStep::AppLifecycle, Record::AppLifecycle(lifecycle)) => {
                 let facts = records.app.as_ref().ok_or(ExecutorError::BindingDenied)?;
-                crate::app_site::run_lifecycle(
+                crate::app_site::run_lifecycle_for(
                     &action.account,
                     facts.worker_entrypoint.is_some(),
+                    records.app_fullstack.as_ref(),
                     lifecycle.action,
                 )
                 .map(|()| None)
@@ -1146,7 +1207,6 @@ impl Helper {
                 AdminStep::SiteCredentialRotate | AdminStep::SiteCredentialVerify,
                 Record::CredentialRotation(rotation),
             ) => {
-                let policy = self.enrolled_ols()?;
                 let served = records
                     .served
                     .iter()
@@ -1161,23 +1221,81 @@ impl Helper {
                     account: action.account.clone(),
                     root: action.root.clone(),
                 };
-                if action.step == AdminStep::SiteCredentialVerify {
-                    crate::credential_rotate::verify_live_credentials(
-                        &layout,
-                        &rotation.hostname,
-                        &policy.address,
-                        policy.tls_address.as_deref(),
-                    )
-                    .map(|()| None)
-                } else {
-                    crate::credential_rotate::rotate_mariadb_password(
-                        &layout,
-                        &rotation.hostname,
-                        &rotation.operation_id,
-                        &policy.address,
-                        policy.tls_address.as_deref(),
-                    )
-                    .map(|outcome| Some(outcome.as_str().to_owned()))
+                use rustiron_contracts::approval::{AppDatabase, CredentialTarget};
+                match rotation.target {
+                    CredentialTarget::MariadbUserPassword => {
+                        let policy = self.enrolled_ols()?;
+                        if action.step == AdminStep::SiteCredentialVerify {
+                            crate::credential_rotate::verify_live_credentials(
+                                &layout,
+                                &rotation.hostname,
+                                &policy.address,
+                                policy.tls_address.as_deref(),
+                            )
+                            .map(|()| None)
+                        } else {
+                            crate::credential_rotate::rotate_mariadb_password(
+                                &layout,
+                                &rotation.hostname,
+                                &rotation.operation_id,
+                                &policy.address,
+                                policy.tls_address.as_deref(),
+                            )
+                            .map(|outcome| Some(outcome.as_str().to_owned()))
+                        }
+                    }
+                    CredentialTarget::AppMariadbPassword => {
+                        let facts = records.app.as_ref().ok_or(ExecutorError::BindingDenied)?;
+                        let spec = records
+                            .app_fullstack
+                            .as_ref()
+                            .ok_or(ExecutorError::BindingDenied)?;
+                        if spec.database != AppDatabase::Mariadb {
+                            return Err(ExecutorError::BindingDenied);
+                        }
+                        if action.step == AdminStep::SiteCredentialVerify {
+                            crate::credential_rotate::verify_live_app_credentials(
+                                &layout,
+                                facts,
+                                rotation.target,
+                                &rotation.operation_id,
+                            )
+                            .map(|()| None)
+                        } else {
+                            crate::credential_rotate::rotate_app_mariadb_password(
+                                &layout,
+                                facts,
+                                &rotation.operation_id,
+                            )
+                            .map(|outcome| Some(outcome.as_str().to_owned()))
+                        }
+                    }
+                    CredentialTarget::AppPostgresql18Password => {
+                        let facts = records.app.as_ref().ok_or(ExecutorError::BindingDenied)?;
+                        let spec = records
+                            .app_fullstack
+                            .as_ref()
+                            .ok_or(ExecutorError::BindingDenied)?;
+                        if spec.database != AppDatabase::Postgresql18 {
+                            return Err(ExecutorError::BindingDenied);
+                        }
+                        if action.step == AdminStep::SiteCredentialVerify {
+                            crate::credential_rotate::verify_live_app_credentials(
+                                &layout,
+                                facts,
+                                rotation.target,
+                                &rotation.operation_id,
+                            )
+                            .map(|()| None)
+                        } else {
+                            crate::credential_rotate::rotate_app_postgres_password(
+                                &layout,
+                                facts,
+                                &rotation.operation_id,
+                            )
+                            .map(|outcome| Some(outcome.as_str().to_owned()))
+                        }
+                    }
                 }
             }
             (AdminStep::CertificateIssue, Record::Certificate(row)) => self
@@ -1240,7 +1358,7 @@ impl Helper {
                     .map(|report| Some(report.to_string()))
             }
             (AdminStep::SiteDelete, Record::Provision(provision)) => {
-                // W522 (D-085): only for the journal's open deletion.
+                // W522 (D-085) & W658 (D-102 C2): only for the journal's open deletion.
                 if records
                     .deletion
                     .as_ref()
@@ -1248,7 +1366,8 @@ impl Helper {
                 {
                     return Err(ExecutorError::BindingDenied);
                 }
-                crate::site_delete::remove(provision).map(|()| None)
+                let app_db = records.app_fullstack.as_ref().map(|s| s.database);
+                crate::site_delete::remove_with_app_db(provision, app_db).map(|()| None)
             }
             (AdminStep::UpdateStep | AdminStep::UpdateRollback, Record::Update(update)) => {
                 // W516 (D-084): every value from the journal and the policy.
@@ -1337,6 +1456,7 @@ impl Helper {
                     tls_address: policy.tls_address.as_deref(),
                     anchor,
                     app: records.app.as_ref(),
+                    app_database: records.app_fullstack.as_ref().map(|s| s.database),
                 };
                 let outcome = crate::site_restore::run_step(&context, step);
                 if let Err(error) = &outcome {
@@ -1412,8 +1532,13 @@ impl Helper {
             }
             (AdminStep::CaptureRun, Record::Capture(capture)) => {
                 self.once(&capture.intent.operation_id, capture.started_at.get())?;
-                self.capture_run(&action, capture, records.app.as_ref())
-                    .map(Some)
+                self.capture_run(
+                    &action,
+                    capture,
+                    records.app.as_ref(),
+                    records.app_fullstack.as_ref().map(|s| s.database),
+                )
+                .map(Some)
             }
             (AdminStep::ProbeRun, Record::Probe(probe)) => {
                 let source = records
@@ -1584,6 +1709,15 @@ impl Helper {
             owner,
         )?;
         loaded.policy.ols.ok_or(ExecutorError::Unavailable)
+    }
+
+    fn enrolled_caddy(&self) -> Result<crate::policy::CaddyPolicy, ExecutorError> {
+        let owner = self.anchor.owner_uid;
+        let loaded = crate::policy::load(
+            &crate::files::open_trusted_directory(&self.anchor.policy_dir, owner)?,
+            owner,
+        )?;
+        loaded.policy.caddy.ok_or(ExecutorError::Unavailable)
     }
 
     /// Runs one OLS step; every value comes from the enrolled policy and the
@@ -1852,9 +1986,10 @@ impl Helper {
         action: &AdminAction,
         capture: &Capture,
         app: Option<&rustiron_journal::AppFacts>,
+        app_database: Option<rustiron_contracts::approval::AppDatabase>,
     ) -> Result<String, ExecutorError> {
         if cfg!(rustiron_profile = "product") {
-            return self.product_capture_run(capture, app);
+            return self.product_capture_run(capture, app, app_database);
         }
         let backup = crate::policy::load_bound_backup(
             &self.anchor,
@@ -1892,6 +2027,7 @@ impl Helper {
         &self,
         capture: &Capture,
         app: Option<&rustiron_journal::AppFacts>,
+        app_database: Option<rustiron_contracts::approval::AppDatabase>,
     ) -> Result<String, ExecutorError> {
         let destination = crate::policy::load_bound_product_backup(
             &self.anchor,
@@ -1901,13 +2037,14 @@ impl Helper {
         )?;
         // `authorize` derived the action's account and root from this same
         // site ID; the effects derive them again from it.
-        product_capture_effects_for(
+        product_capture_effects_for_app_db(
             &self.anchor,
             &destination,
             &capture.intent.site_id,
             &capture.intent.operation_id,
             capture.method == Some(rustiron_journal::CaptureMethod::SiteFilesDbFrozenV1),
             app,
+            app_database,
         )
     }
 
@@ -1981,6 +2118,7 @@ impl Helper {
     }
 
     /// Runs the provision step the journal records as current.
+    #[allow(clippy::too_many_arguments)]
     fn provision_step(
         &mut self,
         action: &AdminAction,
@@ -1988,6 +2126,7 @@ impl Helper {
         import: Option<&rustiron_journal::Import>,
         site_clone: Option<&rustiron_journal::SiteClone>,
         app: Option<&rustiron_journal::AppFacts>,
+        app_fullstack: Option<&rustiron_journal::AppFullstackSpec>,
         proxy: bool,
     ) -> Result<(), ExecutorError> {
         let last = provision.steps.last().ok_or(ExecutorError::BindingDenied)?;
@@ -1995,13 +2134,29 @@ impl Helper {
             account: action.account.clone(),
             root: action.root.clone(),
         };
-        // W598 (D-099): a P27 modern app site, known from its journaled app row.
+        // W598 (D-099) & W658 (D-102 C2): a modern app site, known from its journaled app row.
         if let Some(facts) = app {
+            let app_db = app_fullstack
+                .map(|s| s.database)
+                .unwrap_or(rustiron_contracts::approval::AppDatabase::Sqlite);
+            let operation = &provision.intent.operation_id;
             return match last.step {
-                ProvisionStep::Recipe | ProvisionStep::Verify => {
-                    crate::app_site::run_provision_step(last.step, &layout, facts)
+                step if crate::app_site::skips(step, app_db) => Err(ExecutorError::BindingDenied),
+                ProvisionStep::Database => {
+                    let secret = crate::app_site::run_database_step(&layout, app_db)?;
+                    self.password = Some((operation.clone(), secret));
+                    Ok(())
                 }
-                step if crate::app_site::skips(step) => Err(ExecutorError::BindingDenied),
+                ProvisionStep::Credentials => {
+                    let secret = match self.password.take() {
+                        Some((id, secret)) if &id == operation => secret,
+                        _ => return Err(ExecutorError::StepFailed),
+                    };
+                    crate::app_site::run_credentials_step(&layout, app_db, &secret)
+                }
+                ProvisionStep::Recipe | ProvisionStep::Verify => {
+                    crate::app_site::run_provision_step(last.step, &layout, facts, app_fullstack)
+                }
                 _ => self.shared_provision_step(provision, last, &layout),
             };
         }
@@ -2182,10 +2337,32 @@ pub fn product_capture_effects_for(
     frozen: bool,
     app: Option<&rustiron_journal::AppFacts>,
 ) -> Result<String, ExecutorError> {
+    product_capture_effects_for_app_db(anchor, policy, site, operation, frozen, app, None)
+}
+
+/// W658 (D-102 C2): as [`product_capture_effects_for`] with explicit modern app
+/// database engine selection (`none`/`sqlite`/`mariadb`/`postgresql_18`).
+#[allow(clippy::too_many_arguments)]
+pub fn product_capture_effects_for_app_db(
+    anchor: &TrustAnchor,
+    policy: &rustiron_contracts::approval::ProductBackupPolicy,
+    site: &rustiron_contracts::approval::SiteId,
+    operation: &Id,
+    frozen: bool,
+    app: Option<&rustiron_journal::AppFacts>,
+    app_database: Option<rustiron_contracts::approval::AppDatabase>,
+) -> Result<String, ExecutorError> {
     gate(crate::write_gate::PRODUCT_WRITES_ENABLED)?;
     let layout = SiteLayout::derive(site);
-    let outcome = crate::product_capture::capture_site_for(
-        anchor, policy, site, &layout, operation, frozen, app,
+    let outcome = crate::product_capture::capture_site_for_app_db(
+        anchor,
+        policy,
+        site,
+        &layout,
+        operation,
+        frozen,
+        app,
+        app_database,
     );
     Ok(encode_capture(&outcome))
 }

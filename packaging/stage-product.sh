@@ -47,7 +47,8 @@ cp packaging/selinux/rustiron_capture.fc packaging/selinux/rustiron_job_credenti
 cp packaging/selinux/rustiron_store_relay.te "$policy_build/"
 cp packaging/selinux/rustiron_mail_relay.* "$policy_build/"
 cp packaging/selinux/rustiron_app.* "$policy_build/"
-set -- rustiron_executor rustiron_admin rustiron_coordinator rustiron_php rustiron_capture rustiron_job_credential rustiron_store_relay rustiron_mail_relay rustiron_app
+cp packaging/selinux/rustiron_caddy.* "$policy_build/"
+set -- rustiron_executor rustiron_admin rustiron_coordinator rustiron_php rustiron_capture rustiron_job_credential rustiron_store_relay rustiron_mail_relay rustiron_app rustiron_caddy
 for module do
     make -C "$policy_build" -f /usr/share/selinux/devel/Makefile "$module.pp"
     install -D -m 0644 "$policy_build/$module.pp" "$stage/usr/share/rustiron/selinux/$module.pp"
@@ -64,13 +65,15 @@ install -D -m 0755 "$bin/rustiron-capture-manifest" "$libexec/jobs/capture-manif
 install -D -m 0755 "$bin/rustiron-migration-inventory" "$libexec/jobs/migration-inventory"
 
 for unit in rustiron-admin-helper.service rustiron-coordinator.service rustiron-executor.service \
-    rustiron-ols-boot-guard.service; do
+    rustiron-ols-boot-guard.service rustiron-caddy.service; do
     install -D -m 0644 "packaging/systemd/$unit" "$stage/usr/lib/systemd/system/$unit"
 done
 # Provisioning and the OLS capacity check read the PHP templates in /etc.
 for unit in rustiron-site-php@.service rustiron-site-php@.socket \
     rustiron-site-sandbox-check@.service rustiron-site-sandbox-check@.timer \
-    rustiron-app@.service rustiron-app-worker@.service; do
+    rustiron-app@.service rustiron-app-b@.service \
+    rustiron-app-web@.service rustiron-app-web-b@.service \
+    rustiron-app-worker@.service; do
     install -D -m 0644 "packaging/systemd/$unit" "$stage/etc/systemd/system/$unit"
 done
 install -D -m 0755 lab/s03/check-site-sandbox.sh "$libexec/check-site-sandbox"
@@ -86,6 +89,11 @@ install -D -m 0644 packaging/journald/50-rustiron-persistent.conf \
 # W569 (W558-F1): MariaDB answers on loopback only.
 install -D -m 0644 packaging/mariadb/zz-rustiron-loopback.cnf \
     "$stage/etc/my.cnf.d/zz-rustiron-loopback.cnf"
+# W658 (D-102 Decision C2): PostgreSQL 18 loopback & SCRAM-SHA-256 templates.
+install -D -m 0644 packaging/postgres/zz-rustiron-loopback.conf \
+    "$stage/usr/share/rustiron/postgres/zz-rustiron-loopback.conf"
+install -D -m 0644 packaging/postgres/pg_hba.conf \
+    "$stage/usr/share/rustiron/postgres/pg_hba.conf"
 # W386 (D-035): the scheduled capture and its missed-run check, and W466
 # (D-061) WordPress jobs, and the D-083 alert check-in. Not enabled at
 # installation; the operator enables them.

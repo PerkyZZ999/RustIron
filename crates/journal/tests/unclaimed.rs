@@ -114,7 +114,7 @@ fn a_fresh_journal_has_the_exact_unclaimed_table() {
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
     assert_eq!(
-        version, 44,
+        version, 45,
         "W368 and W370 append the page-cache tables after v14; W372 adds re-adoption (v17); W391 adds retention evidence (v18); W395 adds the page-cache recipe (v19); W396 adds signed admission bytes (v20); W442 adds site imports (v21); W457 adds import scrubs (v22); W462 adds certificates (v23); W464 adds certificate renewals (v24); D-070 adds import sources (v25); D-074 lets an import have no dump (v26); D-075 adds import aliases (v27); D-077 adds certificate aliases (v28); D-078 adds clones (v29) and their scrubs (v30); D-080 adds retirements (v31); D-084 adds updates (v32); D-085 adds deletions and the deleted provision state (v33); D-086 admits the update kind core (v34); D-088 adds quota changes (v35); D-078 adds signed clone scrubs (v36); D-089 adds restores (v37); D-091 adds DNS imports (v38) and changes (v39); D-095 adds proxy routes (v40) and deletions without a capture (v41)"
     );
     let sql: String = c

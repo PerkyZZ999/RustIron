@@ -32,32 +32,183 @@ export function buildSiteProvisionCmd(opts: {
   return `rustiron plan create site-provision ${envelopeFlags(opts.hostId)} --site-id ${shellQuote(opts.siteId)} --hostname ${shellQuote(opts.hostname)} --recipe wordpress713_v1 --recipe-digest <sha256> --observed-at <unix> --valid-from <unix> --expires-at <unix>${quotaFlags} > ./plan.json`;
 }
 
-export function buildAppProvisionCmd(opts: {
+export type AppRuntimeProfile = "node_22_v1" | "bun_1_v1" | "static_v1";
+export type AppIngressEngine = "ols" | "caddy";
+export type AppTopologyKind =
+  | "static_spa"
+  | "backend_api"
+  | "fullstack_split"
+  | "fullstack_dual_ssr";
+export type AppDatabaseEngine = "none" | "sqlite" | "mariadb" | "postgresql_18";
+export type CredentialRotateTarget =
+  | "mariadb_user_password"
+  | "app_mariadb_password"
+  | "app_postgresql_18_password";
+
+export type AppProvisionCmdOpts = {
   siteId: string;
   hostname: string;
-  runtime: "node_22_v1" | "bun_1_v1";
+  runtime: AppRuntimeProfile;
   port: string | number;
   healthPath?: string;
   entrypoint?: string;
+  workerEntrypoint?: string;
   hostId?: string;
-}): string {
-  const port = Number.parseInt(String(opts.port), 10) || 3210;
-  const entry = opts.entrypoint ?? "dist/server/entry.mjs";
-  const health = opts.healthPath?.trim() || "/healthz";
-  return `rustiron plan create app-provision ${envelopeFlags(opts.hostId)} --site-id ${shellQuote(opts.siteId)} --hostname ${shellQuote(opts.hostname)} --runtime ${opts.runtime} --port ${port} --entrypoint ${shellQuote(entry)} --health-path ${shellQuote(health)} --valid-from <unix> --expires-at <unix> > ./plan.json`;
+  ingress?: AppIngressEngine;
+  topology?: AppTopologyKind;
+  database?: AppDatabaseEngine;
+  blueGreen?: boolean;
+  standbyPort?: string | number;
+  spaFallback?: boolean;
+  frontendDir?: string;
+  frontendRuntime?: "node_22_v1" | "bun_1_v1";
+  frontendEntrypoint?: string;
+  frontendPort?: string | number;
+  frontendStandbyPort?: string | number;
+  routePrefixes?: string[];
+  websocketPrefixes?: string[];
+  ssePrefixes?: string[];
+  stripApiPrefixes?: string[];
+  envKeys?: string[];
+};
+
+function appendRepeated(flags: string[], flag: string, values?: string[]): void {
+  if (!values) return;
+  for (const raw of values) {
+    const val = raw.trim();
+    if (val) flags.push(`${flag} ${shellQuote(val)}`);
+  }
+}
+
+function appendPositivePort(flags: string[], flag: string, raw?: string | number): void {
+  const n = Number.parseInt(String(raw ?? ""), 10);
+  if (Number.isInteger(n) && n > 0) flags.push(`${flag} ${n}`);
+}
+
+function appendQuotedOpt(flags: string[], flag: string, raw?: string): void {
+  const val = raw?.trim();
+  if (val) flags.push(`${flag} ${shellQuote(val)}`);
+}
+
+function appendV2FrontendFlags(flags: string[], opts: AppProvisionCmdOpts): void {
+  appendQuotedOpt(flags, "--frontend-dir", opts.frontendDir);
+  if (opts.frontendRuntime) flags.push(`--frontend-runtime ${opts.frontendRuntime}`);
+  appendQuotedOpt(flags, "--frontend-entrypoint", opts.frontendEntrypoint);
+  appendPositivePort(flags, "--frontend-port", opts.frontendPort);
+  appendPositivePort(flags, "--frontend-standby-port", opts.frontendStandbyPort);
+}
+
+function appendV2RouteFlags(flags: string[], opts: AppProvisionCmdOpts): void {
+  appendRepeated(flags, "--route-prefix", opts.routePrefixes);
+  appendRepeated(flags, "--websocket-prefix", opts.websocketPrefixes);
+  appendRepeated(flags, "--sse-prefix", opts.ssePrefixes);
+  appendRepeated(flags, "--strip-api-prefix", opts.stripApiPrefixes);
+  appendQuotedOpt(flags, "--worker-entrypoint", opts.workerEntrypoint);
+  appendRepeated(flags, "--env-key", opts.envKeys);
+}
+
+function appendV2AppProvisionFlags(flags: string[], opts: AppProvisionCmdOpts): void {
+  if (opts.ingress) flags.push(`--ingress ${opts.ingress}`);
+  if (opts.topology) flags.push(`--topology ${opts.topology}`);
+  if (opts.database) flags.push(`--database ${opts.database}`);
+  if (opts.blueGreen) flags.push("--blue-green");
+  appendPositivePort(flags, "--standby-port", opts.standbyPort);
+  if (opts.spaFallback) flags.push("--spa-fallback");
+  appendV2FrontendFlags(flags, opts);
+  appendV2RouteFlags(flags, opts);
+}
+
+export function buildAppProvisionCmd(opts: AppProvisionCmdOpts): string {
+  const isStatic = opts.topology === "static_spa" || opts.runtime === "static_v1";
+  const parsedPort = Number.parseInt(String(opts.port), 10);
+  const port = isStatic ? 0 : parsedPort || 3210;
+  const entry = isStatic ? "" : (opts.entrypoint ?? "dist/server/entry.mjs");
+  const health = opts.healthPath?.trim() || (isStatic ? "/" : "/healthz");
+  const flags = [
+    `--site-id ${shellQuote(opts.siteId)}`,
+    `--hostname ${shellQuote(opts.hostname)}`,
+    `--runtime ${opts.runtime}`,
+    `--port ${port}`,
+    ...(entry ? [`--entrypoint ${shellQuote(entry)}`] : []),
+    `--health-path ${shellQuote(health)}`,
+  ];
+  appendV2AppProvisionFlags(flags, opts);
+  return `rustiron plan create app-provision ${envelopeFlags(opts.hostId)} ${flags.join(" ")} --valid-from <unix> --expires-at <unix> > ./plan.json`;
 }
 
 export function buildAppDeployCmd(opts: {
   siteId: string;
   releaseId: string;
-  runtime: "node_22_v1" | "bun_1_v1";
+  runtime: AppRuntimeProfile;
   migrating?: boolean;
+  blueGreenCutover?: boolean;
+  healthPath?: string;
   hostId?: string;
 }): string {
-  const migFlags = opts.migrating
-    ? " --migration-entrypoint scripts/migrate.mjs --capture-operation-id <capture_op_id>"
-    : "";
-  return `rustiron plan create app-deploy ${envelopeFlags(opts.hostId)} --site-id ${shellQuote(opts.siteId)} --release-id ${shellQuote(opts.releaseId)} --runtime ${opts.runtime} --artifact-sha256 <sha256> --manifest-sha256 <sha256> --file-count <count> --total-bytes <bytes>${migFlags} --valid-from <unix> --expires-at <unix> > ./plan.json`;
+  const extra: string[] = [];
+  if (opts.healthPath?.trim()) extra.push(`--health-path ${shellQuote(opts.healthPath.trim())}`);
+  if (opts.blueGreenCutover && opts.runtime !== "static_v1") extra.push("--blue-green-cutover");
+  if (opts.migrating) {
+    extra.push("--migration-entrypoint scripts/migrate.mjs --capture-operation-id <capture_op_id>");
+  }
+  const suffix = extra.length > 0 ? ` ${extra.join(" ")}` : "";
+  return `rustiron plan create app-deploy ${envelopeFlags(opts.hostId)} --site-id ${shellQuote(opts.siteId)} --release-id ${shellQuote(opts.releaseId)} --runtime ${opts.runtime} --artifact-sha256 <sha256> --manifest-sha256 <sha256> --file-count <count> --total-bytes <bytes>${suffix} --valid-from <unix> --expires-at <unix> > ./plan.json`;
+}
+
+function appendPackDistFlags(
+  parts: string[],
+  topology: AppTopologyKind,
+  frontendDist?: string,
+  backendDist?: string,
+): void {
+  if (topology !== "backend_api") {
+    parts.push(`--frontend-dist ${shellQuote(frontendDist ?? "./frontend/dist")}`);
+  }
+  if (topology !== "static_spa") {
+    parts.push(`--backend-dist ${shellQuote(backendDist ?? "./backend/dist")}`);
+  }
+}
+
+export function buildAppPackCmd(opts: {
+  siteId: string;
+  releaseId: string;
+  topology: AppTopologyKind;
+  runtime: AppRuntimeProfile;
+  database?: AppDatabaseEngine;
+  frontendDir?: string;
+  entrypoint?: string;
+  frontendRuntime?: "node_22_v1" | "bun_1_v1";
+  frontendEntrypoint?: string;
+  blueGreen?: boolean;
+  frontendDist?: string;
+  backendDist?: string;
+  outDir?: string;
+}): string {
+  const parts = [
+    "python3 packaging/rustiron-app-pack.py pack",
+    `--site-id ${shellQuote(opts.siteId)}`,
+    `--release-id ${shellQuote(opts.releaseId)}`,
+    `--out ${shellQuote(opts.outDir ?? "./release-out")}`,
+    `--topology ${opts.topology}`,
+    `--runtime ${opts.runtime}`,
+  ];
+  if (opts.database) parts.push(`--database ${opts.database}`);
+  appendPackDistFlags(parts, opts.topology, opts.frontendDist, opts.backendDist);
+  if (
+    opts.frontendDir?.trim() &&
+    (opts.topology === "static_spa" || opts.topology === "fullstack_split")
+  ) {
+    parts.push(`--frontend-dir ${shellQuote(opts.frontendDir.trim())}`);
+  }
+  if (opts.entrypoint?.trim() && opts.topology !== "static_spa") {
+    parts.push(`--entrypoint ${shellQuote(opts.entrypoint.trim())}`);
+  }
+  if (opts.topology === "fullstack_dual_ssr") {
+    if (opts.frontendRuntime) parts.push(`--frontend-runtime ${opts.frontendRuntime}`);
+    appendQuotedOpt(parts, "--frontend-entrypoint", opts.frontendEntrypoint);
+  }
+  if (opts.blueGreen && opts.topology !== "static_spa") parts.push("--blue-green-cutover");
+  return parts.join(" ");
 }
 
 export function buildConfigActivateCmd(opts: {
@@ -122,9 +273,12 @@ export function buildDnsChangeCmd(opts: {
 export function buildSiteCredentialRotateCmd(opts: {
   siteId: string;
   hostname: string;
+  target?: CredentialRotateTarget;
   hostId?: string;
 }): string {
-  return `rustiron plan create site-credential-rotate ${envelopeFlags(opts.hostId)} --site-id ${shellQuote(opts.siteId)} --hostname ${shellQuote(opts.hostname)} --valid-from <unix> --expires-at <unix> > ./plan.json`;
+  const targetFlag =
+    opts.target && opts.target !== "mariadb_user_password" ? ` --target ${opts.target}` : "";
+  return `rustiron plan create site-credential-rotate ${envelopeFlags(opts.hostId)} --site-id ${shellQuote(opts.siteId)} --hostname ${shellQuote(opts.hostname)}${targetFlag} --valid-from <unix> --expires-at <unix> > ./plan.json`;
 }
 
 export function buildMigrateDryRunCmd(): string {

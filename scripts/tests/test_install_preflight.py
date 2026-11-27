@@ -435,3 +435,119 @@ class InstallerPreflightTests(unittest.TestCase):
             else:
                 self.assertEqual(component["end_of_life_unix"], day(component["end_of_life"]))
             self.assertIsNotNone(preflight.version_parts(component["minimum"]))
+
+    def test_management_inventory_ships_confined_caddy_unit_and_selinux_policy(self):
+        # W657 (D-102, Decisions A1 + B1): confined Caddy edge ingress unit,
+        # SELinux policy module, and immutable /etc/rustiron-caddy root.
+        source = Path(__file__).resolve().parents[2]
+        self.assertIn("rustiron-caddy.service", preflight.MANAGEMENT_UNITS)
+        self.assertIn("rustiron_caddy", preflight.MODULES)
+        self.assertIn("etc/rustiron-caddy", preflight.OWNED_ROOTS)
+        self.assertEqual(
+            preflight.MANAGEMENT_FILES["usr/lib/systemd/system/rustiron-caddy.service"], 0o644
+        )
+        self.assertEqual(
+            preflight.MANAGEMENT_FILES["usr/share/rustiron/selinux/rustiron_caddy.pp"], 0o644
+        )
+        unit = (source / "packaging/systemd/rustiron-caddy.service").read_text()
+        for expected in (
+            "User=rustiron-caddy\n",
+            "Group=rustiron-caddy\n",
+            "CapabilityBoundingSet=CAP_NET_BIND_SERVICE\n",
+            "AmbientCapabilities=CAP_NET_BIND_SERVICE\n",
+            "NoNewPrivileges=yes\n",
+            "ProtectSystem=strict\n",
+            "PrivateTmp=yes\n",
+            "ConditionPathIsSymbolicLink=/etc/rustiron-caddy/current\n",
+        ):
+            self.assertIn(expected, unit)
+        te = (source / "packaging/selinux/rustiron_caddy.te").read_text()
+        te_rules = "\n".join(line for line in te.splitlines() if not line.lstrip().startswith("#"))
+        self.assertIn("allow rustiron_caddy_t http_port_t:tcp_socket name_bind;", te_rules)
+        self.assertIn("allow rustiron_caddy_t http_port_t:udp_socket name_bind;", te_rules)
+        self.assertIn("read_files_pattern(rustiron_caddy_t, rustiron_tls_t, rustiron_tls_t)", te_rules)
+        # Zero outbound HTTP/HTTPS, DB, or shell execution in rustiron_caddy_t.
+        for forbidden in (
+            "http_port_t:tcp_socket name_connect",
+            "corenet_tcp_connect_http_port",
+            "mysqld_port_t",
+            "postgresql_port_t",
+            "corecmd_exec_bin",
+            "httpd_sys_rw_content_t",
+        ):
+            self.assertNotIn(forbidden, te_rules)
+        stage = (source / "packaging/stage-product.sh").read_text()
+        self.assertIn("rustiron_caddy", stage)
+        self.assertIn("rustiron-caddy.service", stage)
+
+    def test_postgresql_18_templates_loopback_check_and_opt_in_app_selinux_domains(self):
+        # W658 (D-102 Decision C2): PostgreSQL 18 loopback & SCRAM-SHA-256 templates,
+        # port 5432 loopback listener check, and opt-in app DB SELinux sub-types.
+        source = Path(__file__).resolve().parents[2]
+        self.assertEqual(
+            preflight.MANAGEMENT_FILES[preflight.POSTGRES_LOOPBACK_TEMPLATE], 0o644
+        )
+        self.assertEqual(
+            preflight.MANAGEMENT_FILES[preflight.POSTGRES_HBA_TEMPLATE], 0o644
+        )
+        pg_conf = (source / "packaging/postgres/zz-rustiron-loopback.conf").read_text()
+        self.assertIn("listen_addresses = '127.0.0.1'", pg_conf)
+        self.assertIn("password_encryption = 'scram-sha-256'", pg_conf)
+        pg_hba = (source / "packaging/postgres/pg_hba.conf").read_text()
+        hba_rules = [
+            line.strip() for line in pg_hba.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        self.assertEqual(len(hba_rules), 4)
+        for rule in hba_rules:
+            self.assertNotIn("trust", rule)
+            self.assertNotIn("md5", rule)
+            self.assertNotIn("0.0.0.0/0", rule)
+        # Loopback-only check accepts 127.0.0.1:5432 / [::1]:5432 and refuses 0.0.0.0:5432.
+        preflight.check_postgres_loopback(lambda *_: "LISTEN 0 244 127.0.0.1:5432 0.0.0.0:*\n")
+        preflight.check_postgres_loopback(lambda *_: "LISTEN 0 244 [::1]:5432 [::]:*\n")
+        with self.assertRaisesRegex(ValueError, "PostgreSQL 18 listens beyond loopback"):
+            preflight.check_postgres_loopback(lambda *_: "LISTEN 0 244 0.0.0.0:5432 0.0.0.0:*\n")
+        # SELinux rustiron_app.te: rustiron_app_t stays at zero DB/outbound connect while
+        # rustiron_app_mariadb_t and rustiron_app_pg_t get only their narrow DB connects.
+        te = (source / "packaging/selinux/rustiron_app.te").read_text()
+        te_rules = "\n".join(line for line in te.splitlines() if not line.lstrip().startswith("#"))
+        self.assertIn("policy_module(rustiron_app, 0.2.1)", te_rules)
+        self.assertIn("mcs_constrained(rustiron_app_t)", te_rules)
+        self.assertIn("mcs_constrained(rustiron_app_mariadb_t)", te_rules)
+        self.assertIn("mcs_constrained(rustiron_app_pg_t)", te_rules)
+        self.assertIn("corenet_tcp_connect_mysqld_port(rustiron_app_mariadb_t)", te_rules)
+        self.assertIn("corenet_tcp_connect_postgresql_port(rustiron_app_pg_t)", te_rules)
+        for forbidden in (
+            "corenet_tcp_connect_mysqld_port(rustiron_app_t)",
+            "corenet_tcp_connect_postgresql_port(rustiron_app_t)",
+            "corenet_tcp_connect_mysqld_port(rustiron_app_domain)",
+            "corenet_tcp_connect_postgresql_port(rustiron_app_domain)",
+            "corenet_tcp_connect_http_port",
+            "corecmd_exec_bin",
+        ):
+            self.assertNotIn(forbidden, te_rules)
+
+    def test_fullstack_dual_ssr_and_blue_green_slot_units_are_hardened_and_staged(self):
+        # W659 (D-102 Slice 5): standby slot B and dual-SSR frontend templates.
+        source = Path(__file__).resolve().parents[2]
+        stage = (source / "packaging/stage-product.sh").read_text()
+        for unit_name in (
+            "rustiron-app-b@.service",
+            "rustiron-app-web@.service",
+            "rustiron-app-web-b@.service",
+        ):
+            self.assertIn(unit_name, preflight.SITE_UNITS)
+            self.assertEqual(preflight.MANAGEMENT_FILES[f"etc/systemd/system/{unit_name}"], 0o644)
+            self.assertIn(unit_name, stage)
+            text = (source / "packaging/systemd" / unit_name).read_text()
+            for expected in (
+                "User=%i\n",
+                "Group=%i\n",
+                "NoNewPrivileges=yes\n",
+                "ProtectSystem=strict\n",
+                "ReadWritePaths=/srv/sites/%i/data /srv/sites/%i/tmp\n",
+                "IPAddressDeny=any\n",
+                "IPAddressAllow=localhost\n",
+            ):
+                self.assertIn(expected, text)

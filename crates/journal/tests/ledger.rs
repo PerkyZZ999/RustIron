@@ -355,7 +355,7 @@ fn wrong_expected_host_identity_cannot_open_ledger() {
 fn newer_schema_is_refused_without_rewriting_database() {
     let state = State::new();
     drop(state.init());
-    state.sql("PRAGMA user_version=45");
+    state.sql("PRAGMA user_version=46");
     let path = state.0.join("fixture-journal.sqlite");
     let before = fs::read(&path).unwrap();
     assert_eq!(state.open().err().unwrap(), JournalError::Unavailable);

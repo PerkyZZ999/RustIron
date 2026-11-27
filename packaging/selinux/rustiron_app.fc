@@ -1,3 +1,8 @@
 # C-01 / W640: rustiron_app_t enters via existing bin_t (/usr/bin/node-22,
 # /usr/local/bin/bun) through systemd SELinuxContext=system_u:system_r:rustiron_app_t:s0:c<N>.
 # Per-site data/tmp/releases labels are installed by semanage fcontext per site.
+# W662-F2 (D-102 C2): PGDG installs its server under /usr/pgsql-18/bin as bin_t,
+# so postgresql-18.service would run as unconfined_service_t and the
+# rustiron_app_pg_t socket rule (postgresql_stream_connect) would not match.
+# Label the server binaries like the distribution's /usr/bin/postgres.
+/usr/pgsql-18/bin/(postgres|initdb|pg_ctl|postgresql-18-check-db-dir)	--	gen_context(system_u:object_r:postgresql_exec_t,s0)

@@ -82,16 +82,32 @@ def enrolled(policy: dict) -> tuple[int, bool, bool]:
     return port, "dns" in policy, dhcpv6
 
 
+def enrolled_with_http3(policy: dict) -> tuple[int, bool, bool, bool]:
+    """Return (ssh_port, dns, dhcpv6_client, http3) with FirewallPolicy + Caddy HTTP/3 rules."""
+    port, dns, dhcpv6 = enrolled(policy)
+    return port, dns, dhcpv6, "caddy" in policy
+
+
 def services(dns: bool, dhcpv6: bool) -> list[str]:
     return ["http", "https"] + (["dns"] if dns else []) + (["dhcpv6-client"] if dhcpv6 else [])
 
 
-def render(port: int, dns: bool, dhcpv6: bool) -> str:
+def ports(port: int, http3: bool = False) -> list[str]:
+    items = [f"{port}/tcp"]
+    if http3:
+        items.append("443/udp")
+    return sorted(items)
+
+
+def render(port: int, dns: bool, dhcpv6: bool, http3: bool = False) -> str:
     lines = ['<?xml version="1.0" encoding="utf-8"?>', "<zone>", "  <short>Rustiron</short>",
              "  <description>Rendered by packaging/firewall-zone.py from /etc/rustiron/policy.json "
              "(D-095). Do not edit.</description>"]
     lines += [f'  <service name="{name}"/>' for name in services(dns, dhcpv6)]
-    lines += [f'  <port protocol="tcp" port="{port}"/>', "</zone>", ""]
+    lines += [f'  <port protocol="tcp" port="{port}"/>']
+    if http3:
+        lines += ['  <port protocol="udp" port="443"/>']
+    lines += ["</zone>", ""]
     return "\n".join(lines)
 
 
@@ -142,7 +158,7 @@ def preflight(runner, port: int, interfaces: list[str]) -> str:
     return default
 
 
-def mismatches(runner, port: int, dns: bool, dhcpv6: bool, interfaces: list[str]) -> list[str]:
+def mismatches(runner, port: int, dns: bool, dhcpv6: bool, interfaces: list[str], http3: bool = False) -> list[str]:
     problems = []
     if query(runner, "--get-default-zone") != ZONE:
         problems.append(f"the default zone is not {ZONE}")
@@ -152,7 +168,7 @@ def mismatches(runner, port: int, dns: bool, dhcpv6: bool, interfaces: list[str]
             problems.append(f"{name} is in zone {zone or 'none'}")
     expected = {
         "--list-services": " ".join(sorted(services(dns, dhcpv6))),
-        "--list-ports": f"{port}/tcp",
+        "--list-ports": " ".join(ports(port, http3)),
         "--list-protocols": "", "--list-source-ports": "", "--list-forward-ports": "",
         "--list-rich-rules": "", "--list-sources": "", "--list-icmp-blocks": "",
     }
@@ -214,12 +230,12 @@ def restore_previous_zone(runner, path: Path, previous_text: str) -> None:
     step(runner, "firewall-cmd", f"--set-default-zone={ZONE}")
 
 
-def apply(runner, path: Path, text: str, port: int, dns: bool, dhcpv6: bool) -> None:
+def apply(runner, path: Path, text: str, port: int, dns: bool, dhcpv6: bool, http3: bool = False) -> None:
     interfaces = public_interfaces(runner)
     previous = preflight(runner, port, interfaces)
     current = path.read_text() if path.exists() else None
     if current == text and previous == ZONE and not mismatches(runner, port, dns, dhcpv6,
-                                                               interfaces):
+                                                               interfaces, http3):
         print("unchanged: the zone is applied and matches the policy")
         return
     write_zone(path, text)
@@ -229,7 +245,7 @@ def apply(runner, path: Path, text: str, port: int, dns: bool, dhcpv6: bool) -> 
         step(runner, "firewall-cmd", "--check-config")
         step(runner, "firewall-cmd", "--reload")
         step(runner, "firewall-cmd", f"--set-default-zone={ZONE}")
-        problems = mismatches(runner, port, dns, dhcpv6, interfaces)
+        problems = mismatches(runner, port, dns, dhcpv6, interfaces, http3)
     except Refused:
         if previous == ZONE and current is not None:
             restore_previous_zone(runner, path, current)
@@ -245,10 +261,10 @@ def apply(runner, path: Path, text: str, port: int, dns: bool, dhcpv6: bool) -> 
         remove(runner, path, FALLBACK, port=port)
         raise Refused(f"verification failed, the default zone is {FALLBACK} again: " + "; ".join(problems))
     print(f"verified: {', '.join(interfaces)} in zone {ZONE}; allowed "
-          f"{' '.join(services(dns, dhcpv6))} and {port}/tcp")
+          f"{' '.join(services(dns, dhcpv6))} and {' '.join(ports(port, http3))}")
 
 
-def drift(runner, path: Path, text: str, port: int, dns: bool, dhcpv6: bool) -> list[str]:
+def drift(runner, path: Path, text: str, port: int, dns: bool, dhcpv6: bool, http3: bool = False) -> list[str]:
     """W568: every difference between the host and the enrolled zone."""
     if query(runner, "--state") != "running":
         return ["firewalld is not running"]
@@ -261,7 +277,7 @@ def drift(runner, path: Path, text: str, port: int, dns: bool, dhcpv6: bool) -> 
     if ZONE not in query(runner, "--get-zones").split():
         default = query(runner, "--get-default-zone")
         return problems + [f"firewalld has no {ZONE} zone loaded", f"the default zone is {default}"]
-    return problems + mismatches(runner, port, dns, dhcpv6, public_interfaces(runner))
+    return problems + mismatches(runner, port, dns, dhcpv6, public_interfaces(runner), http3)
 
 
 def restore(runner, path: Path, apply_change: bool, port: int | None = None) -> None:
@@ -302,10 +318,10 @@ def main(argv=None, runner=run, zone_file: Path = ZONE_FILE) -> int:
                     restore_port = None
             restore(runner, zone_file, args.apply, port=restore_port)
             return 0
-        port, dns, dhcpv6 = enrolled(load_policy(args.policy))
-        text = render(port, dns, dhcpv6)
+        port, dns, dhcpv6, http3 = enrolled_with_http3(load_policy(args.policy))
+        text = render(port, dns, dhcpv6, http3)
         if args.check:
-            problems = drift(runner, zone_file, text, port, dns, dhcpv6)
+            problems = drift(runner, zone_file, text, port, dns, dhcpv6, http3)
             for problem in problems:
                 print(f"drift: {problem}")
             if problems:
@@ -317,7 +333,7 @@ def main(argv=None, runner=run, zone_file: Path = ZONE_FILE) -> int:
             print(f"plan: write {zone_file}, check sshd on {port}/tcp, reload, "
                   f"set the default zone to {ZONE}, verify")
             return 0
-        apply(runner, zone_file, text, port, dns, dhcpv6)
+        apply(runner, zone_file, text, port, dns, dhcpv6, http3)
         return 0
     except (Refused, OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"REFUSED: {error}", file=sys.stderr)

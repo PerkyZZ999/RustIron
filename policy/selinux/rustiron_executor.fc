@@ -5,3 +5,4 @@
 /run/rustiron(/.*)?	gen_context(system_u:object_r:rustiron_executor_run_t,s0)
 /etc/rustiron-ols(/.*)?	gen_context(system_u:object_r:rustiron_ols_generation_t,s0)
 /etc/rustiron-ejected(/.*)?	gen_context(system_u:object_r:rustiron_ols_generation_t,s0)
+/etc/rustiron-caddy(/.*)?	gen_context(system_u:object_r:rustiron_caddy_generation_t,s0)

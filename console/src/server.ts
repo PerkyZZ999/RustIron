@@ -75,10 +75,16 @@ const serveProdDist = createProdDistHandler({
   getAllowedHosts: () => hosts,
   hsts: isHttpsOrigin,
 });
+// W663-C2: production never runs with authentication turned off.
+if (isProd && process.env.RUSTIRON_CONSOLE_AUTH_DISABLED === "1") {
+  console.error("RUSTIRON_CONSOLE_AUTH_DISABLED=1 is refused when NODE_ENV=production.");
+  process.exit(1);
+}
 const authApi = createConsoleAuthBackend({
   dbPath: process.env.RUSTIRON_CONSOLE_AUTH_DB,
   secret: process.env.RUSTIRON_CONSOLE_AUTH_SECRET,
   setupToken: process.env.RUSTIRON_CONSOLE_SETUP_TOKEN,
+  requireSetupToken: isProd,
   baseURL,
   trustedOrigins,
   forceRequired: process.env.RUSTIRON_CONSOLE_AUTH_REQUIRED === "1",
@@ -135,14 +141,15 @@ const server = Bun.serve({
     "/api/accounts/users": authApi.usersCollection,
     "/api/accounts/users/:userId": authApi.mutateUser,
     "/api/accounts/sessions/revoke-others": authApi.revokeOtherSessions,
-    "/api/mail/state": protect(mailApi.getState),
+    "/api/mail/state": protect(mailApi.getState, undefined, isProd),
     "/api/mail/export": protect(mailApi.exportBundle, undefined, true),
     "/api/mail/mailboxes": protect(mailApi.mailboxesCollection, ["admin", "operator"], true),
     "/api/mail/mailboxes/:id": protect(mailApi.mutateMailbox, ["admin", "operator"], true),
     "/api/mail/aliases": protect(mailApi.aliasesCollection, ["admin", "operator"], true),
     "/api/mail/aliases/:id": protect(mailApi.deleteAlias, ["admin", "operator"], true),
     "/api/host/logs": protect(hostLogsHandler, undefined, true),
-    "/api/observation": protect(api.observation),
+    // W663-C3: in production no host data is readable before the first Admin exists.
+    "/api/observation": protect(api.observation, undefined, isProd),
     "/api/backend/status": backendStatusRoute,
     "/api/coordinator/live": protect(api.coordinatorLive, undefined, true),
     "/api/coordinator/doctor": protect(api.coordinatorDoctor, undefined, true),

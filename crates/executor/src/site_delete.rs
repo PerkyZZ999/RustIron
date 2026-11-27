@@ -15,6 +15,7 @@
 //! executor's state, so the executor removes the site's update intake
 //! ([`remove_update_intake`]) after the helper's removal.
 
+use rustiron_contracts::approval::AppDatabase;
 use rustiron_journal::{Provision, ProvisionState};
 
 use crate::{ExecutorError, provision};
@@ -100,6 +101,9 @@ pub(crate) fn removal_commands(
                 format!("rustiron-site-php@{account}.socket"),
                 format!("rustiron-site-php@{account}.service"),
                 format!("rustiron-app@{account}.service"),
+                format!("rustiron-app-b@{account}.service"),
+                format!("rustiron-app-web@{account}.service"),
+                format!("rustiron-app-web-b@{account}.service"),
                 format!("rustiron-app-worker@{account}.service"),
             ],
         ),
@@ -110,6 +114,18 @@ pub(crate) fn removal_commands(
         rm(format!(
             "{}{account}.service.d",
             crate::layout::SITE_APP_UNIT_PREFIX
+        )),
+        rm(format!(
+            "{}{account}.service.d",
+            crate::layout::SITE_APP_B_UNIT_PREFIX
+        )),
+        rm(format!(
+            "{}{account}.service.d",
+            crate::layout::SITE_APP_WEB_UNIT_PREFIX
+        )),
+        rm(format!(
+            "{}{account}.service.d",
+            crate::layout::SITE_APP_WEB_B_UNIT_PREFIX
         )),
         rm(format!(
             "{}{account}.service.d",
@@ -169,8 +185,17 @@ fn database_sql(provision: &Provision) -> String {
 
 /// Runs the removal and logs the phase that failed, with no command text.
 pub(crate) fn remove(provision: &Provision) -> Result<(), ExecutorError> {
+    remove_with_app_db(provision, None)
+}
+
+/// W658 (D-102 C2): runs site removal including PostgreSQL 18 role/database
+/// cleanup when the site was provisioned with `AppDatabase::Postgresql18`.
+pub(crate) fn remove_with_app_db(
+    provision: &Provision,
+    app_db: Option<AppDatabase>,
+) -> Result<(), ExecutorError> {
     let account = provision::SiteLayout::derive(&provision.intent.site_id).account;
-    remove_phases(provision).map_err(|(phase, error)| {
+    remove_phases(provision, app_db).map_err(|(phase, error)| {
         eprintln!(
             "{}",
             serde_json::json!({
@@ -186,7 +211,10 @@ pub(crate) fn remove(provision: &Provision) -> Result<(), ExecutorError> {
 
 /// A missing unit, context, path, or group is not an error; the account,
 /// the root, and the TLS folder must be gone at the end.
-fn remove_phases(provision: &Provision) -> Result<(), (&'static str, ExecutorError)> {
+fn remove_phases(
+    provision: &Provision,
+    app_db: Option<AppDatabase>,
+) -> Result<(), (&'static str, ExecutorError)> {
     if provision.state != ProvisionState::Deleted {
         return Err(("state", ExecutorError::BindingDenied));
     }
@@ -195,6 +223,9 @@ fn remove_phases(provision: &Provision) -> Result<(), (&'static str, ExecutorErr
     let passwd = provision::read_etc("passwd").map_err(|e| ("passwd", e))?;
     let present = provision::account_uid(&passwd, &account).is_some();
     provision::mariadb_admin(&database_sql(provision)).map_err(|e| ("database", e))?;
+    if app_db == Some(AppDatabase::Postgresql18) {
+        crate::postgres::drop_database_and_role(&account).map_err(|e| ("postgres", e))?;
+    }
     let live = lineage_live(provision.intent.hostname.as_str());
     let lineage = std::fs::symlink_metadata(&live).is_ok();
     for (program, args) in &removal_commands(provision, lineage) {
@@ -287,9 +318,12 @@ mod tests {
         let listed = programs(&provision(ProvisionState::Deleted));
         let rm = |path: &str| format!("/usr/bin/rm -rf --one-file-system -- {path}");
         for expected in [
-            "/usr/bin/systemctl disable --now -- rustiron-site-sandbox-check@rs_blog1.timer rustiron-site-php@rs_blog1.socket rustiron-site-php@rs_blog1.service rustiron-app@rs_blog1.service rustiron-app-worker@rs_blog1.service".to_owned(),
+            "/usr/bin/systemctl disable --now -- rustiron-site-sandbox-check@rs_blog1.timer rustiron-site-php@rs_blog1.socket rustiron-site-php@rs_blog1.service rustiron-app@rs_blog1.service rustiron-app-b@rs_blog1.service rustiron-app-web@rs_blog1.service rustiron-app-web-b@rs_blog1.service rustiron-app-worker@rs_blog1.service".to_owned(),
             rm(&format!("{}rs_blog1.service.d", crate::layout::SITE_PHP_UNIT_PREFIX)),
             rm(&format!("{}rs_blog1.service.d", crate::layout::SITE_APP_UNIT_PREFIX)),
+            rm(&format!("{}rs_blog1.service.d", crate::layout::SITE_APP_B_UNIT_PREFIX)),
+            rm(&format!("{}rs_blog1.service.d", crate::layout::SITE_APP_WEB_UNIT_PREFIX)),
+            rm(&format!("{}rs_blog1.service.d", crate::layout::SITE_APP_WEB_B_UNIT_PREFIX)),
             rm(&format!("{}rs_blog1.service.d", crate::layout::SITE_APP_WORKER_UNIT_PREFIX)),
             format!("/usr/sbin/semanage fcontext --delete -- {root}(/.*)?"),
             rm(&root),

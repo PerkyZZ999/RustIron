@@ -36,6 +36,14 @@ impl ProxyFacts {
             && valid_list(&self.websockets, 0)
     }
 
+    /// Whether the routes follow D-102 `fullstack_split`: 1 to 8 non-root API
+    /// routes (Caddy serves static `/`), 0 to 8 WebSocket paths, unique prefixes.
+    pub fn is_valid_app_split(&self) -> bool {
+        valid_list(&self.routes, 1)
+            && !self.routes.iter().any(|route| route.prefix == "/")
+            && valid_list(&self.websockets, 0)
+    }
+
     /// Every distinct port, in order.
     pub fn ports(&self) -> Vec<u16> {
         self.routes
@@ -140,7 +148,19 @@ pub(crate) fn facts(
     if facts.routes.is_empty() && facts.websockets.is_empty() {
         return Ok(None);
     }
-    if !facts.is_valid() {
+    let is_split_app: bool = c
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM app_fullstack_specs WHERE operation_id=?1 AND topology='fullstack_split')",
+            [operation_id.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    let ok = if is_split_app {
+        facts.is_valid_app_split()
+    } else {
+        facts.is_valid()
+    };
+    if !ok {
         return Err(JournalError::Unavailable);
     }
     Ok(Some(facts))

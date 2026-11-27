@@ -597,18 +597,38 @@ fn install(
         .map_err(|_| failed("tls stage create"))?;
     std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o711))
         .map_err(|_| failed("tls stage mode"))?;
+    let caddy_gid = provision::read_etc("group").ok().and_then(|groups| {
+        groups.lines().find_map(|line| {
+            let mut fields = line.split(':');
+            (fields.next()? == "rustiron-caddy")
+                .then(|| fields.nth(1)?.parse::<u32>().ok())
+                .flatten()
+        })
+    });
     let result = (|| {
-        for (name, bytes, mode) in [("fullchain.pem", chain, 0o644), ("key.pem", key, 0o600)] {
+        let key_mode = if caddy_gid.is_some() { 0o640 } else { 0o600 };
+        for (name, bytes, mode) in [("fullchain.pem", chain, 0o644), ("key.pem", key, key_mode)] {
+            let file_path = stage.join(name);
             let mut out = std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .mode(mode)
-                .open(stage.join(name))
+                .open(&file_path)
                 .map_err(|_| failed("tls stage write"))?;
             out.write_all(bytes)
                 .map_err(|_| failed("tls stage write"))?;
             out.sync_all().map_err(|_| failed("tls stage write"))?;
-            std::fs::set_permissions(stage.join(name), std::fs::Permissions::from_mode(mode))
+            if name == "key.pem"
+                && let Some(gid) = caddy_gid
+            {
+                rustix::fs::chown(
+                    &file_path,
+                    Some(rustix::process::Uid::from_raw(0)),
+                    Some(rustix::process::Gid::from_raw(gid)),
+                )
+                .map_err(|_| failed("tls key group"))?;
+            }
+            std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(mode))
                 .map_err(|_| failed("tls stage mode"))?;
         }
         let not_after = check(job, &stage)?;

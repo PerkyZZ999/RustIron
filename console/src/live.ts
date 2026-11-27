@@ -74,6 +74,17 @@ export type Machine = {
     ping: "responding" | "not_responding" | "unknown";
     listeners_beyond_loopback?: number | null;
   };
+  /** W656 (D-102): optional PostgreSQL 18 probe. */
+  postgresql?: {
+    installed: boolean;
+    ping: "responding" | "not_responding" | "not_installed" | "unknown";
+    listeners_beyond_loopback?: number | null;
+  };
+  /** W656 (D-102): optional confined Caddy edge ingress probe. */
+  caddy?: {
+    installed: boolean;
+    admin_port_listeners?: number | null;
+  };
   /** Absent on observations taken before the version read. */
   stack?: {
     openlitespeed: string | null;
@@ -82,6 +93,8 @@ export type Machine = {
     powerdns?: string | null;
     nodejs?: string | null;
     bun?: string | null;
+    caddy?: string | null;
+    postgresql?: string | null;
   };
   /** Absent on observations taken before failed units were listed. */
   failed_units?: { readable: boolean; units: string[] | null; truncated?: boolean };
@@ -156,10 +169,16 @@ export type Observation = {
     quota?: RecordedQuota;
     /** W491/D-075: optional alias hostname on static/WP sites. */
     alias_hostname?: string | null;
-    /** W597/P27: runtime profile for modern apps (node_22_v1, bun_1_v1). */
+    /** W597/P27 + W655/D-102: runtime profile for modern apps (node_22_v1, bun_1_v1, static_v1). */
     app_runtime?: string | null;
     /** W597/P27: active release ID for modern apps. */
     app_active_release?: string | null;
+    /** W656/D-102: optional schema v2 topology (static_spa, backend_api, fullstack_split, fullstack_dual_ssr). */
+    app_topology?: string | null;
+    /** W656/D-102: optional schema v2 edge ingress (ols, caddy). */
+    app_ingress?: string | null;
+    /** W656/D-102: optional schema v2 database engine (none, sqlite, mariadb, postgresql_18). */
+    app_database?: string | null;
     /** W572/CP08: loopback ports forwarded by proxy or app sites. */
     proxy_ports?: number[];
   }[];

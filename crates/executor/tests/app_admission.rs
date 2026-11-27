@@ -366,3 +366,208 @@ fn app_provision_refuses_reserved_ols_port_and_over_cap_quota_before_intent() {
     let obs = Executor::observe(&lab.anchor).unwrap();
     assert_eq!(obs["authority_budget"]["consumed"]["total_admissions"], 0);
 }
+
+#[test]
+fn w659_schema_v2_fullstack_caddy_enrollment_and_blue_green_admission_guards() {
+    // 1. Without a `caddy` section enrolled, a schema v2 Caddy app_provision is
+    // refused fail-closed with Unavailable before committing any intent.
+    let lab_no_caddy = AppLab::new("v2-no-caddy");
+    let mut exec_no_caddy = Executor::open(lab_no_caddy.anchor.clone()).unwrap();
+    let uid = lab_no_caddy.anchor.owner_uid;
+
+    let caddy_plan = canonical(&json!({
+        "schema_version": 2,
+        "plan_id": "plan_v2_split",
+        "host_id": "host_lab",
+        "host_epoch": "epoch_1",
+        "profile_digest": "a".repeat(64),
+        "requester": "agent_1",
+        "verb": "app_provision",
+        "site_id": "emdash1",
+        "hostname": "shop.example.test",
+        "ingress": "caddy",
+        "topology": "fullstack_split",
+        "database": "postgresql_18",
+        "runtime": "bun_1_v1",
+        "port": 43210,
+        "blue_green": true,
+        "standby_port": 43211,
+        "spa_fallback": true,
+        "frontend_dir": "frontend",
+        "routes": [{"prefix": "/api/", "port": 43210}],
+        "websockets": [],
+        "sse_prefixes": ["/api/events/"],
+        "entrypoint": "backend/server.ts",
+        "health_path": "/api/health",
+        "env_keys": ["DATABASE_URL"],
+        "memory_max_mib": 512,
+        "tasks_max": 64,
+        "quota_mib": 512,
+        "expected_effects": {
+            "creates_account": true,
+            "forwards_to_loopback": true,
+            "installs_app_unit": true,
+            "creates_database": true,
+            "traffic_activation": false,
+            "runs_package_scripts": false
+        },
+        "risk_class": "lab_only",
+        "valid_from": 1000,
+        "expires_at": 2000,
+        "limitations": ["test"]
+    }));
+    let decoded = AppProvisionPlan::decode(&caddy_plan).unwrap();
+    let (grant, sig) = lab_no_caddy.sign_grant(&grant_for(
+        "plan_v2_split",
+        decoded.digest().as_str(),
+        "app_provision",
+        10,
+    ));
+    let req = AdmissionRequest {
+        peer_uid: uid,
+        plan: &caddy_plan,
+        grant: &grant,
+        signature: &sig,
+        operation_id: id("op_v2_nocaddy"),
+        idempotency_key: id("key_v2_nocaddy"),
+        now: Some(Timestamp::try_from(1500).unwrap()),
+    };
+    assert_eq!(
+        exec_no_caddy.provision_app(&req),
+        Err(ExecutorError::Unavailable)
+    );
+
+    // 2. With Caddy enrolled (caddy_edge_over_ols), colliding with Caddy's HTTP/HTTPS
+    // or OLS upstream port on ANY blue/green standby port is refused with BindingDenied
+    // before committing any intent.
+    let lab_caddy = AppLab::new("v2-with-caddy");
+    let policy_path = lab_caddy.anchor.policy_dir.join("policy.json");
+    let mut pol: Value = serde_json::from_slice(&fs::read(&policy_path).unwrap()).unwrap();
+    pol["caddy"] = json!({
+        "mode": "caddy_edge_over_ols",
+        "http_address": "127.0.0.1:8080",
+        "https_address": "127.0.0.1:8443",
+        "ols_upstream": "127.0.0.1:8088",
+        "binary_sha256": "d".repeat(64)
+    });
+    fs::remove_file(&policy_path).unwrap();
+    private_file(&policy_path, &serde_json::to_vec(&pol).unwrap());
+    let mut exec_caddy = Executor::open(lab_caddy.anchor.clone()).unwrap();
+
+    let collide_standby = canonical(&json!({
+        "schema_version": 2,
+        "plan_id": "plan_v2_collide",
+        "host_id": "host_lab",
+        "host_epoch": "epoch_1",
+        "profile_digest": "a".repeat(64),
+        "requester": "agent_1",
+        "verb": "app_provision",
+        "site_id": "emdash1",
+        "hostname": "shop.example.test",
+        "ingress": "caddy",
+        "topology": "fullstack_split",
+        "database": "postgresql_18",
+        "runtime": "bun_1_v1",
+        "port": 43210,
+        "blue_green": true,
+        "standby_port": 8443,
+        "spa_fallback": true,
+        "frontend_dir": "frontend",
+        "routes": [{"prefix": "/api/", "port": 43210}],
+        "websockets": [],
+        "entrypoint": "backend/server.ts",
+        "health_path": "/api/health",
+        "env_keys": ["DATABASE_URL"],
+        "memory_max_mib": 512,
+        "tasks_max": 64,
+        "quota_mib": 512,
+        "expected_effects": {
+            "creates_account": true,
+            "forwards_to_loopback": true,
+            "installs_app_unit": true,
+            "creates_database": true,
+            "traffic_activation": false,
+            "runs_package_scripts": false
+        },
+        "risk_class": "lab_only",
+        "valid_from": 1000,
+        "expires_at": 2000,
+        "limitations": ["test"]
+    }));
+    let dec_c = AppProvisionPlan::decode(&collide_standby).unwrap();
+    let (grant_c, sig_c) = lab_caddy.sign_grant(&grant_for(
+        "plan_v2_collide",
+        dec_c.digest().as_str(),
+        "app_provision",
+        11,
+    ));
+    let req_c = AdmissionRequest {
+        peer_uid: uid,
+        plan: &collide_standby,
+        grant: &grant_c,
+        signature: &sig_c,
+        operation_id: id("op_v2_collide"),
+        idempotency_key: id("key_v2_collide"),
+        now: Some(Timestamp::try_from(1500).unwrap()),
+    };
+    assert_eq!(
+        exec_caddy.provision_app(&req_c),
+        Err(ExecutorError::BindingDenied)
+    );
+
+    // 3. Schema v2 app_deploy with blue_green_cutover on an unprovisioned site fails
+    // closed with PreconditionChanged before intent (zero budget consumed).
+    let bg_deploy = canonical(&json!({
+        "schema_version": 2,
+        "plan_id": "plan_ad_v2_bg",
+        "host_id": "host_lab",
+        "host_epoch": "epoch_1",
+        "profile_digest": "a".repeat(64),
+        "requester": "agent_1",
+        "verb": "app_deploy",
+        "site_id": "emdash1",
+        "release_id": "rel-2",
+        "runtime": "bun_1_v1",
+        "artifact_sha256": "b".repeat(64),
+        "manifest_sha256": "c".repeat(64),
+        "file_count": 5,
+        "total_bytes": 512,
+        "health_path": "/api/health",
+        "blue_green_cutover": true,
+        "expected_effects": {
+            "unpacks_as_site": true,
+            "switches_release": true,
+            "restarts_app_unit": true,
+            "reloads_caddy": true,
+            "rolls_back_on_failed_health": true,
+            "runs_package_scripts": false,
+            "traffic_activation": false
+        },
+        "risk_class": "lab_only",
+        "valid_from": 1000,
+        "expires_at": 2000,
+        "limitations": ["test"]
+    }));
+    let dec_bg = AppDeployPlan::decode(&bg_deploy).unwrap();
+    let (grant_bg, sig_bg) = lab_caddy.sign_grant(&grant_for(
+        "plan_ad_v2_bg",
+        dec_bg.digest().as_str(),
+        "app_deploy",
+        12,
+    ));
+    let req_bg = AdmissionRequest {
+        peer_uid: uid,
+        plan: &bg_deploy,
+        grant: &grant_bg,
+        signature: &sig_bg,
+        operation_id: id("op_ad_v2_bg"),
+        idempotency_key: id("key_ad_v2_bg"),
+        now: Some(Timestamp::try_from(1500).unwrap()),
+    };
+    assert_eq!(
+        exec_caddy.deploy_app(&req_bg),
+        Err(ExecutorError::PreconditionChanged)
+    );
+    let obs = Executor::observe(&lab_caddy.anchor).unwrap();
+    assert_eq!(obs["authority_budget"]["consumed"]["total_admissions"], 0);
+}

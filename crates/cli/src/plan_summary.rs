@@ -302,15 +302,44 @@ fn describe_body(bytes: &[u8]) -> Option<Description> {
             lines,
         ));
     }
-    // W596 (D-099): P27 modern app hosting plans.
+    // W596 (D-099) & W655 (D-102): modern app hosting plans (schema v1 & v2).
     if let Ok(plan) = AppProvisionPlan::decode(bytes) {
         let mut lines = vec![
             ("site", plan.site_id().as_str().to_owned()),
             ("hostname", plan.hostname().as_str().to_owned()),
             ("runtime", plan.runtime().as_str().to_owned()),
-            ("loopback port", format!("127.0.0.1:{}", plan.port())),
-            ("entrypoint", plan.entrypoint().to_owned()),
         ];
+        if plan.schema_version() == 2 {
+            lines.push(("ingress", plan.ingress().as_str().to_owned()));
+            lines.push(("topology", plan.topology().as_str().to_owned()));
+            lines.push(("database", plan.database().as_str().to_owned()));
+            lines.push(("blue/green", plan.blue_green().to_string()));
+        }
+        if plan.port() > 0 {
+            lines.push(("loopback port", format!("127.0.0.1:{}", plan.port())));
+        }
+        if let Some(sp) = plan.standby_port() {
+            lines.push(("standby port", format!("127.0.0.1:{sp}")));
+        }
+        if let Some(dir) = plan.frontend_dir() {
+            lines.push(("frontend dir", dir.to_owned()));
+            lines.push(("spa fallback", plan.spa_fallback().to_string()));
+        }
+        if let Some(fr) = plan.frontend_runtime() {
+            lines.push(("frontend runtime", fr.as_str().to_owned()));
+        }
+        if let Some(fe) = plan.frontend_entrypoint() {
+            lines.push(("frontend entrypoint", fe.to_owned()));
+        }
+        if let Some(fp) = plan.frontend_port() {
+            lines.push(("frontend port", format!("127.0.0.1:{fp}")));
+        }
+        if let Some(fsp) = plan.frontend_standby_port() {
+            lines.push(("frontend standby port", format!("127.0.0.1:{fsp}")));
+        }
+        if !plan.entrypoint().is_empty() {
+            lines.push(("entrypoint", plan.entrypoint().to_owned()));
+        }
         if let Some(worker) = plan.worker_entrypoint() {
             lines.push(("worker entrypoint", worker.to_owned()));
         }
@@ -347,10 +376,22 @@ fn describe_body(bytes: &[u8]) -> Option<Description> {
                 format!("{} -> 127.0.0.1:{}", websocket.prefix, websocket.port),
             ));
         }
-        lines.push((
-            "effects",
-            "creates the site account, confined directories, SELinux MCS label, and rustiron-app@.service drop-in (plus worker unit if declared) with no PHP, no database, and no root package scripts; a separate config_activate serves the host name through OLS and a separate app_deploy activates a signed release bundle".to_owned(),
-        ));
+        if !plan.sse_prefixes().is_empty() {
+            lines.push(("sse prefixes", plan.sse_prefixes().join(", ")));
+        }
+        if !plan.strip_api_prefixes().is_empty() {
+            lines.push(("strip api prefixes", plan.strip_api_prefixes().join(", ")));
+        }
+        let effects = if plan.schema_version() == 2 {
+            format!(
+                "creates the site account, confined directories, SELinux MCS label, {} ingress records, and {} database setup (with no PHP and no root package scripts); traffic activation and release deployment remain separate signed steps",
+                plan.ingress().as_str(),
+                plan.database().as_str(),
+            )
+        } else {
+            "creates the site account, confined directories, SELinux MCS label, and rustiron-app@.service drop-in (plus worker unit if declared) with no PHP, no database, and no root package scripts; a separate config_activate serves the host name through OLS and a separate app_deploy activates a signed release bundle".to_owned()
+        };
+        lines.push(("effects", effects));
         return Some((
             PlanKind::AppProvision.as_str(),
             plan.digest().as_str().to_owned(),
@@ -386,9 +427,19 @@ fn describe_body(bytes: &[u8]) -> Option<Description> {
         if let Some(capture) = plan.capture_operation_id() {
             lines.push(("capture operation", capture.as_str().to_owned()));
         }
+        if plan.blue_green_cutover() {
+            lines.push((
+                "blue/green cutover",
+                "true (atomic Caddy slot reload)".to_owned(),
+            ));
+        }
         lines.push((
             "effects",
-            "verifies the signed prebuilt bundle and manifest, unpacks read-only as the site account, runs any declared bounded migration as the site, switches current atomically, restarts the app unit(s), probes loopback health, and rolls back automatically on health failure; runs no root package scripts and reloads no OLS listener".to_owned(),
+            if plan.blue_green_cutover() {
+                "verifies the signed prebuilt bundle and manifest, unpacks read-only as the site account, runs any declared bounded migration as the site, starts the standby slot, probes loopback health, atomically reloads Caddy to flip traffic, drains the previous slot, and rolls back automatically on failure; runs no root package scripts and reloads no OLS listener".to_owned()
+            } else {
+                "verifies the signed prebuilt bundle and manifest, unpacks read-only as the site account, runs any declared bounded migration as the site, switches current atomically, restarts the app unit(s), probes loopback health, and rolls back automatically on health failure; runs no root package scripts and reloads no OLS listener".to_owned()
+            },
         ));
         return Some((
             PlanKind::AppDeploy.as_str(),
@@ -410,8 +461,16 @@ fn describe_body(bytes: &[u8]) -> Option<Description> {
             ],
         ));
     }
-    // W608 (D-100): P13 signed per-site MariaDB credential rotation.
+    // W608 (D-100) & W655 (D-102): signed per-site DB credential rotation (WP MariaDB or app MariaDB/PostgreSQL 18).
     if let Ok(plan) = CredentialRotatePlan::decode(bytes) {
+        let effects = if plan.target().is_app_target() {
+            format!(
+                "generates a fresh random password on the host (zero secrets in plan/grant/logs), alters only this app site's {} credential, atomically updates 0400 private/app.env, restarts the app unit(s), and verifies DB login, old-password rejection, and loopback health with 1 bounded compensation rollback on failure",
+                plan.target().as_str()
+            )
+        } else {
+            "generates a fresh 24-byte (48-hex-digit) random MariaDB password on the host (zero secrets in plan/grant/logs), alters only this site's MariaDB user, atomically updates 0600 private/db.cnf, restarts the site's PHP pool, and verifies DB login, old-password rejection, and HTTP health with 1 bounded compensation rollback on failure; reloads no OLS listener and accepts no arbitrary SQL".to_owned()
+        };
         return Some((
             PlanKind::SiteCredentialRotate.as_str(),
             plan.digest().as_str().to_owned(),
@@ -419,10 +478,7 @@ fn describe_body(bytes: &[u8]) -> Option<Description> {
                 ("site", plan.site_id().as_str().to_owned()),
                 ("hostname", plan.hostname().as_str().to_owned()),
                 ("target", plan.target().as_str().to_owned()),
-                (
-                    "effects",
-                    "generates a fresh 24-byte (48-hex-digit) random MariaDB password on the host (zero secrets in plan/grant/logs), alters only this site's MariaDB user, atomically updates 0600 private/db.cnf, restarts the site's PHP pool, and verifies DB login, old-password rejection, and HTTP health with 1 bounded compensation rollback on failure; reloads no OLS listener and accepts no arbitrary SQL".to_owned(),
-                ),
+                ("effects", effects),
             ],
         ));
     }

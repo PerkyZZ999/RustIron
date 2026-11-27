@@ -1,6 +1,9 @@
 //! D-100 (P13, W609): admission and execution of signed `site_credential_rotate`.
 
-use rustiron_contracts::Id;
+use rustiron_contracts::{
+    Id,
+    approval::{AppDatabase, CredentialTarget},
+};
 use rustiron_journal::{CredentialRotateResult, CredentialRotateState, CredentialRotation};
 
 use super::{Executor, signed_inputs};
@@ -48,12 +51,23 @@ impl Executor {
                 .journal
                 .import_status(&provision.intent.operation_id)?
                 .is_some_and(|imp| imp.facts.is_static());
+            let app_db = self
+                .journal
+                .app_fullstack_spec(&provision.intent.operation_id)?
+                .map(|spec| spec.database);
+            let target_matches_site = match intent.target {
+                CredentialTarget::MariadbUserPassword => !is_proxy && !is_app && !is_static,
+                CredentialTarget::AppMariadbPassword => {
+                    is_app && app_db == Some(AppDatabase::Mariadb)
+                }
+                CredentialTarget::AppPostgresql18Password => {
+                    is_app && app_db == Some(AppDatabase::Postgresql18)
+                }
+            };
             if !provision.state.is_owned()
                 || provision.intent.hostname != intent.hostname
                 || self.journal.ejected_sites()?.contains(&intent.site_id)
-                || is_proxy
-                || is_app
-                || is_static
+                || !target_matches_site
             {
                 return Err(ExecutorError::PreconditionChanged);
             }

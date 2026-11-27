@@ -23,24 +23,29 @@ import {
   buildManualVerbPlanNote,
   buildSiteCredentialRotateCmd,
   buildSiteEjectCmd,
+  type CredentialRotateTarget,
   INSPECT_AND_SIGN_STEPS,
   shellQuote,
 } from "./cli-commands";
 import { useData } from "./data";
-import { fixtureApps, liveApps } from "./platform-data";
+import { type AppRecord, fixtureApps, liveApps } from "./platform-data";
 import { InspectorPanel } from "./platform-pages";
 import { Crumbs, EmptyState, Glyph, Page, TableScroll } from "./ui";
 import { SeparateCustodyApplyPanel } from "./write-panel";
+
+type DatabaseEngineLabel = "MariaDB" | "PostgreSQL 18" | "SQLite";
 
 type DatabaseEntry = {
   id: string;
   siteId: string;
   domain: string;
-  engine: "MariaDB" | "SQLite";
+  engine: DatabaseEngineLabel;
   dbName: string;
   dbUser: string;
   socketOrPath: string;
   canRotatePassword: boolean;
+  rotateTarget?: CredentialRotateTarget;
+  isAppDatabase: boolean;
 };
 
 function CopyBtn({ text, label }: { text: string; label: string }) {
@@ -84,11 +89,57 @@ function isWordPressSite(s: { runtime?: string; servingKind?: string }): boolean
   return true;
 }
 
-// W635 (H-04): derive MariaDB rows only for WordPress/PHP sites (never static,
-// proxy, ejected, or modern app sites) and SQLite rows for EmDash CMS apps.
+function appDatabaseEntry(app: AppRecord): DatabaseEntry | null {
+  if (app.database === "postgresql_18") {
+    return {
+      id: `pg18_${app.siteId}`,
+      siteId: app.siteId,
+      domain: app.hostname,
+      engine: "PostgreSQL 18",
+      dbName: `rs_${app.siteId}_app`,
+      dbUser: `rs_${app.siteId}`,
+      socketOrPath: "127.0.0.1:5432 (SCRAM-SHA-256 · rustiron_app_pg_t)",
+      canRotatePassword: true,
+      rotateTarget: "app_postgresql_18_password",
+      isAppDatabase: true,
+    };
+  }
+  if (app.database === "mariadb") {
+    return {
+      id: `app_maria_${app.siteId}`,
+      siteId: app.siteId,
+      domain: app.hostname,
+      engine: "MariaDB",
+      dbName: `rs_${app.siteId}_app`,
+      dbUser: `rs_${app.siteId}`,
+      socketOrPath: "127.0.0.1:3306 (rustiron_app_mariadb_t)",
+      canRotatePassword: true,
+      rotateTarget: "app_mariadb_password",
+      isAppDatabase: true,
+    };
+  }
+  if (app.database === "sqlite" || app.kind === "EmDash CMS") {
+    const isEmDash = app.kind === "EmDash CMS";
+    return {
+      id: `sqlite_${app.siteId}`,
+      siteId: app.siteId,
+      domain: app.hostname,
+      engine: "SQLite",
+      dbName: isEmDash ? "data/emdash.db (WAL + FTS5)" : "data/app.db (WAL)",
+      dbUser: `rs_${app.siteId}`,
+      socketOrPath: `/srv/sites/${app.siteId}/data/${isEmDash ? "emdash.db" : "app.db"}`,
+      canRotatePassword: false,
+      isAppDatabase: true,
+    };
+  }
+  return null;
+}
+
+// W635 (H-04) + W661 (D-102 C2): derive MariaDB rows for WordPress/PHP sites and
+// PostgreSQL 18 / MariaDB / SQLite rows for modern apps based on selected DB engine.
 function buildDatabaseEntries(
   sites: { id: string; domain: string; runtime?: string; servingKind?: string }[],
-  apps: { id: string; hostname: string; kind: string }[],
+  apps: AppRecord[],
 ): DatabaseEntry[] {
   const appHosts = new Set(apps.map((a) => a.hostname.toLowerCase()));
   const entries: DatabaseEntry[] = [];
@@ -104,21 +155,13 @@ function buildDatabaseEntries(
       dbUser: `rs_${s.id}`,
       socketOrPath: "/run/mysqld/mysqld.sock",
       canRotatePassword: true,
+      rotateTarget: "mariadb_user_password",
+      isAppDatabase: false,
     });
   }
   for (const app of apps) {
-    if (app.kind === "EmDash CMS") {
-      entries.push({
-        id: `sqlite_${app.id}`,
-        siteId: app.id,
-        domain: app.hostname,
-        engine: "SQLite",
-        dbName: "data/emdash.db (WAL + FTS5)",
-        dbUser: `rs_${app.id}`,
-        socketOrPath: `/srv/sites/${app.id}/data/emdash.db`,
-        canRotatePassword: false,
-      });
-    }
+    const entry = appDatabaseEntry(app);
+    if (entry) entries.push(entry);
   }
   return entries;
 }
@@ -133,8 +176,11 @@ function DatabaseActionDrawer({
   const [snapshotId, setSnapshotId] = useState("");
   const qSite = shellQuote(selected.siteId);
   const qSnap = shellQuote(snapshotId.trim() || "<snapshot_id>");
-  const rotateCmd = `# Prepare signed credential rotation plan (Runbook 35)\n${buildSiteCredentialRotateCmd({ siteId: selected.siteId, hostname: selected.domain })}\n${INSPECT_AND_SIGN_STEPS}`;
-  const exportCmd = `# Offline SQL export from an encrypted backup capture on the operator PC (Runbook 27)\n# Snapshot: ${qSnap} · Site: ${qSite}\nrestic -r <repo> dump ${qSnap} /db.sql.zst | zstd -d > ./${selected.siteId}-dump.sql`;
+  const rotateCmd = `# Prepare signed credential rotation plan (Runbook 35)\n${buildSiteCredentialRotateCmd({ siteId: selected.siteId, hostname: selected.domain, target: selected.rotateTarget })}\n${INSPECT_AND_SIGN_STEPS}`;
+  const exportCmd =
+    selected.engine === "PostgreSQL 18"
+      ? `# Offline PostgreSQL 18 dump export from an encrypted backup capture (Runbook 27)\n# Snapshot: ${qSnap} · Site: ${qSite}\nrestic -r <repo> dump ${qSnap} /db.pgdump.zst | zstd -d > ./${selected.siteId}-pg18.dump`
+      : `# Offline SQL export from an encrypted backup capture on the operator PC (Runbook 27)\n# Snapshot: ${qSnap} · Site: ${qSite}\nrestic -r <repo> dump ${qSnap} /db.sql.zst | zstd -d > ./${selected.siteId}-dump.sql`;
 
   return (
     <InspectorPanel
@@ -171,8 +217,19 @@ function DatabaseActionDrawer({
         {selected.canRotatePassword ? (
           <>
             <p className="cap">
-              Generates a new password locally on the server, atomically swaps{" "}
-              <span className="mono">db.cnf</span>, and restarts the site PHP pool.
+              {selected.isAppDatabase ? (
+                <>
+                  Generates a fresh password locally on the server, atomically updates{" "}
+                  <span className="mono">DATABASE_URL</span> in{" "}
+                  <span className="mono">private/app.env</span> (mode 0400), and restarts the app
+                  unit.
+                </>
+              ) : (
+                <>
+                  Generates a new password locally on the server, atomically swaps{" "}
+                  <span className="mono">db.cnf</span>, and restarts the site PHP pool.
+                </>
+              )}
             </p>
             <pre className="code signed-bytes">{rotateCmd}</pre>
           </>
@@ -188,7 +245,7 @@ function DatabaseActionDrawer({
         <div className="row" style={{ justifyContent: "space-between" }}>
           <strong className="row" style={{ gap: 6 }}>
             <Glyph icon={Download} />
-            Export SQL dump safely
+            Export database dump safely
           </strong>
           <CopyBtn text={exportCmd} label="Copy database export command" />
         </div>
@@ -229,15 +286,20 @@ function DatabaseActionDrawer({
 
 function dbExposureLabel(
   isLive: boolean,
-  listeners: number | null | undefined,
+  mariaListeners: number | null | undefined,
+  pgListeners: number | null | undefined,
 ): { value: string; detail: string } {
-  if (!isLive || listeners === 0) {
-    return { value: "Local only", detail: "Observed MariaDB listener check" };
+  const totalExternal = (mariaListeners ?? 0) + (pgListeners ?? 0);
+  if (!isLive || (mariaListeners === 0 && (pgListeners === 0 || pgListeners == null))) {
+    return { value: "Local only", detail: "Loopback/socket verified (3306 & 5432)" };
   }
-  if (listeners == null) {
-    return { value: "Not observed", detail: "Verify MariaDB socket & firewalld on host" };
+  if (totalExternal > 0) {
+    return {
+      value: `${totalExternal} external`,
+      detail: "Exposed listener on MariaDB :3306 or PostgreSQL :5432",
+    };
   }
-  return { value: `${listeners} external`, detail: "Observed MariaDB listener check" };
+  return { value: "Not observed", detail: "Verify MariaDB / PostgreSQL 18 listeners on host" };
 }
 
 export function DatabasesPage() {
@@ -246,13 +308,21 @@ export function DatabasesPage() {
   const apps = isLive ? (data.observation ? liveApps(data.observation) : []) : fixtureApps;
   const entries = buildDatabaseEntries(data.sites, apps);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [engineFilter, setEngineFilter] = useState<"all" | "MariaDB" | "SQLite">("all");
+  const [engineFilter, setEngineFilter] = useState<"all" | DatabaseEngineLabel>("all");
   const visible =
     engineFilter === "all" ? entries : entries.filter((e) => e.engine === engineFilter);
   const selected = visible.find((e) => e.id === selectedId) ?? null;
 
   const mariaCount = entries.filter((e) => e.engine === "MariaDB").length;
+  const pgCount = entries.filter((e) => e.engine === "PostgreSQL 18").length;
   const sqliteCount = entries.filter((e) => e.engine === "SQLite").length;
+  const exposure = dbExposureLabel(
+    isLive,
+    data.machine?.database?.listeners_beyond_loopback,
+    data.machine?.postgresql?.installed
+      ? data.machine.postgresql.listeners_beyond_loopback
+      : undefined,
+  );
 
   return (
     <Page live>
@@ -261,8 +331,9 @@ export function DatabasesPage() {
         <div>
           <h1>Databases</h1>
           <p className="sub">
-            Per-site MariaDB and SQLite databases on this server. Each website runs with its own
-            isolated database account and local socket access only.
+            Per-site MariaDB, PostgreSQL 18 (18.7+), and SQLite databases on this server. Every
+            database runs with its own least-privilege role and local-only loopback or socket
+            access.
           </p>
         </div>
         <Link className="btn primary sm" to="/sites/new">
@@ -274,36 +345,24 @@ export function DatabasesPage() {
         <article className="panel metric">
           <div className="m-head">Total databases</div>
           <div className="m-val">{entries.length}</div>
-          <div className="m-detail">Managed across all hosted workloads</div>
+          <div className="m-detail">Managed across sites &amp; modern apps</div>
         </article>
         <article className="panel metric">
-          <div className="m-head">MariaDB</div>
+          <div className="m-head">MariaDB 10.11</div>
           <div className="m-val">{mariaCount}</div>
-          <div className="m-detail">Isolated per-site WordPress accounts</div>
+          <div className="m-detail">WordPress &amp; opt-in app accounts</div>
         </article>
         <article className="panel metric">
-          <div className="m-head">SQLite (WAL)</div>
-          <div className="m-val">{sqliteCount}</div>
-          <div className="m-detail">EmDash CMS native FTS5 databases</div>
+          <div className="m-head">PostgreSQL 18</div>
+          <div className="m-val">{pgCount}</div>
+          <div className="m-detail">SCRAM-SHA-256 · {sqliteCount} SQLite WAL</div>
         </article>
         <article className="panel metric">
           <div className="m-head">Network exposure</div>
           <div className="m-val" style={{ fontSize: 20 }}>
-            {
-              dbExposureLabel(
-                data.source.kind === "live",
-                data.machine?.database?.listeners_beyond_loopback,
-              ).value
-            }
+            {exposure.value}
           </div>
-          <div className="m-detail">
-            {
-              dbExposureLabel(
-                data.source.kind === "live",
-                data.machine?.database?.listeners_beyond_loopback,
-              ).detail
-            }
-          </div>
+          <div className="m-detail">{exposure.detail}</div>
         </article>
       </section>
 
@@ -311,7 +370,7 @@ export function DatabasesPage() {
         <EmptyState
           icon={Database}
           title="No databases registered on this server yet"
-          description="Provision a WordPress site or EmDash CMS app and its isolated database will appear here automatically."
+          description="Provision a WordPress site or modern app with SQLite, MariaDB, or PostgreSQL 18 and its isolated database will appear here automatically."
           action={
             <Link className="btn primary sm" to="/sites/new">
               Add website
@@ -326,8 +385,8 @@ export function DatabasesPage() {
                 <Glyph icon={Database} />
                 <h2>Registered databases</h2>
               </div>
-              <div className="row" style={{ gap: 6 }}>
-                {(["all", "MariaDB", "SQLite"] as const).map((f) => (
+              <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+                {(["all", "MariaDB", "PostgreSQL 18", "SQLite"] as const).map((f) => (
                   <button
                     key={f}
                     type="button"

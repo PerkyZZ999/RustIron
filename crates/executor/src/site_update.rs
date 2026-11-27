@@ -1087,13 +1087,27 @@ fn restore_database(context: &UpdateContext<'_>) -> Result<(), ExecutorError> {
 /// The fetched dump of the site's own root moves to `tmp/import` as the
 /// site, must be a single-link regular file of the site, and is imported.
 pub(crate) fn import_fetched_dump(layout: &SiteLayout, level: &str) -> Result<(), ExecutorError> {
-    let uid = crate::import::site_uid(layout)?;
-    let tmp = layout.root.join("tmp");
-    let fetched_dump = tmp
+    let fetched_dump = layout
+        .root
+        .join("tmp")
         .join(crate::layout::CLONE_RESTORE_DIR)
         .join(provision::path_str(&layout.root)?.trim_start_matches('/'))
         .join("tmp")
         .join(crate::layout::CAPTURE_DUMP_FILE);
+    import_dump_file(layout, level, &fetched_dump)
+}
+
+/// Moves `fetched_dump` (inside the site's `tmp/`) to `tmp/import/` as the site
+/// account, checks it, and imports it as the site's own database user
+/// (`site-import`). W663-E3: app MariaDB restores use this too, never the
+/// MariaDB root socket, because a capture's dump is site-writable before upload.
+pub(crate) fn import_dump_file(
+    layout: &SiteLayout,
+    level: &str,
+    fetched_dump: &Path,
+) -> Result<(), ExecutorError> {
+    let uid = crate::import::site_uid(layout)?;
+    let tmp = layout.root.join("tmp");
     let import = tmp.join("import");
     for command in [
         vec![
@@ -1107,7 +1121,7 @@ pub(crate) fn import_fetched_dump(layout: &SiteLayout, level: &str) -> Result<()
             "--no-clobber".to_owned(),
             "--no-target-directory".to_owned(),
             "--".to_owned(),
-            provision::path_str(&fetched_dump)?.to_owned(),
+            provision::path_str(fetched_dump)?.to_owned(),
             provision::path_str(&import.join(crate::layout::CAPTURE_DUMP_FILE))?.to_owned(),
         ],
     ] {

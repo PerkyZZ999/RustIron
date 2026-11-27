@@ -330,7 +330,7 @@ fn a_v32_journal_migrates_and_inconsistent_rows_are_refused() {
     capture(&mut ledger, "blog1", "cap_1", 1000, false);
     drop(ledger);
     state.sql(&format!(
-        "PRAGMA foreign_keys=OFF; DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; DROP TABLE proxy_routes; DROP TABLE dns_change_sets; DROP TABLE dns_changes; DROP TABLE dns_imports; DROP TABLE restore_steps; DROP TABLE restore_attempts; DROP TABLE site_restores; DROP TABLE clone_scrub_grants; DROP TABLE quota_changes; DROP TABLE deletions; \
+        "PRAGMA foreign_keys=OFF; DROP TABLE caddy_generations; DROP TABLE app_fullstack_specs; DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; DROP TABLE proxy_routes; DROP TABLE dns_change_sets; DROP TABLE dns_changes; DROP TABLE dns_imports; DROP TABLE restore_steps; DROP TABLE restore_attempts; DROP TABLE site_restores; DROP TABLE clone_scrub_grants; DROP TABLE quota_changes; DROP TABLE deletions; \
          CREATE TEMP TABLE p AS SELECT * FROM provisions; DROP TABLE provisions; {V32_PROVISIONS}; \
          INSERT INTO provisions SELECT * FROM temp.p; DROP TABLE temp.p; \
          CREATE UNIQUE INDEX one_running_provision ON provisions((1)) WHERE state='running'; \

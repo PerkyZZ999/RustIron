@@ -712,27 +712,27 @@ pub(crate) struct AppCommon {
     limitation: Vec<String>,
 }
 
-/// Build an offline `app_provision` plan (D-099).
+/// Build an offline `app_provision` plan (D-099 schema v1 or D-102 schema v2).
 #[derive(clap::Args)]
 pub(crate) struct AppProvisionArgs {
     #[command(flatten)]
     common: AppCommon,
     #[arg(long)]
     hostname: String,
-    /// Closed runtime profile (`node_22_v1` or `bun_1_v1`).
+    /// Closed runtime profile (`node_22_v1`, `bun_1_v1`, or `static_v1` in schema v2).
     #[arg(long)]
     runtime: String,
-    /// Loopback port on `127.0.0.1` (1024..=65535, never 3306).
-    #[arg(long)]
+    /// Loopback port on `127.0.0.1` (`0` for `static_spa`, else 1024..=65535 excluding 2019/3306/5432).
+    #[arg(long, default_value_t = 0)]
     port: u16,
-    /// Route prefix forwarded to `127.0.0.1:<port>` (repeat as needed; defaults to `/`).
+    /// Route prefix forwarded to `127.0.0.1:<port>` (repeat as needed; defaults to `/` for `backend_api`, `/api/` for split/dual).
     #[arg(long)]
     route_prefix: Vec<String>,
     /// Optional WebSocket prefix forwarded to `127.0.0.1:<port>` (repeat as needed).
     #[arg(long)]
     websocket_prefix: Vec<String>,
-    /// Relative release entrypoint for the HTTP app service.
-    #[arg(long)]
+    /// Relative release entrypoint for the HTTP app service (empty for `static_spa`).
+    #[arg(long, default_value = "")]
     entrypoint: String,
     /// Optional relative release entrypoint for a companion background worker.
     #[arg(long)]
@@ -749,6 +749,45 @@ pub(crate) struct AppProvisionArgs {
     tasks_max: u64,
     #[arg(long, default_value_t = 1024)]
     quota_mib: u64,
+    /// Schema v2 edge ingress engine (`ols` or `caddy`).
+    #[arg(long)]
+    ingress: Option<String>,
+    /// Schema v2 topology (`static_spa`, `backend_api`, `fullstack_split`, `fullstack_dual_ssr`).
+    #[arg(long)]
+    topology: Option<String>,
+    /// Schema v2 database engine (`none`, `sqlite`, `mariadb`, `postgresql_18`).
+    #[arg(long)]
+    database: Option<String>,
+    /// Schema v2 zero-downtime blue/green slot cutover.
+    #[arg(long, default_value_t = false)]
+    blue_green: bool,
+    /// Schema v2 standby loopback port for blue/green cutover.
+    #[arg(long)]
+    standby_port: Option<u16>,
+    /// Schema v2 Caddy SPA `try_files /index.html` fallback.
+    #[arg(long, default_value_t = false)]
+    spa_fallback: bool,
+    /// Schema v2 relative static frontend directory inside release (`static_spa` / `fullstack_split`).
+    #[arg(long)]
+    frontend_dir: Option<String>,
+    /// Schema v2 SSR frontend runtime (`fullstack_dual_ssr`).
+    #[arg(long)]
+    frontend_runtime: Option<String>,
+    /// Schema v2 SSR frontend entrypoint (`fullstack_dual_ssr`).
+    #[arg(long)]
+    frontend_entrypoint: Option<String>,
+    /// Schema v2 SSR frontend loopback port (`fullstack_dual_ssr`).
+    #[arg(long)]
+    frontend_port: Option<u16>,
+    /// Schema v2 SSR frontend standby loopback port for blue/green `fullstack_dual_ssr`.
+    #[arg(long)]
+    frontend_standby_port: Option<u16>,
+    /// Schema v2 unbuffered SSE path prefixes (Caddy only; sorted automatically).
+    #[arg(long)]
+    sse_prefix: Vec<String>,
+    /// Schema v2 API prefixes stripped before forwarding upstream (Caddy only; sorted automatically).
+    #[arg(long)]
+    strip_api_prefix: Vec<String>,
 }
 
 pub(crate) fn app_provision(request: AppProvisionArgs) -> ExitCode {
@@ -757,24 +796,141 @@ pub(crate) fn app_provision(request: AppProvisionArgs) -> ExitCode {
     } else {
         request.common.limitation
     };
-    let prefixes = if request.route_prefix.is_empty() {
-        vec!["/".to_owned()]
-    } else {
-        request.route_prefix
+    let is_v2 = request.ingress.is_some()
+        || request.topology.is_some()
+        || request.database.is_some()
+        || request.blue_green
+        || request.standby_port.is_some()
+        || request.spa_fallback
+        || request.frontend_dir.is_some()
+        || request.frontend_runtime.is_some()
+        || request.frontend_entrypoint.is_some()
+        || request.frontend_port.is_some()
+        || request.frontend_standby_port.is_some()
+        || !request.sse_prefix.is_empty()
+        || !request.strip_api_prefix.is_empty()
+        || request.runtime == "static_v1";
+
+    let mut env_keys = request.env_key;
+    env_keys.sort();
+
+    if !is_v2 {
+        let prefixes = if request.route_prefix.is_empty() {
+            vec!["/".to_owned()]
+        } else {
+            request.route_prefix
+        };
+        let routes: Vec<serde_json::Value> = prefixes
+            .into_iter()
+            .map(|prefix| serde_json::json!({ "prefix": prefix, "port": request.port }))
+            .collect();
+        let websockets: Vec<serde_json::Value> = request
+            .websocket_prefix
+            .into_iter()
+            .map(|prefix| serde_json::json!({ "prefix": prefix, "port": request.port }))
+            .collect();
+        let mut draft = serde_json::json!({
+            "schema_version": 1,
+            "plan_id": request.common.plan_id,
+            "host_id": request.common.host_id,
+            "host_epoch": request.common.host_epoch,
+            "profile_digest": request.common.profile_digest,
+            "requester": request.common.requester,
+            "verb": "app_provision",
+            "site_id": request.common.site_id,
+            "hostname": request.hostname,
+            "runtime": request.runtime,
+            "port": request.port,
+            "routes": routes,
+            "websockets": websockets,
+            "entrypoint": request.entrypoint,
+            "health_path": request.health_path,
+            "env_keys": env_keys,
+            "memory_max_mib": request.memory_max_mib,
+            "tasks_max": request.tasks_max,
+            "quota_mib": request.quota_mib,
+            "expected_effects": {
+                "creates_account": true,
+                "forwards_to_loopback": true,
+                "installs_app_unit": true,
+                "traffic_activation": false,
+                "runs_package_scripts": false,
+            },
+            "risk_class": "lab_only",
+            "valid_from": request.common.valid_from,
+            "expires_at": request.common.expires_at,
+            "limitations": limitations,
+        });
+        if let Some(worker) = request.worker_entrypoint {
+            draft["worker_entrypoint"] = worker.into();
+        }
+        return emit_canonical(&draft);
+    }
+
+    let topology = request.topology.unwrap_or_else(|| {
+        if request.runtime == "static_v1" {
+            "static_spa".to_owned()
+        } else {
+            "backend_api".to_owned()
+        }
+    });
+    let ingress = request.ingress.unwrap_or_else(|| "caddy".to_owned());
+    let database = request.database.unwrap_or_else(|| {
+        if topology == "static_spa" {
+            "none".to_owned()
+        } else {
+            "sqlite".to_owned()
+        }
+    });
+    let routes: Vec<serde_json::Value> = match topology.as_str() {
+        "static_spa" => Vec::new(),
+        "fullstack_split" => {
+            let prefixes = if request.route_prefix.is_empty() {
+                vec!["/api/".to_owned()]
+            } else {
+                request.route_prefix
+            };
+            prefixes
+                .into_iter()
+                .map(|prefix| serde_json::json!({ "prefix": prefix, "port": request.port }))
+                .collect()
+        }
+        "fullstack_dual_ssr" => {
+            let fp = request.frontend_port.unwrap_or(0);
+            let mut list = vec![serde_json::json!({ "prefix": "/", "port": fp })];
+            let api_prefixes = if request.route_prefix.is_empty() {
+                vec!["/api/".to_owned()]
+            } else {
+                request.route_prefix
+            };
+            for prefix in api_prefixes {
+                if prefix != "/" {
+                    list.push(serde_json::json!({ "prefix": prefix, "port": request.port }));
+                }
+            }
+            list
+        }
+        _ => {
+            let prefixes = if request.route_prefix.is_empty() {
+                vec!["/".to_owned()]
+            } else {
+                request.route_prefix
+            };
+            prefixes
+                .into_iter()
+                .map(|prefix| serde_json::json!({ "prefix": prefix, "port": request.port }))
+                .collect()
+        }
     };
-    let routes: Vec<serde_json::Value> = prefixes
-        .into_iter()
-        .map(|prefix| serde_json::json!({ "prefix": prefix, "port": request.port }))
-        .collect();
     let websockets: Vec<serde_json::Value> = request
         .websocket_prefix
         .into_iter()
         .map(|prefix| serde_json::json!({ "prefix": prefix, "port": request.port }))
         .collect();
-    let mut env_keys = request.env_key;
-    env_keys.sort();
+    let has_runtime = topology != "static_spa";
+    let creates_database = matches!(database.as_str(), "mariadb" | "postgresql_18");
     let mut draft = serde_json::json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "plan_id": request.common.plan_id,
         "host_id": request.common.host_id,
         "host_epoch": request.common.host_epoch,
@@ -793,10 +949,16 @@ pub(crate) fn app_provision(request: AppProvisionArgs) -> ExitCode {
         "memory_max_mib": request.memory_max_mib,
         "tasks_max": request.tasks_max,
         "quota_mib": request.quota_mib,
+        "ingress": ingress,
+        "topology": topology,
+        "database": database,
+        "blue_green": request.blue_green,
+        "spa_fallback": request.spa_fallback,
         "expected_effects": {
             "creates_account": true,
-            "forwards_to_loopback": true,
-            "installs_app_unit": true,
+            "forwards_to_loopback": has_runtime,
+            "installs_app_unit": has_runtime,
+            "creates_database": creates_database,
             "traffic_activation": false,
             "runs_package_scripts": false,
         },
@@ -808,10 +970,38 @@ pub(crate) fn app_provision(request: AppProvisionArgs) -> ExitCode {
     if let Some(worker) = request.worker_entrypoint {
         draft["worker_entrypoint"] = worker.into();
     }
+    if let Some(sp) = request.standby_port {
+        draft["standby_port"] = sp.into();
+    }
+    if let Some(dir) = request.frontend_dir {
+        draft["frontend_dir"] = dir.into();
+    }
+    if let Some(fr) = request.frontend_runtime {
+        draft["frontend_runtime"] = fr.into();
+    }
+    if let Some(fe) = request.frontend_entrypoint {
+        draft["frontend_entrypoint"] = fe.into();
+    }
+    if let Some(fp) = request.frontend_port {
+        draft["frontend_port"] = fp.into();
+    }
+    if let Some(fsp) = request.frontend_standby_port {
+        draft["frontend_standby_port"] = fsp.into();
+    }
+    if !request.sse_prefix.is_empty() {
+        let mut sse = request.sse_prefix;
+        sse.sort();
+        draft["sse_prefixes"] = sse.into();
+    }
+    if !request.strip_api_prefix.is_empty() {
+        let mut strip = request.strip_api_prefix;
+        strip.sort();
+        draft["strip_api_prefixes"] = strip.into();
+    }
     emit_canonical(&draft)
 }
 
-/// Build an offline `app_deploy` plan (D-099).
+/// Build an offline `app_deploy` plan (D-099 schema v1 or D-102 schema v2).
 #[derive(clap::Args)]
 pub(crate) struct AppDeployArgs {
     #[command(flatten)]
@@ -834,6 +1024,9 @@ pub(crate) struct AppDeployArgs {
     capture_operation_id: Option<String>,
     #[arg(long, default_value = "/")]
     health_path: String,
+    /// Schema v2 zero-downtime blue/green slot cutover via Caddy reload.
+    #[arg(long, default_value_t = false)]
+    blue_green_cutover: bool,
 }
 
 pub(crate) fn app_deploy(request: AppDeployArgs) -> ExitCode {
@@ -845,35 +1038,71 @@ pub(crate) fn app_deploy(request: AppDeployArgs) -> ExitCode {
     } else {
         request.common.limitation
     };
-    let mut draft = serde_json::json!({
-        "schema_version": 1,
-        "plan_id": request.common.plan_id,
-        "host_id": request.common.host_id,
-        "host_epoch": request.common.host_epoch,
-        "profile_digest": request.common.profile_digest,
-        "requester": request.common.requester,
-        "verb": "app_deploy",
-        "site_id": request.common.site_id,
-        "release_id": request.release_id,
-        "runtime": request.runtime,
-        "artifact_sha256": request.artifact_sha256,
-        "manifest_sha256": request.manifest_sha256,
-        "file_count": request.file_count,
-        "total_bytes": request.total_bytes,
-        "health_path": request.health_path,
-        "expected_effects": {
-            "unpacks_as_site": true,
-            "switches_release": true,
-            "restarts_app_unit": true,
-            "rolls_back_on_failed_health": true,
-            "runs_package_scripts": false,
-            "traffic_activation": false,
-        },
-        "risk_class": "lab_only",
-        "valid_from": request.common.valid_from,
-        "expires_at": request.common.expires_at,
-        "limitations": limitations,
-    });
+    let is_v2 = request.blue_green_cutover || request.runtime == "static_v1";
+    let has_runtime = request.runtime != "static_v1";
+    let mut draft = if is_v2 {
+        serde_json::json!({
+            "schema_version": 2,
+            "plan_id": request.common.plan_id,
+            "host_id": request.common.host_id,
+            "host_epoch": request.common.host_epoch,
+            "profile_digest": request.common.profile_digest,
+            "requester": request.common.requester,
+            "verb": "app_deploy",
+            "site_id": request.common.site_id,
+            "release_id": request.release_id,
+            "runtime": request.runtime,
+            "artifact_sha256": request.artifact_sha256,
+            "manifest_sha256": request.manifest_sha256,
+            "file_count": request.file_count,
+            "total_bytes": request.total_bytes,
+            "health_path": request.health_path,
+            "blue_green_cutover": request.blue_green_cutover,
+            "expected_effects": {
+                "unpacks_as_site": true,
+                "switches_release": true,
+                "restarts_app_unit": has_runtime,
+                "rolls_back_on_failed_health": true,
+                "runs_package_scripts": false,
+                "traffic_activation": false,
+                "reloads_caddy": has_runtime && request.blue_green_cutover,
+            },
+            "risk_class": "lab_only",
+            "valid_from": request.common.valid_from,
+            "expires_at": request.common.expires_at,
+            "limitations": limitations,
+        })
+    } else {
+        serde_json::json!({
+            "schema_version": 1,
+            "plan_id": request.common.plan_id,
+            "host_id": request.common.host_id,
+            "host_epoch": request.common.host_epoch,
+            "profile_digest": request.common.profile_digest,
+            "requester": request.common.requester,
+            "verb": "app_deploy",
+            "site_id": request.common.site_id,
+            "release_id": request.release_id,
+            "runtime": request.runtime,
+            "artifact_sha256": request.artifact_sha256,
+            "manifest_sha256": request.manifest_sha256,
+            "file_count": request.file_count,
+            "total_bytes": request.total_bytes,
+            "health_path": request.health_path,
+            "expected_effects": {
+                "unpacks_as_site": true,
+                "switches_release": true,
+                "restarts_app_unit": true,
+                "rolls_back_on_failed_health": true,
+                "runs_package_scripts": false,
+                "traffic_activation": false,
+            },
+            "risk_class": "lab_only",
+            "valid_from": request.common.valid_from,
+            "expires_at": request.common.expires_at,
+            "limitations": limitations,
+        })
+    };
     if let Some(migration) = request.migration_entrypoint {
         draft["migration_entrypoint"] = migration.into();
     }
@@ -934,38 +1163,74 @@ pub(crate) struct SiteCredentialRotateArgs {
 }
 
 pub(crate) fn site_credential_rotate(request: SiteCredentialRotateArgs) -> ExitCode {
+    let is_app_target = matches!(
+        request.target.as_str(),
+        "app_mariadb_password" | "app_postgresql_18_password"
+    );
     let limitations = if request.common.limitation.is_empty() {
-        vec![
+        vec![if is_app_target {
+            "host generates fresh random app DB password locally; no secret enters the plan"
+                .to_owned()
+        } else {
             "host generates fresh 32-byte random MariaDB password locally; no secret enters the plan"
-                .to_owned(),
-        ]
+                .to_owned()
+        }]
     } else {
         request.common.limitation
     };
-    let draft = serde_json::json!({
-        "schema_version": 1,
-        "plan_id": request.common.plan_id,
-        "host_id": request.common.host_id,
-        "host_epoch": request.common.host_epoch,
-        "profile_digest": request.common.profile_digest,
-        "requester": request.common.requester,
-        "verb": "site_credential_rotate",
-        "site_id": request.common.site_id,
-        "hostname": request.hostname,
-        "target": request.target,
-        "expected_effects": {
-            "rotates_db_password": true,
-            "updates_db_cnf": true,
-            "restarts_site_php": true,
-            "traffic_activation": false,
-            "network_access": false,
-            "secret_in_plan": false,
-        },
-        "risk_class": "lab_only",
-        "valid_from": request.common.valid_from,
-        "expires_at": request.common.expires_at,
-        "limitations": limitations,
-    });
+    let draft = if is_app_target {
+        serde_json::json!({
+            "schema_version": 2,
+            "plan_id": request.common.plan_id,
+            "host_id": request.common.host_id,
+            "host_epoch": request.common.host_epoch,
+            "profile_digest": request.common.profile_digest,
+            "requester": request.common.requester,
+            "verb": "site_credential_rotate",
+            "site_id": request.common.site_id,
+            "hostname": request.hostname,
+            "target": request.target,
+            "expected_effects": {
+                "rotates_db_password": true,
+                "updates_db_cnf": false,
+                "restarts_site_php": false,
+                "updates_app_env": true,
+                "restarts_app_unit": true,
+                "traffic_activation": false,
+                "network_access": false,
+                "secret_in_plan": false,
+            },
+            "risk_class": "lab_only",
+            "valid_from": request.common.valid_from,
+            "expires_at": request.common.expires_at,
+            "limitations": limitations,
+        })
+    } else {
+        serde_json::json!({
+            "schema_version": 1,
+            "plan_id": request.common.plan_id,
+            "host_id": request.common.host_id,
+            "host_epoch": request.common.host_epoch,
+            "profile_digest": request.common.profile_digest,
+            "requester": request.common.requester,
+            "verb": "site_credential_rotate",
+            "site_id": request.common.site_id,
+            "hostname": request.hostname,
+            "target": request.target,
+            "expected_effects": {
+                "rotates_db_password": true,
+                "updates_db_cnf": true,
+                "restarts_site_php": true,
+                "traffic_activation": false,
+                "network_access": false,
+                "secret_in_plan": false,
+            },
+            "risk_class": "lab_only",
+            "valid_from": request.common.valid_from,
+            "expires_at": request.common.expires_at,
+            "limitations": limitations,
+        })
+    };
     emit_canonical(&draft)
 }
 

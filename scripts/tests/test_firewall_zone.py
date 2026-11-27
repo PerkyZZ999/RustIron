@@ -139,6 +139,11 @@ class FirewallZoneTests(unittest.TestCase):
         plain = tool.render(22, False, False)
         self.assertEqual(re.findall(r'service name="([^"]+)"', plain), ["http", "https"])
         self.assertNotIn("target", plain)
+        self.assertNotIn('protocol="udp"', plain)
+        # W657 (D-102): Caddy enrollment adds 443/udp for HTTP/3 QUIC.
+        with_http3 = tool.render(22, False, False, http3=True)
+        self.assertIn('<port protocol="udp" port="443"/>', with_http3)
+        self.assertEqual(tool.ports(22, http3=True), ["22/tcp", "443/udp"])
 
     def test_the_default_run_prints_the_plan_and_changes_nothing(self):
         path = self.policy({"ssh_port": 22, "dhcpv6_client": False})

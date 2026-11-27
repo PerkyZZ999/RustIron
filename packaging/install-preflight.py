@@ -49,6 +49,8 @@ EXECUTABLES = (
 MANAGEMENT_UNITS = (
     "rustiron-admin-helper.service", "rustiron-coordinator.service", "rustiron-executor.service",
     "rustiron-ols-boot-guard.service",
+    # W657 (D-102): confined Caddy edge ingress daemon (enabled only when enrolled).
+    "rustiron-caddy.service",
     "rustiron-store-netns.service", "rustiron-store-relay@.socket", "rustiron-store-relay@.service",
     # D-071 (P07, CP06): per-site outbound mail Unix-socket relay.
     "rustiron-mail-relay@.socket", "rustiron-mail-relay@.service",
@@ -63,10 +65,12 @@ MANAGEMENT_UNITS = (
 SITE_UNITS = (
     "rustiron-site-php@.service", "rustiron-site-php@.socket",
     "rustiron-site-sandbox-check@.service", "rustiron-site-sandbox-check@.timer",
-    "rustiron-app@.service", "rustiron-app-worker@.service",
+    "rustiron-app@.service", "rustiron-app-b@.service",
+    "rustiron-app-web@.service", "rustiron-app-web-b@.service",
+    "rustiron-app-worker@.service",
 )
 MODULES = (
-    "rustiron_admin", "rustiron_app", "rustiron_capture", "rustiron_coordinator",
+    "rustiron_admin", "rustiron_app", "rustiron_caddy", "rustiron_capture", "rustiron_coordinator",
     "rustiron_executor", "rustiron_job_credential", "rustiron_mail_relay",
     "rustiron_php", "rustiron_store_relay",
 )
@@ -83,6 +87,9 @@ OLS_GUARD_DROPIN = "etc/systemd/system/lshttpd.service.d/51-rustiron-boot-guard.
 JOURNALD_DROPIN = "etc/systemd/journald.conf.d/50-rustiron-persistent.conf"
 # W569 (W558-F1): MariaDB answers on loopback only.
 MARIADB_DROPIN = "etc/my.cnf.d/zz-rustiron-loopback.cnf"
+# W658 (D-102 Decision C2): PostgreSQL 18 loopback and strict pg_hba templates.
+POSTGRES_LOOPBACK_TEMPLATE = "usr/share/rustiron/postgres/zz-rustiron-loopback.conf"
+POSTGRES_HBA_TEMPLATE = "usr/share/rustiron/postgres/pg_hba.conf"
 # W487 (D-073): the PHP health file that every managed vhost serves.
 PHP_HEALTH = "usr/share/rustiron/ols/php-health.php"
 # W610 (D-071): the inspected WordPress must-use plugin for Unix-socket mail relay.
@@ -107,10 +114,12 @@ MANAGEMENT_FILES = {
     **dict.fromkeys(OLS_UNIT_DROPINS, 0o644),
     JOURNALD_DROPIN: 0o644,
     MARIADB_DROPIN: 0o644,
+    POSTGRES_LOOPBACK_TEMPLATE: 0o644,
+    POSTGRES_HBA_TEMPLATE: 0o644,
 }
 JOB_FILES = {f"usr/libexec/rustiron/jobs/{name}": 0o755 for name in jobs.TOOLS}
 OWNED_ROOTS = (
-    "etc/rustiron", "etc/rustiron-ols", "etc/rustiron-ejected", "var/lib/rustiron",
+    "etc/rustiron", "etc/rustiron-ols", "etc/rustiron-caddy", "etc/rustiron-ejected", "var/lib/rustiron",
     "var/lib/rustiron-coordinator", "run/rustiron", "run/rustiron-admin",
     "run/rustiron-coordinator", "run/rustiron-sites", "srv/sites", "srv/restore-probes",
     "usr/libexec/rustiron", "usr/share/rustiron", "usr/share/doc/rustiron",
@@ -162,7 +171,7 @@ COMMANDS = (
 # D-063 (P06): the reviewed support matrix, shared with `rustiron-control`.
 SUPPORT_MATRIX = HERE.parent / "crates/control/support-matrix.json"
 STACK_PACKAGES = {"openlitespeed": "openlitespeed", "php": "lsphp84", "mariadb": "mariadb-server",
-                  "powerdns": "pdns"}
+                  "powerdns": "pdns", "caddy": "caddy", "postgresql": "postgresql18-server"}
 
 
 def load_matrix(path=SUPPORT_MATRIX):
@@ -238,6 +247,15 @@ def check_mariadb_loopback(read=None):
     exposed = exposed_mariadb(output)
     if exposed:
         raise ValueError(f"MariaDB listens beyond loopback on {', '.join(exposed)}")
+
+
+def check_postgres_loopback(read=None):
+    """W658 (D-102 C2): when PostgreSQL 18 is installed and listening, it must
+    bind loopback only (never 0.0.0.0:5432 or [::]:5432)."""
+    output = (read or query)("/usr/sbin/ss", "-Htln", "sport = :5432")
+    exposed = exposed_mariadb(output)
+    if exposed:
+        raise ValueError(f"PostgreSQL 18 listens beyond loopback on {', '.join(exposed)}")
 
 
 def check_support(now=None):
@@ -618,6 +636,8 @@ def existing_authority():
         ("group", grp.getgrnam, "rustiron-requesters"),
         ("user", pwd.getpwnam, "rustiron-acme"),
         ("group", grp.getgrnam, "rustiron-acme"),
+        ("user", pwd.getpwnam, "rustiron-caddy"),
+        ("group", grp.getgrnam, "rustiron-caddy"),
     ):
         try:
             lookup(name)

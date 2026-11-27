@@ -160,7 +160,7 @@ fn provisioned(ledger: &mut FixtureJournal, name: &str) -> Id {
 fn a_fresh_journal_is_v20_and_provisions_admit_the_adopted_state() {
     let state = State::new();
     drop(state.init());
-    assert_eq!(state.query("PRAGMA user_version"), 44);
+    assert_eq!(state.query("PRAGMA user_version"), 45);
     for table in [
         "readoptions",
         "provision_adoptions",
@@ -218,7 +218,7 @@ fn a_v16_journal_migrates_and_keeps_every_row_and_the_admission_count() {
     assert_eq!(provision.state, ProvisionState::Succeeded);
     assert_eq!(provision.steps.len(), ProvisionStep::ALL.len());
     drop(migrated);
-    assert_eq!(state.query("PRAGMA user_version"), 44);
+    assert_eq!(state.query("PRAGMA user_version"), 45);
     assert_eq!(
         (
             state.query("SELECT count(*) FROM provisions"),

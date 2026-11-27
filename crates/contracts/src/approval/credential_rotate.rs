@@ -22,8 +22,13 @@ enum CredentialRotateVerb {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialTarget {
-    /// Rotate the site's MariaDB user password and `0400 private/db.cnf`.
+    /// Rotate a WordPress site's MariaDB user password and `0400 private/db.cnf` (schema v1).
     MariadbUserPassword,
+    /// Rotate a modern app's MariaDB password and `0400 private/app.env` (schema v2, D-102).
+    AppMariadbPassword,
+    /// Rotate a modern app's PostgreSQL 18 `scram-sha-256` password and `0400 private/app.env` (schema v2, D-102).
+    #[serde(rename = "app_postgresql_18_password")]
+    AppPostgresql18Password,
 }
 
 impl CredentialTarget {
@@ -31,7 +36,17 @@ impl CredentialTarget {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::MariadbUserPassword => "mariadb_user_password",
+            Self::AppMariadbPassword => "app_mariadb_password",
+            Self::AppPostgresql18Password => "app_postgresql_18_password",
         }
+    }
+
+    /// Whether this target belongs to a modern app database (`schema_version == 2`).
+    pub const fn is_app_target(self) -> bool {
+        matches!(
+            self,
+            Self::AppMariadbPassword | Self::AppPostgresql18Password
+        )
     }
 }
 
@@ -41,15 +56,32 @@ struct CredentialRotateEffects {
     rotates_db_password: bool,
     updates_db_cnf: bool,
     restarts_site_php: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    updates_app_env: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    restarts_app_unit: Option<bool>,
     traffic_activation: bool,
     network_access: bool,
     secret_in_plan: bool,
 }
 
-const EFFECTS: CredentialRotateEffects = CredentialRotateEffects {
+const EFFECTS_V1: CredentialRotateEffects = CredentialRotateEffects {
     rotates_db_password: true,
     updates_db_cnf: true,
     restarts_site_php: true,
+    updates_app_env: None,
+    restarts_app_unit: None,
+    traffic_activation: false,
+    network_access: false,
+    secret_in_plan: false,
+};
+
+const EFFECTS_V2: CredentialRotateEffects = CredentialRotateEffects {
+    rotates_db_password: true,
+    updates_db_cnf: false,
+    restarts_site_php: false,
+    updates_app_env: Some(true),
+    restarts_app_unit: Some(true),
     traffic_activation: false,
     network_access: false,
     secret_in_plan: false,
@@ -78,14 +110,24 @@ struct CredentialRotatePlanRecord {
 
 impl CredentialRotatePlanRecord {
     fn validate(&self) -> Result<(), ApprovalError> {
-        if self.schema_version != 1 {
-            return Err(ApprovalError::UnsupportedVersion);
-        }
-        if self.expected_effects != EFFECTS
-            || self.limitations.len() > 8
-            || !valid_window(self.valid_from, self.expires_at)
-        {
-            return Err(ApprovalError::InvalidPlan);
+        let common_ok =
+            self.limitations.len() <= 8 && valid_window(self.valid_from, self.expires_at);
+        match self.schema_version {
+            1 => {
+                if !common_ok
+                    || self.target != CredentialTarget::MariadbUserPassword
+                    || self.expected_effects != EFFECTS_V1
+                {
+                    return Err(ApprovalError::InvalidPlan);
+                }
+            }
+            2 => {
+                if !common_ok || !self.target.is_app_target() || self.expected_effects != EFFECTS_V2
+                {
+                    return Err(ApprovalError::InvalidPlan);
+                }
+            }
+            _ => return Err(ApprovalError::UnsupportedVersion),
         }
         Ok(())
     }
@@ -99,10 +141,15 @@ pub struct CredentialRotatePlan {
 }
 
 impl CredentialRotatePlan {
-    /// Decodes schema v1 and its intrinsic constraints only.
+    /// Decodes schema v1 (WordPress MariaDB) or schema v2 (modern app MariaDB/PostgreSQL 18).
     pub fn decode(input: &[u8]) -> Result<Self, ApprovalError> {
         let (record, canonical) = super::decode(input, CredentialRotatePlanRecord::validate)?;
         Ok(Self { record, canonical })
+    }
+
+    /// Schema version (`1` or `2`).
+    pub const fn schema_version(&self) -> u16 {
+        self.record.schema_version
     }
 
     /// Complete immutable semantic bytes.

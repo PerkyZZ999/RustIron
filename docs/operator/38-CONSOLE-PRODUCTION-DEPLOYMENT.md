@@ -21,7 +21,7 @@
 | `RUSTIRON_OBSERVATION` | Path to `observe-local` merged JSON observation (opened with `O_NOFOLLOW`) | `/home/rustiron-build/rustiron-observe/observation.json` |
 | `RUSTIRON_COORDINATOR_SOCKET` | Path to local `rustiron-control` Unix socket | `/run/rustiron/coordinator.sock` |
 | `RUSTIRON_CONSOLE_AUTH_DB` | Path to Better Auth SQLite database (`0600`) | `/var/lib/rustiron-console/auth.sqlite` |
-| `RUSTIRON_CONSOLE_SETUP_TOKEN` | Out-of-band bootstrap secret required on `POST /api/accounts/setup` to prevent local first-run takeover | Random 24-byte hex token (unset after first Admin is created) |
+| `RUSTIRON_CONSOLE_SETUP_TOKEN` | Out-of-band bootstrap secret required on `POST /api/accounts/setup` to prevent local first-run takeover | Random 24-byte hex token (unset after first Admin is created). With `NODE_ENV=production` and no token set, the Console writes a one-time token to `<RUSTIRON_CONSOLE_AUTH_DB>.setup-token` (`0600`), logs only that path, and removes the file once the first Admin exists ([W663](../validation/S10-W663/README.md)). `RUSTIRON_CONSOLE_AUTH_DISABLED=1` is refused in production |
 | `RUSTIRON_CONSOLE_MAIL_DB` | Path to Console-local mailbox catalog SQLite database (`0600`) | `/var/lib/rustiron-console/mail.sqlite` |
 | `RUSTIRON_CONSOLE_MAIL_WRITES` | Opt-in write access for Console-local `/api/mail/*` catalog edits | Omit or `0` (disabled `405` by default under D-090); `1` to opt in |
 | `RUSTIRON_CONSOLE_WRITE_WORKFLOWS` | Opt-in separate-custody signed `plan_apply` endpoint | Omit or `0` (strict read-only default); `1` to opt in |
@@ -42,7 +42,7 @@
      bun run --cwd console start:live
    ```
    Until the first Admin exists, privileged data endpoints fail closed (`401 SETUP_REQUIRED`), unauthenticated `/api/backend/status` exposes only capability booleans, and public signup (`POST /api/auth/sign-up/email`) is permanently blocked (`403 SIGNUP_DISABLED`).
-2. Open `/login` or `/users` over your SSH tunnel or private overlay, supply the setup token if configured, and create the first **Admin** account (minimum 10-character password). First-run setup is serialized to prevent concurrent two-admin races.
+2. Open `/login` or `/users` over your SSH tunnel or private overlay, supply the setup token (yours, or the generated file's contents), and create the first **Admin** account (minimum 10-character password). First-run setup is serialized to prevent concurrent two-admin races.
 3. Once the first Admin exists, repeat setup (`POST /api/accounts/setup`) returns `409`, all Console data endpoints require an authenticated session (`401`), and `RUSTIRON_CONSOLE_SETUP_TOKEN` may be removed from the service environment.
 
 ## 4. Secure Remote Access Options (P16)

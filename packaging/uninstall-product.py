@@ -67,6 +67,7 @@ RECORD_LIMIT = 256 * 1024
 ARCHIVE_ROOT = "var/lib/rustiron-archive"
 UNIT_DIR = "etc/systemd/system"
 INCLUDE = "etc/rustiron-ols"
+CADDY_INCLUDE = "etc/rustiron-caddy"
 EJECTED = "etc/rustiron-ejected"
 # D-059: installed certificate chains, and the certbot account's state.
 TLS = "etc/rustiron-tls"
@@ -1087,12 +1088,12 @@ def check_evidence(facts, options, problems):
     target = facts.target
     evidence = []
     if facts.keep:
-        evidence.append("etc/rustiron")
+        evidence.extend(("etc/rustiron", CADDY_INCLUDE))
         if (target / STATE).is_dir():
             evidence.extend(f"{STATE}/{entry.name}" for entry in sorted((target / STATE).iterdir())
                             if entry.name not in KEPT_STATE_ENTRIES)
     else:
-        evidence.extend(("etc/rustiron", STATE, INCLUDE, EJECTED, TLS, *facts.site_dropins))
+        evidence.extend(("etc/rustiron", STATE, INCLUDE, CADDY_INCLUDE, EJECTED, TLS, *facts.site_dropins))
     # D-059: the certbot account's state; with the kept parent, the include
     # still names the installed chains, so /etc/rustiron-tls stays.
     evidence.extend((ACME_STATE, COORDINATOR_STATE, *facts.enrollment))

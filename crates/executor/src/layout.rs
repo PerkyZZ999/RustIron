@@ -26,6 +26,14 @@ pub const CAPTURE_DUMP_FILE: &str = "rustiron-capture.sql";
 /// inside `<site>/tmp` (W601, D-096/P30).
 pub const APP_SQLITE_BUNDLE_FILE: &str = "rustiron-app-sqlite.tar";
 
+/// Plain file name of a PostgreSQL 18 app site's custom-format `pg_dump` file
+/// inside `<site>/tmp` (W658, D-102 Decision C2).
+pub const APP_PG_DUMP_FILE: &str = "rustiron-app-postgres.dump";
+
+/// Plain file name of a MariaDB app site's consistent SQL dump file inside
+/// `<site>/tmp` (W658, D-102 Decision C2).
+pub const APP_MARIADB_DUMP_FILE: &str = "rustiron-app-mariadb.sql";
+
 /// The writable directory of one probe sandbox,
 /// `<RESTORE_PROBES_ROOT>/<probe>/tmp`, for a journaled probe account
 /// (`rp_` and six lowercase hex digits). Any other name is `None`. The
@@ -113,6 +121,10 @@ pub mod lab {
 
     /// The Rustiron-owned OLS include directory (generations and `current`).
     pub const OLS_INCLUDE_DIR: &str = "/etc/rustiron-ols";
+    /// W657 (D-102): the Rustiron-owned Caddy configuration directory (generations and `current`).
+    pub const CADDY_CONFIG_DIR: &str = "/etc/rustiron-caddy";
+    /// W662-F4: Caddy admin API socket in its unit's `0700` `RuntimeDirectory=`.
+    pub const CADDY_ADMIN_SOCKET: &str = "/run/rustiron-caddy/admin.sock";
     /// The one line the reviewed OLS parent must hold to load [`OLS_INCLUDE_DIR`].
     pub const OLS_INCLUDE_LINE: &str = "include /etc/rustiron-ols/current/*.conf";
     /// Where ejected sites' vhost files live, outside [`OLS_INCLUDE_DIR`].
@@ -129,10 +141,22 @@ pub mod lab {
     pub const SITE_PHP_UNIT: &str = "/etc/systemd/system/rustiron-site-php@.service";
     /// W598 (D-099): prefix of the per-site modern app unit template and drop-ins.
     pub const SITE_APP_UNIT_PREFIX: &str = "/etc/systemd/system/rustiron-app@";
+    /// W659 (D-102): prefix of the blue/green standby slot B backend unit template.
+    pub const SITE_APP_B_UNIT_PREFIX: &str = "/etc/systemd/system/rustiron-app-b@";
+    /// W659 (D-102): prefix of the dual-SSR frontend unit template and drop-ins.
+    pub const SITE_APP_WEB_UNIT_PREFIX: &str = "/etc/systemd/system/rustiron-app-web@";
+    /// W659 (D-102): prefix of the blue/green standby slot B dual-SSR frontend unit template.
+    pub const SITE_APP_WEB_B_UNIT_PREFIX: &str = "/etc/systemd/system/rustiron-app-web-b@";
     /// W598 (D-099): prefix of the per-site companion worker unit template and drop-ins.
     pub const SITE_APP_WORKER_UNIT_PREFIX: &str = "/etc/systemd/system/rustiron-app-worker@";
     /// W598 (D-099): per-site modern app unit template.
     pub const SITE_APP_UNIT: &str = "/etc/systemd/system/rustiron-app@.service";
+    /// W659 (D-102): blue/green standby slot B backend unit template.
+    pub const SITE_APP_B_UNIT: &str = "/etc/systemd/system/rustiron-app-b@.service";
+    /// W659 (D-102): dual-SSR frontend unit template.
+    pub const SITE_APP_WEB_UNIT: &str = "/etc/systemd/system/rustiron-app-web@.service";
+    /// W659 (D-102): blue/green standby slot B dual-SSR frontend unit template.
+    pub const SITE_APP_WEB_B_UNIT: &str = "/etc/systemd/system/rustiron-app-web-b@.service";
     /// W598 (D-099): per-site companion worker unit template.
     pub const SITE_APP_WORKER_UNIT: &str = "/etc/systemd/system/rustiron-app-worker@.service";
     /// Directory of the per-site PHP pool sockets: `<dir>/<account>.sock`.
@@ -162,14 +186,22 @@ pub mod lab {
         SITES_ROOT,
         RESTORE_PROBES_ROOT,
         OLS_INCLUDE_DIR,
+        CADDY_CONFIG_DIR,
+        CADDY_ADMIN_SOCKET,
         OLS_EJECTED_DIR,
         OLS_TLS_DIR,
         ACME_STATE_DIR,
         SITE_PHP_UNIT_PREFIX,
         SITE_PHP_UNIT,
         SITE_APP_UNIT_PREFIX,
+        SITE_APP_B_UNIT_PREFIX,
+        SITE_APP_WEB_UNIT_PREFIX,
+        SITE_APP_WEB_B_UNIT_PREFIX,
         SITE_APP_WORKER_UNIT_PREFIX,
         SITE_APP_UNIT,
+        SITE_APP_B_UNIT,
+        SITE_APP_WEB_UNIT,
+        SITE_APP_WEB_B_UNIT,
         SITE_APP_WORKER_UNIT,
         SITE_SOCKETS_DIR,
         STORE_NETNS,
@@ -231,6 +263,10 @@ pub mod product {
 
     /// The Rustiron-owned OLS include directory (generations and `current`).
     pub const OLS_INCLUDE_DIR: &str = "/etc/rustiron-ols";
+    /// W657 (D-102): the Rustiron-owned Caddy configuration directory (generations and `current`).
+    pub const CADDY_CONFIG_DIR: &str = "/etc/rustiron-caddy";
+    /// W662-F4: Caddy admin API socket in its unit's `0700` `RuntimeDirectory=`.
+    pub const CADDY_ADMIN_SOCKET: &str = "/run/rustiron-caddy/admin.sock";
     /// The one line the reviewed OLS parent must hold to load [`OLS_INCLUDE_DIR`].
     pub const OLS_INCLUDE_LINE: &str = "include /etc/rustiron-ols/current/*.conf";
     /// Where ejected sites' vhost files live, outside [`OLS_INCLUDE_DIR`].
@@ -247,10 +283,22 @@ pub mod product {
     pub const SITE_PHP_UNIT: &str = "/etc/systemd/system/rustiron-site-php@.service";
     /// W598 (D-099): prefix of the per-site modern app unit template and drop-ins.
     pub const SITE_APP_UNIT_PREFIX: &str = "/etc/systemd/system/rustiron-app@";
+    /// W659 (D-102): prefix of the blue/green standby slot B backend unit template.
+    pub const SITE_APP_B_UNIT_PREFIX: &str = "/etc/systemd/system/rustiron-app-b@";
+    /// W659 (D-102): prefix of the dual-SSR frontend unit template and drop-ins.
+    pub const SITE_APP_WEB_UNIT_PREFIX: &str = "/etc/systemd/system/rustiron-app-web@";
+    /// W659 (D-102): prefix of the blue/green standby slot B dual-SSR frontend unit template.
+    pub const SITE_APP_WEB_B_UNIT_PREFIX: &str = "/etc/systemd/system/rustiron-app-web-b@";
     /// W598 (D-099): prefix of the per-site companion worker unit template and drop-ins.
     pub const SITE_APP_WORKER_UNIT_PREFIX: &str = "/etc/systemd/system/rustiron-app-worker@";
     /// W598 (D-099): per-site modern app unit template.
     pub const SITE_APP_UNIT: &str = "/etc/systemd/system/rustiron-app@.service";
+    /// W659 (D-102): blue/green standby slot B backend unit template.
+    pub const SITE_APP_B_UNIT: &str = "/etc/systemd/system/rustiron-app-b@.service";
+    /// W659 (D-102): dual-SSR frontend unit template.
+    pub const SITE_APP_WEB_UNIT: &str = "/etc/systemd/system/rustiron-app-web@.service";
+    /// W659 (D-102): blue/green standby slot B dual-SSR frontend unit template.
+    pub const SITE_APP_WEB_B_UNIT: &str = "/etc/systemd/system/rustiron-app-web-b@.service";
     /// W598 (D-099): per-site companion worker unit template.
     pub const SITE_APP_WORKER_UNIT: &str = "/etc/systemd/system/rustiron-app-worker@.service";
     /// Directory of the per-site PHP pool sockets: `<dir>/<account>.sock`.
@@ -280,14 +328,22 @@ pub mod product {
         SITES_ROOT,
         RESTORE_PROBES_ROOT,
         OLS_INCLUDE_DIR,
+        CADDY_CONFIG_DIR,
+        CADDY_ADMIN_SOCKET,
         OLS_EJECTED_DIR,
         OLS_TLS_DIR,
         ACME_STATE_DIR,
         SITE_PHP_UNIT_PREFIX,
         SITE_PHP_UNIT,
         SITE_APP_UNIT_PREFIX,
+        SITE_APP_B_UNIT_PREFIX,
+        SITE_APP_WEB_UNIT_PREFIX,
+        SITE_APP_WEB_B_UNIT_PREFIX,
         SITE_APP_WORKER_UNIT_PREFIX,
         SITE_APP_UNIT,
+        SITE_APP_B_UNIT,
+        SITE_APP_WEB_UNIT,
+        SITE_APP_WEB_B_UNIT,
         SITE_APP_WORKER_UNIT,
         SITE_SOCKETS_DIR,
         STORE_NETNS,
@@ -378,16 +434,25 @@ mod tests {
 
     #[test]
     fn the_capture_dump_is_one_plain_file_name() {
-        for name in [super::CAPTURE_DUMP_FILE, super::APP_SQLITE_BUNDLE_FILE] {
+        let names = [
+            super::CAPTURE_DUMP_FILE,
+            super::APP_SQLITE_BUNDLE_FILE,
+            super::APP_PG_DUMP_FILE,
+            super::APP_MARIADB_DUMP_FILE,
+        ];
+        for (i, name) in names.iter().enumerate() {
             assert!(!name.is_empty() && !name.contains('/') && !name.starts_with('.'));
+            assert!(
+                !names[..i].contains(name),
+                "duplicate dump file name: {name}"
+            );
         }
-        assert_ne!(super::CAPTURE_DUMP_FILE, super::APP_SQLITE_BUNDLE_FILE);
     }
 
     #[test]
     fn every_location_is_a_distinct_normal_absolute_path() {
         for profile in &PROFILES {
-            assert_eq!(profile.all.len(), 30);
+            assert_eq!(profile.all.len(), 38);
             for (index, path) in profile.all.iter().chain(&profile.fixture).enumerate() {
                 assert!(normal(path), "{path}");
                 assert!(
@@ -488,6 +553,7 @@ mod tests {
         assert_eq!(product::SITES_ROOT, lab::SITES_ROOT);
         assert_eq!(product::RESTORE_PROBES_ROOT, lab::RESTORE_PROBES_ROOT);
         assert_eq!(product::OLS_INCLUDE_DIR, lab::OLS_INCLUDE_DIR);
+        assert_eq!(product::CADDY_CONFIG_DIR, lab::CADDY_CONFIG_DIR);
         assert_eq!(product::OLS_EJECTED_DIR, lab::OLS_EJECTED_DIR);
     }
 }

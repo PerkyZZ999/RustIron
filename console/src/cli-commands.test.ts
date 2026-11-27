@@ -8,6 +8,7 @@ import { join, resolve } from "node:path";
 
 import {
   buildAppDeployCmd,
+  buildAppPackCmd,
   buildAppProvisionCmd,
   buildConfigActivateCmd,
   buildDnsChangeCmd,
@@ -223,6 +224,114 @@ describe("Console CLI command builders match real CLI parsers (W643 / H-05 & H-1
           "site-credential-rotate",
           buildSiteCredentialRotateCmd({ siteId: "blogw643", hostname: "blog.example.test" }),
         ],
+        [
+          "site-credential-rotate-app-pg18",
+          buildSiteCredentialRotateCmd({
+            siteId: "saasw661",
+            hostname: "app.example.test",
+            target: "app_postgresql_18_password",
+          }),
+        ],
+        [
+          "site-credential-rotate-app-mariadb",
+          buildSiteCredentialRotateCmd({
+            siteId: "apiw661",
+            hostname: "api.example.test",
+            target: "app_mariadb_password",
+          }),
+        ],
+        [
+          "app-provision-v2-static-spa",
+          buildAppProvisionCmd({
+            siteId: "spaw661",
+            hostname: "spa.example.test",
+            runtime: "static_v1",
+            port: 0,
+            ingress: "caddy",
+            topology: "static_spa",
+            database: "none",
+            frontendDir: "dist",
+            spaFallback: true,
+          }),
+        ],
+        [
+          "app-provision-v2-backend-api-pg18",
+          buildAppProvisionCmd({
+            siteId: "apiw661",
+            hostname: "api.example.test",
+            runtime: "bun_1_v1",
+            port: 3301,
+            standbyPort: 3302,
+            ingress: "caddy",
+            topology: "backend_api",
+            database: "postgresql_18",
+            blueGreen: true,
+            entrypoint: "dist/server.js",
+            healthPath: "/healthz",
+            websocketPrefixes: ["/ws/"],
+            ssePrefixes: ["/events/"],
+          }),
+        ],
+        [
+          "app-provision-v2-fullstack-split",
+          buildAppProvisionCmd({
+            siteId: "splitw661",
+            hostname: "split.example.test",
+            runtime: "bun_1_v1",
+            port: 3401,
+            standbyPort: 3402,
+            ingress: "caddy",
+            topology: "fullstack_split",
+            database: "postgresql_18",
+            blueGreen: true,
+            spaFallback: true,
+            frontendDir: "web",
+            entrypoint: "api/server.js",
+            routePrefixes: ["/api/"],
+            stripApiPrefixes: ["/api/"],
+            healthPath: "/api/health",
+          }),
+        ],
+        [
+          "app-provision-v2-fullstack-dual-ssr",
+          buildAppProvisionCmd({
+            siteId: "dualw661",
+            hostname: "dual.example.test",
+            runtime: "node_22_v1",
+            port: 3503,
+            standbyPort: 3504,
+            ingress: "caddy",
+            topology: "fullstack_dual_ssr",
+            database: "mariadb",
+            blueGreen: true,
+            entrypoint: "api/server.mjs",
+            frontendRuntime: "bun_1_v1",
+            frontendEntrypoint: "web/server.js",
+            frontendPort: 3501,
+            frontendStandbyPort: 3502,
+            routePrefixes: ["/api/"],
+            healthPath: "/api/health",
+          }),
+        ],
+        [
+          "app-deploy-v2-static",
+          buildAppDeployCmd({
+            siteId: "spaw661",
+            releaseId: "rel_spa_01",
+            runtime: "static_v1",
+            healthPath: "/",
+          }),
+        ],
+        [
+          "app-deploy-v2-blue-green",
+          buildAppDeployCmd({
+            siteId: "splitw661",
+            releaseId: "rel_bg_01",
+            runtime: "bun_1_v1",
+            blueGreenCutover: true,
+            healthPath: "/api/health",
+          }),
+        ],
       ];
 
       for (const [label, cmd] of commands) {
@@ -256,6 +365,45 @@ describe("Console CLI command builders match real CLI parsers (W643 / H-05 & H-1
     for (const flag of ["--wxr", "--media-dir", "--source-origin", "--target-origin", "--out"]) {
       expect(tokens).toContain(flag);
       expect(helpOut).toContain(flag);
+    }
+
+    const packCmd = buildAppPackCmd({
+      siteId: "saasw661",
+      releaseId: "rel-20261126-01",
+      topology: "fullstack_split",
+      runtime: "bun_1_v1",
+      database: "postgresql_18",
+      frontendDir: "web",
+      entrypoint: "api/server.js",
+      blueGreen: true,
+    });
+    const packTokens = tokenize(packCmd);
+    expect(packTokens.slice(0, 3)).toEqual(["python3", "packaging/rustiron-app-pack.py", "pack"]);
+    const packHelp = Bun.spawnSync(
+      ["python3", "packaging/rustiron-app-pack.py", "pack", "--help"],
+      {
+        cwd: REPO_ROOT,
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    expect(packHelp.exitCode).toBe(0);
+    const packHelpOut = packHelp.stdout.toString();
+    for (const flag of [
+      "--site-id",
+      "--release-id",
+      "--out",
+      "--topology",
+      "--runtime",
+      "--database",
+      "--frontend-dist",
+      "--backend-dist",
+      "--frontend-dir",
+      "--entrypoint",
+      "--blue-green-cutover",
+    ]) {
+      expect(packTokens).toContain(flag);
+      expect(packHelpOut).toContain(flag);
     }
   });
 });

@@ -69,8 +69,22 @@ const APPLICATION_ID: i64 = 0x52494a52;
 /// D-095), a rebuild of `deletions`;
 /// v42 records the hostname of a single-name static ejection (W587, D-097);
 /// v43 records P27 modern app provisions, releases, steps, and lifecycles (W597, D-099);
-/// v44 records P13 signed site credential rotations (W608, D-100).
-const SCHEMA_VERSION: i64 = 44;
+/// v44 records P13 signed site credential rotations (W608, D-100);
+/// v45 records D-102 full-stack app topologies, Caddy generations, and app DB targets (W656).
+const SCHEMA_VERSION: i64 = 45;
+/// The first version whose `apps`/`app_releases`/`credential_rotations` admit
+/// `static_v1` and app DB rotation targets and append `app_fullstack_specs` / `caddy_generations`.
+const FULLSTACK_APPS_VERSION: i64 = 45;
+/// The first version that has `apps` and `app_releases` (D-099).
+const APPS_VERSION: i64 = 43;
+/// The first version that has `credential_rotations` (D-100).
+const CREDENTIAL_ROTATE_VERSION: i64 = 44;
+/// `apps` as versions 43 and 44 created it; validated before migration.
+const LEGACY_APPS: &str = "CREATE TABLE apps (operation_id TEXT PRIMARY KEY REFERENCES provisions(operation_id), runtime TEXT NOT NULL CHECK(runtime IN ('node_22_v1','bun_1_v1')), port INTEGER NOT NULL CHECK(port BETWEEN 1024 AND 65535 AND port<>3306), entrypoint TEXT NOT NULL CHECK(length(entrypoint) BETWEEN 1 AND 128), worker_entrypoint TEXT CHECK(worker_entrypoint IS NULL OR length(worker_entrypoint) BETWEEN 1 AND 128), health_path TEXT NOT NULL CHECK(length(health_path) BETWEEN 1 AND 128 AND health_path GLOB '/*'), env_keys TEXT NOT NULL CHECK(length(env_keys)<=4200 AND env_keys NOT GLOB '*[^A-Z0-9_,]*'), memory_max_mib INTEGER NOT NULL CHECK(memory_max_mib BETWEEN 64 AND 8192), tasks_max INTEGER NOT NULL CHECK(tasks_max BETWEEN 16 AND 1024), quota_mib INTEGER NOT NULL CHECK(quota_mib BETWEEN 128 AND 65536)) STRICT";
+/// `app_releases` as versions 43 and 44 created it; validated before migration.
+const LEGACY_APP_RELEASES: &str = "CREATE TABLE app_releases (operation_id TEXT PRIMARY KEY, site_id TEXT NOT NULL REFERENCES provisions(site_id), release_id TEXT NOT NULL CHECK(length(release_id) BETWEEN 1 AND 64), runtime TEXT NOT NULL CHECK(runtime IN ('node_22_v1','bun_1_v1')), artifact_sha256 TEXT NOT NULL CHECK(length(artifact_sha256)=64 AND artifact_sha256 NOT GLOB '*[^0-9a-f]*'), manifest_sha256 TEXT NOT NULL CHECK(length(manifest_sha256)=64 AND manifest_sha256 NOT GLOB '*[^0-9a-f]*'), file_count INTEGER NOT NULL CHECK(file_count BETWEEN 1 AND 50000), total_bytes INTEGER NOT NULL CHECK(total_bytes BETWEEN 1 AND 536870912), migration_entrypoint TEXT CHECK(migration_entrypoint IS NULL OR length(migration_entrypoint) BETWEEN 1 AND 128), capture_operation_id TEXT REFERENCES captures(operation_id), health_path TEXT NOT NULL CHECK(length(health_path) BETWEEN 1 AND 128 AND health_path GLOB '/*'), idempotency_key TEXT NOT NULL UNIQUE, grant_id TEXT NOT NULL UNIQUE, nonce TEXT NOT NULL UNIQUE, plan_digest TEXT NOT NULL CHECK(length(plan_digest)=64 AND plan_digest NOT GLOB '*[^0-9a-f]*'), grant_digest TEXT NOT NULL CHECK(length(grant_digest)=64 AND grant_digest NOT GLOB '*[^0-9a-f]*'), expires_at INTEGER NOT NULL CHECK(expires_at>=0), state TEXT NOT NULL CHECK(state IN ('intent','done','rolled_back')), UNIQUE(site_id, release_id)) STRICT";
+/// `credential_rotations` as version 44 created it; validated before migration.
+const LEGACY_CREDENTIAL_ROTATIONS: &str = "CREATE TABLE credential_rotations (operation_id TEXT PRIMARY KEY, site_id TEXT NOT NULL REFERENCES provisions(site_id), hostname TEXT NOT NULL CHECK(length(hostname) BETWEEN 1 AND 253 AND hostname NOT GLOB '*[^a-z0-9.-]*'), target TEXT NOT NULL CHECK(target='mariadb_user_password'), idempotency_key TEXT NOT NULL UNIQUE, grant_id TEXT NOT NULL UNIQUE, nonce TEXT NOT NULL UNIQUE, plan_digest TEXT NOT NULL CHECK(length(plan_digest)=64 AND plan_digest NOT GLOB '*[^0-9a-f]*'), grant_digest TEXT NOT NULL CHECK(length(grant_digest)=64 AND grant_digest NOT GLOB '*[^0-9a-f]*'), expires_at INTEGER NOT NULL CHECK(expires_at>=0), state TEXT NOT NULL CHECK(state IN ('intent','done','failed_compensated','needs_attention','failed'))) STRICT";
 /// The first version whose `deletions` admits no capture (W576).
 const NULLABLE_DELETE_CAPTURE_VERSION: i64 = 41;
 /// `deletions` as versions 33 to 40 created it; validated before migration.
@@ -98,7 +112,7 @@ const STATIC_IMPORT_VERSION: i64 = 26;
 const LEGACY_IMPORTS: &str = "CREATE TABLE imports (operation_id TEXT PRIMARY KEY REFERENCES provisions(operation_id), archive_sha256 TEXT NOT NULL CHECK(length(archive_sha256)=64 AND archive_sha256 NOT GLOB '*[^0-9a-f]*'), manifest_sha256 TEXT NOT NULL CHECK(length(manifest_sha256)=64 AND manifest_sha256 NOT GLOB '*[^0-9a-f]*'), file_entries INTEGER NOT NULL CHECK(file_entries BETWEEN 1 AND 200000), file_bytes INTEGER NOT NULL CHECK(file_bytes>=0), dump_bytes INTEGER NOT NULL CHECK(dump_bytes BETWEEN 1 AND 2147483648), target_php TEXT NOT NULL CHECK(length(target_php) BETWEEN 3 AND 4 AND target_php GLOB '[5-9].[0-9]*' AND substr(target_php,3) NOT GLOB '*[^0-9]*')) STRICT";
 /// Supported in-place migration sources and how many `SCHEMA` entries each
 /// has; later entries are only ever appended.
-const MIGRATION_SOURCES: [(i64, usize); 41] = [
+const MIGRATION_SOURCES: [(i64, usize); 42] = [
     (3, 6),
     (4, 7),
     (5, 9),
@@ -140,8 +154,9 @@ const MIGRATION_SOURCES: [(i64, usize); 41] = [
     (41, 74),
     (42, 75),
     (43, 81),
+    (44, 83),
 ];
-const SCHEMA: [(&str, &str); 83] = [
+const SCHEMA: [(&str, &str); 86] = [
     (
         "metadata",
         "CREATE TABLE metadata (singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL CHECK(version=1), host_id TEXT NOT NULL, host_epoch TEXT NOT NULL, last_time INTEGER NOT NULL CHECK(last_time>=0)) STRICT",
@@ -444,11 +459,11 @@ const SCHEMA: [(&str, &str); 83] = [
     ),
     (
         "apps",
-        "CREATE TABLE apps (operation_id TEXT PRIMARY KEY REFERENCES provisions(operation_id), runtime TEXT NOT NULL CHECK(runtime IN ('node_22_v1','bun_1_v1')), port INTEGER NOT NULL CHECK(port BETWEEN 1024 AND 65535 AND port<>3306), entrypoint TEXT NOT NULL CHECK(length(entrypoint) BETWEEN 1 AND 128), worker_entrypoint TEXT CHECK(worker_entrypoint IS NULL OR length(worker_entrypoint) BETWEEN 1 AND 128), health_path TEXT NOT NULL CHECK(length(health_path) BETWEEN 1 AND 128 AND health_path GLOB '/*'), env_keys TEXT NOT NULL CHECK(length(env_keys)<=4200 AND env_keys NOT GLOB '*[^A-Z0-9_,]*'), memory_max_mib INTEGER NOT NULL CHECK(memory_max_mib BETWEEN 64 AND 8192), tasks_max INTEGER NOT NULL CHECK(tasks_max BETWEEN 16 AND 1024), quota_mib INTEGER NOT NULL CHECK(quota_mib BETWEEN 128 AND 65536)) STRICT",
+        "CREATE TABLE apps (operation_id TEXT PRIMARY KEY REFERENCES provisions(operation_id), runtime TEXT NOT NULL CHECK(runtime IN ('node_22_v1','bun_1_v1','static_v1')), port INTEGER NOT NULL CHECK(port=0 OR (port BETWEEN 1024 AND 65535 AND port<>3306)), entrypoint TEXT NOT NULL CHECK(length(entrypoint) BETWEEN 0 AND 128), worker_entrypoint TEXT CHECK(worker_entrypoint IS NULL OR length(worker_entrypoint) BETWEEN 1 AND 128), health_path TEXT NOT NULL CHECK(length(health_path) BETWEEN 1 AND 128 AND health_path GLOB '/*'), env_keys TEXT NOT NULL CHECK(length(env_keys)<=4200 AND env_keys NOT GLOB '*[^A-Z0-9_,]*'), memory_max_mib INTEGER NOT NULL CHECK(memory_max_mib BETWEEN 64 AND 8192), tasks_max INTEGER NOT NULL CHECK(tasks_max BETWEEN 16 AND 1024), quota_mib INTEGER NOT NULL CHECK(quota_mib BETWEEN 128 AND 65536)) STRICT",
     ),
     (
         "app_releases",
-        "CREATE TABLE app_releases (operation_id TEXT PRIMARY KEY, site_id TEXT NOT NULL REFERENCES provisions(site_id), release_id TEXT NOT NULL CHECK(length(release_id) BETWEEN 1 AND 64), runtime TEXT NOT NULL CHECK(runtime IN ('node_22_v1','bun_1_v1')), artifact_sha256 TEXT NOT NULL CHECK(length(artifact_sha256)=64 AND artifact_sha256 NOT GLOB '*[^0-9a-f]*'), manifest_sha256 TEXT NOT NULL CHECK(length(manifest_sha256)=64 AND manifest_sha256 NOT GLOB '*[^0-9a-f]*'), file_count INTEGER NOT NULL CHECK(file_count BETWEEN 1 AND 50000), total_bytes INTEGER NOT NULL CHECK(total_bytes BETWEEN 1 AND 536870912), migration_entrypoint TEXT CHECK(migration_entrypoint IS NULL OR length(migration_entrypoint) BETWEEN 1 AND 128), capture_operation_id TEXT REFERENCES captures(operation_id), health_path TEXT NOT NULL CHECK(length(health_path) BETWEEN 1 AND 128 AND health_path GLOB '/*'), idempotency_key TEXT NOT NULL UNIQUE, grant_id TEXT NOT NULL UNIQUE, nonce TEXT NOT NULL UNIQUE, plan_digest TEXT NOT NULL CHECK(length(plan_digest)=64 AND plan_digest NOT GLOB '*[^0-9a-f]*'), grant_digest TEXT NOT NULL CHECK(length(grant_digest)=64 AND grant_digest NOT GLOB '*[^0-9a-f]*'), expires_at INTEGER NOT NULL CHECK(expires_at>=0), state TEXT NOT NULL CHECK(state IN ('intent','done','rolled_back')), UNIQUE(site_id, release_id)) STRICT",
+        "CREATE TABLE app_releases (operation_id TEXT PRIMARY KEY, site_id TEXT NOT NULL REFERENCES provisions(site_id), release_id TEXT NOT NULL CHECK(length(release_id) BETWEEN 1 AND 64), runtime TEXT NOT NULL CHECK(runtime IN ('node_22_v1','bun_1_v1','static_v1')), artifact_sha256 TEXT NOT NULL CHECK(length(artifact_sha256)=64 AND artifact_sha256 NOT GLOB '*[^0-9a-f]*'), manifest_sha256 TEXT NOT NULL CHECK(length(manifest_sha256)=64 AND manifest_sha256 NOT GLOB '*[^0-9a-f]*'), file_count INTEGER NOT NULL CHECK(file_count BETWEEN 1 AND 50000), total_bytes INTEGER NOT NULL CHECK(total_bytes BETWEEN 1 AND 536870912), migration_entrypoint TEXT CHECK(migration_entrypoint IS NULL OR length(migration_entrypoint) BETWEEN 1 AND 128), capture_operation_id TEXT REFERENCES captures(operation_id), health_path TEXT NOT NULL CHECK(length(health_path) BETWEEN 1 AND 128 AND health_path GLOB '/*'), idempotency_key TEXT NOT NULL UNIQUE, grant_id TEXT NOT NULL UNIQUE, nonce TEXT NOT NULL UNIQUE, plan_digest TEXT NOT NULL CHECK(length(plan_digest)=64 AND plan_digest NOT GLOB '*[^0-9a-f]*'), grant_digest TEXT NOT NULL CHECK(length(grant_digest)=64 AND grant_digest NOT GLOB '*[^0-9a-f]*'), expires_at INTEGER NOT NULL CHECK(expires_at>=0), state TEXT NOT NULL CHECK(state IN ('intent','done','rolled_back')), UNIQUE(site_id, release_id)) STRICT",
     ),
     (
         "one_open_app_release",
@@ -468,11 +483,23 @@ const SCHEMA: [(&str, &str); 83] = [
     ),
     (
         "credential_rotations",
-        "CREATE TABLE credential_rotations (operation_id TEXT PRIMARY KEY, site_id TEXT NOT NULL REFERENCES provisions(site_id), hostname TEXT NOT NULL CHECK(length(hostname) BETWEEN 1 AND 253 AND hostname NOT GLOB '*[^a-z0-9.-]*'), target TEXT NOT NULL CHECK(target='mariadb_user_password'), idempotency_key TEXT NOT NULL UNIQUE, grant_id TEXT NOT NULL UNIQUE, nonce TEXT NOT NULL UNIQUE, plan_digest TEXT NOT NULL CHECK(length(plan_digest)=64 AND plan_digest NOT GLOB '*[^0-9a-f]*'), grant_digest TEXT NOT NULL CHECK(length(grant_digest)=64 AND grant_digest NOT GLOB '*[^0-9a-f]*'), expires_at INTEGER NOT NULL CHECK(expires_at>=0), state TEXT NOT NULL CHECK(state IN ('intent','done','failed_compensated','needs_attention','failed'))) STRICT",
+        "CREATE TABLE credential_rotations (operation_id TEXT PRIMARY KEY, site_id TEXT NOT NULL REFERENCES provisions(site_id), hostname TEXT NOT NULL CHECK(length(hostname) BETWEEN 1 AND 253 AND hostname NOT GLOB '*[^a-z0-9.-]*'), target TEXT NOT NULL CHECK(target IN ('mariadb_user_password','app_mariadb_password','app_postgresql_18_password')), idempotency_key TEXT NOT NULL UNIQUE, grant_id TEXT NOT NULL UNIQUE, nonce TEXT NOT NULL UNIQUE, plan_digest TEXT NOT NULL CHECK(length(plan_digest)=64 AND plan_digest NOT GLOB '*[^0-9a-f]*'), grant_digest TEXT NOT NULL CHECK(length(grant_digest)=64 AND grant_digest NOT GLOB '*[^0-9a-f]*'), expires_at INTEGER NOT NULL CHECK(expires_at>=0), state TEXT NOT NULL CHECK(state IN ('intent','done','failed_compensated','needs_attention','failed'))) STRICT",
     ),
     (
         "one_open_credential_rotation",
         "CREATE UNIQUE INDEX one_open_credential_rotation ON credential_rotations(site_id) WHERE state IN ('intent','needs_attention')",
+    ),
+    (
+        "app_fullstack_specs",
+        "CREATE TABLE app_fullstack_specs (operation_id TEXT PRIMARY KEY REFERENCES apps(operation_id), ingress TEXT NOT NULL CHECK(ingress IN ('ols','caddy')), topology TEXT NOT NULL CHECK(topology IN ('static_spa','backend_api','fullstack_split','fullstack_dual_ssr')), database_engine TEXT NOT NULL CHECK(database_engine IN ('none','sqlite','mariadb','postgresql_18')), blue_green INTEGER NOT NULL CHECK(blue_green IN (0,1)), active_slot TEXT NOT NULL CHECK(active_slot IN ('a','b')), standby_port INTEGER CHECK(standby_port IS NULL OR (standby_port BETWEEN 1024 AND 65535 AND standby_port NOT IN (2019,3306,5432))), spa_fallback INTEGER NOT NULL CHECK(spa_fallback IN (0,1)), frontend_dir TEXT CHECK(frontend_dir IS NULL OR length(frontend_dir) BETWEEN 1 AND 128), frontend_runtime TEXT CHECK(frontend_runtime IS NULL OR frontend_runtime IN ('node_22_v1','bun_1_v1')), frontend_entrypoint TEXT CHECK(frontend_entrypoint IS NULL OR length(frontend_entrypoint) BETWEEN 1 AND 128), frontend_port INTEGER CHECK(frontend_port IS NULL OR (frontend_port BETWEEN 1024 AND 65535 AND frontend_port NOT IN (2019,3306,5432))), frontend_standby_port INTEGER CHECK(frontend_standby_port IS NULL OR (frontend_standby_port BETWEEN 1024 AND 65535 AND frontend_standby_port NOT IN (2019,3306,5432))), sse_prefixes TEXT NOT NULL CHECK(length(sse_prefixes)<=1100), strip_api_prefixes TEXT NOT NULL CHECK(length(strip_api_prefixes)<=1100)) STRICT",
+    ),
+    (
+        "caddy_generations",
+        "CREATE TABLE caddy_generations (generation_id TEXT PRIMARY KEY CHECK(length(generation_id) BETWEEN 1 AND 64), operation_id TEXT NOT NULL CHECK(length(operation_id) BETWEEN 1 AND 64), ingress_mode TEXT NOT NULL CHECK(ingress_mode IN ('caddy_only','caddy_multi_ip','caddy_edge_over_ols')), config_sha256 TEXT NOT NULL CHECK(length(config_sha256)=64 AND config_sha256 NOT GLOB '*[^0-9a-f]*'), site_count INTEGER NOT NULL CHECK(site_count>=0), created_at INTEGER NOT NULL CHECK(created_at>=0), state TEXT NOT NULL CHECK(state IN ('staged','active','rolled_back'))) STRICT",
+    ),
+    (
+        "one_active_caddy_generation",
+        "CREATE UNIQUE INDEX one_active_caddy_generation ON caddy_generations((1)) WHERE state='active'",
     ),
 ];
 
@@ -492,6 +519,12 @@ fn schema_at(version: i64, count: usize) -> Vec<(&'static str, &'static str)> {
                 (name, LEGACY_UPDATE_COMPONENTS)
             } else if version < NULLABLE_DELETE_CAPTURE_VERSION && name == "deletions" {
                 (name, LEGACY_DELETIONS)
+            } else if version < FULLSTACK_APPS_VERSION && name == "apps" {
+                (name, LEGACY_APPS)
+            } else if version < FULLSTACK_APPS_VERSION && name == "app_releases" {
+                (name, LEGACY_APP_RELEASES)
+            } else if version < FULLSTACK_APPS_VERSION && name == "credential_rotations" {
+                (name, LEGACY_CREDENTIAL_ROTATIONS)
             } else {
                 (name, sql)
             }
@@ -572,6 +605,47 @@ fn rebuild_update_components(transaction: &rusqlite::Transaction<'_>) -> Result<
 /// migration transaction. Foreign keys are off on this connection, so the
 /// drop does not cascade; every row is copied back unchanged and the
 /// foreign-key check must then find nothing.
+fn rebuild_apps_v45(transaction: &rusqlite::Transaction<'_>) -> Result<(), JournalError> {
+    transaction
+        .execute_batch(&format!(
+            "CREATE TEMP TABLE apps_old AS SELECT * FROM apps; DROP TABLE apps; {}; \
+             INSERT INTO apps SELECT * FROM temp.apps_old; DROP TABLE temp.apps_old; \
+             CREATE TEMP TABLE app_releases_old AS SELECT * FROM app_releases; DROP TABLE app_releases; {}; \
+             INSERT INTO app_releases SELECT * FROM temp.app_releases_old; DROP TABLE temp.app_releases_old; {};",
+            schema_sql("apps")?,
+            schema_sql("app_releases")?,
+            schema_sql("one_open_app_release")?
+        ))
+        .map_err(unavailable)?;
+    let mut check = transaction
+        .prepare("PRAGMA foreign_key_check")
+        .map_err(unavailable)?;
+    if check.exists([]).map_err(unavailable)? {
+        return Err(JournalError::Unavailable);
+    }
+    Ok(())
+}
+
+fn rebuild_credential_rotations_v45(
+    transaction: &rusqlite::Transaction<'_>,
+) -> Result<(), JournalError> {
+    transaction
+        .execute_batch(&format!(
+            "CREATE TEMP TABLE cred_old AS SELECT * FROM credential_rotations; DROP TABLE credential_rotations; {}; \
+             INSERT INTO credential_rotations SELECT * FROM temp.cred_old; DROP TABLE temp.cred_old; {};",
+            schema_sql("credential_rotations")?,
+            schema_sql("one_open_credential_rotation")?
+        ))
+        .map_err(unavailable)?;
+    let mut check = transaction
+        .prepare("PRAGMA foreign_key_check")
+        .map_err(unavailable)?;
+    if check.exists([]).map_err(unavailable)? {
+        return Err(JournalError::Unavailable);
+    }
+    Ok(())
+}
+
 fn rebuild_provisions(transaction: &rusqlite::Transaction<'_>) -> Result<(), JournalError> {
     transaction
         .execute_batch(&format!(
@@ -819,7 +893,15 @@ pub(crate) fn migrate(directory: &Path, host: &Id, epoch: &Id) -> Result<Connect
     // W576: a journal that has `deletions` gets its v41 nullable capture.
     let rebuild_deletion_table =
         (DELETED_STATE_VERSION..NULLABLE_DELETE_CAPTURE_VERSION).contains(&version);
-    let rebuilds = rebuild || rebuild_import_table || rebuild_components || rebuild_deletion_table;
+    // W656 (D-102): v43/v44 journals rebuild apps/app_releases (and v44 rebuilds credential_rotations).
+    let rebuild_apps_tables = (APPS_VERSION..FULLSTACK_APPS_VERSION).contains(&version);
+    let rebuild_cred_table = (CREDENTIAL_ROTATE_VERSION..FULLSTACK_APPS_VERSION).contains(&version);
+    let rebuilds = rebuild
+        || rebuild_import_table
+        || rebuild_components
+        || rebuild_deletion_table
+        || rebuild_apps_tables
+        || rebuild_cred_table;
     if rebuilds {
         // A table rebuild needs foreign keys off; SQLite ignores this
         // pragma inside a transaction, so it is set before.
@@ -841,6 +923,12 @@ pub(crate) fn migrate(directory: &Path, host: &Id, epoch: &Id) -> Result<Connect
     }
     if rebuild_deletion_table {
         rebuild_deletions(&transaction)?;
+    }
+    if rebuild_apps_tables {
+        rebuild_apps_v45(&transaction)?;
+    }
+    if rebuild_cred_table {
+        rebuild_credential_rotations_v45(&transaction)?;
     }
     transaction
         .pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -1159,7 +1247,7 @@ mod migration_crash_tests {
     /// later tables and the re-adoption tables dropped and `provisions` rebuilt with the v16 state check.
     fn to_v16() -> String {
         format!(
-            "PRAGMA foreign_keys=OFF; DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; DROP TABLE proxy_routes; DROP TABLE dns_change_sets; DROP TABLE dns_changes; DROP TABLE dns_imports; DROP TABLE restore_steps; DROP TABLE restore_attempts; DROP TABLE site_restores; DROP TABLE clone_scrub_grants; DROP TABLE quota_changes; DROP TABLE deletions; DROP TABLE update_rollbacks; DROP TABLE update_steps; DROP TABLE update_components; DROP TABLE updates; DROP TABLE retirements; DROP TABLE clone_scrubs; DROP TABLE clone_steps; DROP TABLE clones; DROP TABLE certificate_aliases; DROP TABLE import_aliases; DROP TABLE import_sources; DROP TABLE certificate_renewals; DROP TABLE certificate_grants; DROP TABLE certificates; DROP TABLE import_scrubs; DROP TABLE import_steps; DROP TABLE imports; DROP TABLE admission_signatures; DROP TABLE signed_objects; DROP TABLE page_cache_recipes; DROP TABLE capture_object_retention; DROP TABLE capture_lock_checks; DROP TABLE capture_refusals; DROP TABLE allocation_floors; DROP TABLE ols_adoptions; DROP TABLE provision_adoptions; DROP TABLE readoptions; \
+            "PRAGMA foreign_keys=OFF; DROP TABLE caddy_generations; DROP TABLE app_fullstack_specs; DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; DROP TABLE proxy_routes; DROP TABLE dns_change_sets; DROP TABLE dns_changes; DROP TABLE dns_imports; DROP TABLE restore_steps; DROP TABLE restore_attempts; DROP TABLE site_restores; DROP TABLE clone_scrub_grants; DROP TABLE quota_changes; DROP TABLE deletions; DROP TABLE update_rollbacks; DROP TABLE update_steps; DROP TABLE update_components; DROP TABLE updates; DROP TABLE retirements; DROP TABLE clone_scrubs; DROP TABLE clone_steps; DROP TABLE clones; DROP TABLE certificate_aliases; DROP TABLE import_aliases; DROP TABLE import_sources; DROP TABLE certificate_renewals; DROP TABLE certificate_grants; DROP TABLE certificates; DROP TABLE import_scrubs; DROP TABLE import_steps; DROP TABLE imports; DROP TABLE admission_signatures; DROP TABLE signed_objects; DROP TABLE page_cache_recipes; DROP TABLE capture_object_retention; DROP TABLE capture_lock_checks; DROP TABLE capture_refusals; DROP TABLE allocation_floors; DROP TABLE ols_adoptions; DROP TABLE provision_adoptions; DROP TABLE readoptions; \
              CREATE TEMP TABLE p AS SELECT * FROM provisions; DROP TABLE provisions; {}; INSERT INTO provisions SELECT * FROM temp.p; DROP TABLE temp.p; {};",
             super::LEGACY_PROVISIONS,
             super::schema_sql("one_running_provision").unwrap()

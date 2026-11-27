@@ -32,9 +32,10 @@ mod site_update;
 mod storage;
 
 pub use app::{
-    APP_MIGRATION_CAPTURE_MAX_AGE_SECONDS, AppFacts, AppLifecycle, AppLifecycleIntent,
-    AppLifecycleResult, AppRelease, AppReleaseIntent, AppReleaseResult, AppReleaseState,
-    AppReleaseStep, AppReleaseStepRecord,
+    APP_MIGRATION_CAPTURE_MAX_AGE_SECONDS, AppFacts, AppFullstackSpec, AppLifecycle,
+    AppLifecycleIntent, AppLifecycleResult, AppRelease, AppReleaseIntent, AppReleaseResult,
+    AppReleaseState, AppReleaseStep, AppReleaseStepRecord, AppSlot, CaddyGeneration,
+    CaddyGenerationState, CaddyIngressMode,
 };
 pub use capture::{
     Capture, CaptureConsistency, CaptureIntent, CaptureManifest, CaptureMethod, CaptureResult,
@@ -60,6 +61,8 @@ pub struct OperationRecords {
     pub proxy: Option<ProxyFacts>,
     /// W597: for a modern app site provision, its signed runtime facts (D-099).
     pub app: Option<AppFacts>,
+    /// W658: for a D-102 v2 modern app site, its full-stack ingress/topology/DB spec.
+    pub app_fullstack: Option<AppFullstackSpec>,
     /// W597: for an `app_deploy` operation, its release record and steps (D-099).
     pub app_release: Option<AppRelease>,
     /// W598: newest `done` release ID of that app site prior to this deploy, for rollback.
@@ -100,6 +103,9 @@ pub struct OperationRecords {
     /// W572: routes of the owned proxy sites used for an OLS operation, by
     /// site id.
     pub served_proxies: std::collections::BTreeMap<String, ProxyFacts>,
+    /// W659 (D-102): owned modern app sites and optional full-stack specs, by
+    /// site id, used to render deterministic Caddy generations.
+    pub served_apps: std::collections::BTreeMap<String, (AppFacts, Option<AppFullstackSpec>)>,
     /// For an OLS operation: sites whose ejection succeeded, by site id,
     /// plus the site this operation ejects, if it is an ejection.
     pub ejected: Vec<SiteId>,
@@ -605,6 +611,7 @@ impl FixtureJournal {
         let site_update = site_update::load(&c, operation_id)?;
         let site_restore = site_restore::load(&c, operation_id)?;
         let credential_rotation = credential_rotate::by_operation(&c, operation_id)?;
+        let app_release = app::load_release(&c, operation_id)?;
         let mut ejection = None;
         let mut static_ejection = None;
         let (served, ejected) = match &operation {
@@ -631,7 +638,8 @@ impl FixtureJournal {
             None if readoption.is_some()
                 || site_update.is_some()
                 || site_restore.is_some()
-                || credential_rotation.is_some() =>
+                || credential_rotation.is_some()
+                || app_release.is_some() =>
             {
                 (provision::succeeded(&c)?, provision::ejected(&c)?)
             }
@@ -647,7 +655,11 @@ impl FixtureJournal {
         };
         let certificate = certificate::by_operation(&c, (host_id, host_epoch), operation_id)?;
         let renewal = certificate::renewal(&c, (host_id, host_epoch), operation_id)?;
-        let certificates = if operation.is_some() || certificate.is_some() || renewal.is_some() {
+        let certificates = if operation.is_some()
+            || certificate.is_some()
+            || renewal.is_some()
+            || app_release.is_some()
+        {
             certificate::installed_by_site(&c)?
         } else {
             Vec::new()
@@ -659,6 +671,7 @@ impl FixtureJournal {
         };
         let mut served_aliases = std::collections::BTreeMap::new();
         let mut served_proxies = std::collections::BTreeMap::new();
+        let mut served_apps = std::collections::BTreeMap::new();
         for provision in &served {
             if let Some(alias) = import::alias_of(&c, &provision.intent.operation_id)? {
                 served_aliases.insert(provision.intent.site_id.as_str().to_owned(), alias);
@@ -666,9 +679,12 @@ impl FixtureJournal {
             if let Some(routes) = proxy::facts(&c, &provision.intent.operation_id)? {
                 served_proxies.insert(provision.intent.site_id.as_str().to_owned(), routes);
             }
+            if let Some(facts) = app::facts(&c, &provision.intent.operation_id)? {
+                let spec = app::fullstack_spec(&c, &provision.intent.operation_id)?;
+                served_apps.insert(provision.intent.site_id.as_str().to_owned(), (facts, spec));
+            }
         }
         let capture = capture::find(&c, "operation_id", operation_id.as_str())?;
-        let app_release = app::load_release(&c, operation_id)?;
         let app_lifecycle = app::load_lifecycle(&c, operation_id)?;
         let app_for_op = if let Some(found) = app::facts(&c, operation_id)? {
             Some(found)
@@ -680,6 +696,23 @@ impl FixtureJournal {
             app::facts_by_site(&c, &cap.intent.site_id)?
         } else if let Some(rest) = &site_restore {
             app::facts_by_site(&c, &rest.site_id)?
+        } else if let Some(rot) = &credential_rotation {
+            app::facts_by_site(&c, &rot.site_id)?
+        } else {
+            None
+        };
+        let app_fullstack = if let Some(found) = app::fullstack_spec(&c, operation_id)? {
+            Some(found)
+        } else if let Some(rel) = &app_release {
+            app::fullstack_spec_by_site(&c, &rel.site_id)?
+        } else if let Some(lc) = &app_lifecycle {
+            app::fullstack_spec_by_site(&c, &lc.site_id)?
+        } else if let Some(cap) = &capture {
+            app::fullstack_spec_by_site(&c, &cap.intent.site_id)?
+        } else if let Some(rest) = &site_restore {
+            app::fullstack_spec_by_site(&c, &rest.site_id)?
+        } else if let Some(rot) = &credential_rotation {
+            app::fullstack_spec_by_site(&c, &rot.site_id)?
         } else {
             None
         };
@@ -710,6 +743,7 @@ impl FixtureJournal {
             site_clone: site_clone::load(&c, operation_id)?,
             proxy: proxy::facts(&c, operation_id)?,
             app: app_for_op,
+            app_fullstack,
             app_release,
             app_previous_release_id,
             app_lifecycle,
@@ -734,6 +768,7 @@ impl FixtureJournal {
             served,
             served_aliases,
             served_proxies,
+            served_apps,
             ejected,
             ejection,
             static_ejection,

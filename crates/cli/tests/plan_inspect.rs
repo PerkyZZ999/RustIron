@@ -659,5 +659,125 @@ fn p27_app_plans_build_inspect_and_report_envelopes_offline() {
     assert_eq!(env["ols_reloads"], 0);
     assert_eq!(env["all_served_sites"], false);
 
+    // 4. D-102 schema v2: fullstack_split with Caddy + PostgreSQL 18 + blue/green + SSE
+    let split = Command::new(env!("CARGO_BIN_EXE_rustiron"))
+        .args([
+            "plan",
+            "create",
+            "app-provision",
+            "--plan-id",
+            "plan_ap_v2",
+            "--host-id",
+            "host_lab",
+            "--host-epoch",
+            "epoch_1",
+            "--profile-digest",
+            &digest,
+            "--requester",
+            "agent_1",
+            "--site-id",
+            "saasv2",
+            "--hostname",
+            "saas.example.test",
+            "--runtime",
+            "bun_1_v1",
+            "--port",
+            "4101",
+            "--ingress",
+            "caddy",
+            "--topology",
+            "fullstack_split",
+            "--database",
+            "postgresql_18",
+            "--blue-green",
+            "--standby-port",
+            "4102",
+            "--spa-fallback",
+            "--frontend-dir",
+            "frontend",
+            "--route-prefix",
+            "/api/",
+            "--strip-api-prefix",
+            "/api/",
+            "--sse-prefix",
+            "/api/events/",
+            "--entrypoint",
+            "backend/index.ts",
+            "--health-path",
+            "/api/health",
+            "--env-key",
+            "DATABASE_URL",
+            "--valid-from",
+            "1000",
+            "--expires-at",
+            "2000",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        split.status.success(),
+        "{}",
+        String::from_utf8_lossy(&split.stderr)
+    );
+    let split_path = dir.join("app-provision-v2.json");
+    std::fs::write(&split_path, &split.stdout).unwrap();
+    let (ok, text) = inspect(split_path.to_str().unwrap());
+    assert!(ok, "{text}");
+    for expected in [
+        "ingress: caddy",
+        "topology: fullstack_split",
+        "database: postgresql_18",
+        "blue/green: true",
+        "standby port: 127.0.0.1:4102",
+        "frontend dir: frontend",
+        "sse prefixes: /api/events/",
+        "strip api prefixes: /api/",
+    ] {
+        assert!(text.contains(expected), "{expected}: {text}");
+    }
+
+    // 5. D-102 schema v2: site-credential-rotate for app_postgresql_18_password
+    let rot_pg = Command::new(env!("CARGO_BIN_EXE_rustiron"))
+        .args([
+            "plan",
+            "create",
+            "site-credential-rotate",
+            "--plan-id",
+            "plan_rot_pg1",
+            "--host-id",
+            "host_lab",
+            "--host-epoch",
+            "epoch_1",
+            "--profile-digest",
+            &digest,
+            "--requester",
+            "agent_1",
+            "--site-id",
+            "saasv2",
+            "--hostname",
+            "saas.example.test",
+            "--target",
+            "app_postgresql_18_password",
+            "--valid-from",
+            "1000",
+            "--expires-at",
+            "2000",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        rot_pg.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rot_pg.stderr)
+    );
+    let rot_path = dir.join("rotate-pg.json");
+    std::fs::write(&rot_path, &rot_pg.stdout).unwrap();
+    let (ok, text) = inspect(rot_path.to_str().unwrap());
+    assert!(ok, "{text}");
+    assert!(
+        text.contains("target: app_postgresql_18_password"),
+        "{text}"
+    );
+
     std::fs::remove_dir_all(&dir).unwrap();
 }

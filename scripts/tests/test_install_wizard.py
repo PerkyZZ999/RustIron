@@ -142,6 +142,60 @@ class InstallWizardTests(unittest.TestCase):
         self.assertEqual(cfg.sites_xfs_loopback_gib, 20)
         self.assertEqual(cfg.console_domain, "panel.example.test")
 
+    def test_caddy_edge_over_ols_wizard_plan_binds_ols_loopback_and_caddy_public(self):
+        # W657 (D-102, Decision A1): single-IP mixed host puts Caddy on :80/:443
+        # and OpenLiteSpeed on 127.0.0.1:8080.
+        code, stdout, stderr = self.run_cli([
+            "--json",
+            "--root", str(self.root),
+            "--host-id", "mixed_vps_1",
+            "--public-ipv4", "198.51.100.25",
+            "--ingress-mode", "caddy_edge_over_ols",
+            "--ols-loopback-port", "8080",
+        ])
+        self.assertEqual(code, 0, stderr)
+        doc = json.loads(stdout)
+        enroll_step = next(s for s in doc["steps"] if s["id"] == "host_enrollment_and_dropins")
+        enroll_cmd = enroll_step["commands"][0]
+        self.assertIn("--ols-address 127.0.0.1:8080", enroll_cmd)
+        self.assertNotIn("--ols-tls-address", enroll_cmd)
+        self.assertIn("--caddy-mode caddy_edge_over_ols", enroll_cmd)
+        self.assertIn("--caddy-http-address 198.51.100.25:80", enroll_cmd)
+        self.assertIn("--caddy-https-address 198.51.100.25:443", enroll_cmd)
+        self.assertIn("--caddy-ols-upstream 127.0.0.1:8080", enroll_cmd)
+        self.assertIn("caddy", doc["host_inspection"]["packages"])
+
+        # caddy_multi_ip without distinct --caddy-ipv4 is refused.
+        code, _, err = self.run_cli([
+            "--root", str(self.root),
+            "--public-ipv4", "198.51.100.25",
+            "--ingress-mode", "caddy_multi_ip",
+        ])
+        self.assertEqual(code, 1)
+        self.assertIn("REFUSED", err)
+
+    def test_enable_postgres_emits_pinned_pgdg_18_and_hardened_loopback_step(self):
+        # W658 (D-102 Decision C2): --enable-postgres adds the PGDG 18.7+ setup step.
+        code, stdout, stderr = self.run_cli([
+            "--json",
+            "--root", str(self.root),
+            "--host-id", "pg_vps_1",
+            "--public-ipv4", "198.51.100.26",
+            "--enable-postgres",
+        ])
+        self.assertEqual(code, 0, stderr)
+        doc = json.loads(stdout)
+        self.assertIn("postgresql18", doc["host_inspection"]["packages"])
+        pg_step = next(s for s in doc["steps"] if s["id"] == "postgresql_18_setup")
+        joined = "\n".join(pg_step["commands"])
+        self.assertIn("pgdg-keys.sha256", joined)
+        self.assertIn("rustiron-pgdg-18.repo", joined)
+        self.assertIn("postgresql18-server", joined)
+        self.assertIn("zz-rustiron-loopback.conf", joined)
+        self.assertIn("pg_hba.conf", joined)
+        self.assertIn("restorecon -RF /usr/pgsql-18/bin", joined)
+        self.assertIn("postgresql-18.service", joined)
+
 
 if __name__ == "__main__":
     unittest.main()

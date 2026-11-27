@@ -554,7 +554,7 @@ fn a_v36_journal_migrates_and_an_inconsistent_restore_is_refused() {
     let mut ledger = state.init();
     site_with_captures(&mut ledger, false);
     drop(ledger);
-    state.sql(&format!("DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; DROP TABLE proxy_routes; DROP TABLE dns_change_sets; DROP TABLE dns_changes; DROP TABLE dns_imports; DROP TABLE restore_steps; DROP TABLE restore_attempts; DROP TABLE site_restores; {TO_V40_DELETIONS} PRAGMA user_version=36;"));
+    state.sql(&format!("DROP TABLE caddy_generations; DROP TABLE app_fullstack_specs; DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; DROP TABLE proxy_routes; DROP TABLE dns_change_sets; DROP TABLE dns_changes; DROP TABLE dns_imports; DROP TABLE restore_steps; DROP TABLE restore_attempts; DROP TABLE site_restores; {TO_V40_DELETIONS} PRAGMA user_version=36;"));
     assert_eq!(state.open().err(), Some(JournalError::Unavailable));
     let mut ledger = state.migrate().unwrap();
     let intent = restore(1, RestoreScope::Database);

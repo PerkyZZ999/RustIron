@@ -195,7 +195,12 @@ fn product_units_match_the_compiled_layout() {
         .collect();
     assert_eq!(
         writable,
-        [state, product::OLS_INCLUDE_DIR, product::OLS_EJECTED_DIR]
+        [
+            state,
+            product::OLS_INCLUDE_DIR,
+            product::OLS_EJECTED_DIR,
+            product::CADDY_CONFIG_DIR
+        ]
     );
     // W381 (D-032): the boot guard writes only the journal lease and the
     // `current` link, through the executor binary.
@@ -229,7 +234,11 @@ fn selinux_file_contexts_name_the_job_and_helper_locations() {
     assert!(admin.contains(&format!("{}\t-d\t", layout::RESTORE_PROBES_ROOT)));
     assert!(admin.contains(&format!("{}(/.*)?\t", layout::ADMIN_RUNTIME_DIR)));
     let executor = include_str!("../../../policy/selinux/rustiron_executor.fc");
-    for path in [layout::OLS_INCLUDE_DIR, layout::OLS_EJECTED_DIR] {
+    for path in [
+        layout::OLS_INCLUDE_DIR,
+        layout::OLS_EJECTED_DIR,
+        layout::CADDY_CONFIG_DIR,
+    ] {
         assert!(executor.contains(&format!("{path}(/.*)?\t")), "{path}");
     }
 }

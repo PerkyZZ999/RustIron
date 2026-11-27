@@ -29,6 +29,7 @@ use sha2::{Digest, Sha256};
 
 pub mod admin_helper;
 mod app_site;
+pub mod caddy;
 mod capture;
 mod census;
 mod certificate;
@@ -49,6 +50,7 @@ mod packages;
 mod page_cache;
 pub mod peer_label;
 mod policy;
+mod postgres;
 mod product_capture;
 pub mod provision;
 mod proxy_site;
@@ -617,15 +619,22 @@ pub(crate) fn verified_proxy(
     })
 }
 
-/// W598 (D-099): a verified `app_provision`.
+/// W598 (D-099) & W659 (D-102): a verified `app_provision`.
 pub(crate) struct VerifiedAppProvision {
     pub intent: ProvisionIntent,
     pub enrolled: policy::ProvisioningPolicy,
     pub facts: rustiron_journal::AppFacts,
+    pub fullstack: Option<rustiron_journal::AppFullstackSpec>,
+}
+
+/// W659 (D-102): a verified `app_deploy` (v1 or v2 with optional blue/green cutover).
+pub(crate) struct VerifiedAppDeploy {
+    pub intent: rustiron_journal::AppReleaseIntent,
+    pub blue_green_cutover: bool,
 }
 
 /// Every `app_provision` admission check: enrolled policy, peer, provisioning
-/// and OLS enrollments, closed plan/grant binding, reserved ports, time, and SSHSIG.
+/// and ingress enrollments, closed plan/grant binding, reserved ports, time, and SSHSIG.
 pub(crate) fn verified_app_provision(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
@@ -651,6 +660,11 @@ pub(crate) fn verified_app_provision(
         return Err(ExecutorError::InvalidRequest);
     }
     let plan = rustiron_contracts::approval::AppProvisionPlan::decode(request.plan)?;
+    if plan.ingress() == rustiron_contracts::approval::IngressEngine::Caddy
+        && enrolled.caddy.is_none()
+    {
+        return Err(ExecutorError::Unavailable);
+    }
     let grant = rustiron_contracts::approval::AppProvisionGrant::decode(request.grant)?;
     rustiron_contracts::approval::check_app_provision_binding(
         &plan,
@@ -667,7 +681,22 @@ pub(crate) fn verified_app_provision(
     )?;
     let mut reserved = ols.reserved_ports()?;
     reserved.extend(enrolled.firewall.as_ref().map(|firewall| firewall.ssh_port));
-    if !proxy_site::ports_free(&reserved, &[plan.port()]) {
+    if let Some(caddy) = &enrolled.caddy {
+        reserved.push(caddy::CADDY_ADMIN_PORT);
+        if let Ok(addr) = caddy.http_address.parse::<std::net::SocketAddr>() {
+            reserved.push(addr.port());
+        }
+        if let Ok(addr) = caddy.https_address.parse::<std::net::SocketAddr>() {
+            reserved.push(addr.port());
+        }
+        if let Some(ols_up) = &caddy.ols_upstream
+            && let Ok(addr) = ols_up.parse::<std::net::SocketAddr>()
+        {
+            reserved.push(addr.port());
+        }
+    }
+    let plan_ports = plan.all_ports();
+    if !plan_ports.is_empty() && !proxy_site::ports_free(&reserved, &plan_ports) {
         return Err(ExecutorError::BindingDenied);
     }
     let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
@@ -678,6 +707,22 @@ pub(crate) fn verified_app_provision(
         &anchor.scratch_dir,
         &scratch,
     )?;
+    let fullstack = (plan.schema_version() == 2).then(|| rustiron_journal::AppFullstackSpec {
+        ingress: plan.ingress(),
+        topology: plan.topology(),
+        database: plan.database(),
+        blue_green: plan.blue_green(),
+        active_slot: rustiron_journal::AppSlot::A,
+        standby_port: plan.standby_port(),
+        spa_fallback: plan.spa_fallback(),
+        frontend_dir: plan.frontend_dir().map(str::to_owned),
+        frontend_runtime: plan.frontend_runtime(),
+        frontend_entrypoint: plan.frontend_entrypoint().map(str::to_owned),
+        frontend_port: plan.frontend_port(),
+        frontend_standby_port: plan.frontend_standby_port(),
+        sse_prefixes: plan.sse_prefixes().to_vec(),
+        strip_api_prefixes: plan.strip_api_prefixes().to_vec(),
+    });
     Ok(VerifiedAppProvision {
         intent: ProvisionIntent {
             operation_id: request.operation_id.clone(),
@@ -708,6 +753,7 @@ pub(crate) fn verified_app_provision(
                 websockets: plan.websockets().to_vec(),
             },
         },
+        fullstack,
     })
 }
 
@@ -716,7 +762,7 @@ pub(crate) fn verified_app_provision(
 pub(crate) fn verified_app_deploy(
     anchor: &TrustAnchor,
     request: &AdmissionRequest<'_>,
-) -> Result<rustiron_journal::AppReleaseIntent, ExecutorError> {
+) -> Result<VerifiedAppDeploy, ExecutorError> {
     let owner = anchor.owner_uid;
     let loaded = policy::load(
         &files::open_trusted_directory(&anchor.policy_dir, owner)?,
@@ -755,26 +801,29 @@ pub(crate) fn verified_app_deploy(
         &anchor.scratch_dir,
         &scratch,
     )?;
-    Ok(rustiron_journal::AppReleaseIntent {
-        operation_id: request.operation_id.clone(),
-        idempotency_key: request.idempotency_key.clone(),
-        grant_id: grant.grant_id().clone(),
-        nonce: grant.nonce().clone(),
-        plan_digest: plan.digest(),
-        grant_digest: Sha256Digest::from_bytes(Sha256::digest(grant.as_bytes()).into()),
-        host_id: enrolled.host_id.clone(),
-        host_epoch: enrolled.host_epoch.clone(),
-        site_id: plan.site_id().clone(),
-        release_id: plan.release_id().to_owned(),
-        runtime: plan.runtime(),
-        artifact_sha256: plan.artifact_sha256().clone(),
-        manifest_sha256: plan.manifest_sha256().clone(),
-        file_count: plan.file_count(),
-        total_bytes: plan.total_bytes(),
-        migration_entrypoint: plan.migration_entrypoint().map(str::to_owned),
-        capture_operation_id: plan.capture_operation_id().cloned(),
-        health_path: plan.health_path().to_owned(),
-        expires_at: grant.expires_at(),
+    Ok(VerifiedAppDeploy {
+        intent: rustiron_journal::AppReleaseIntent {
+            operation_id: request.operation_id.clone(),
+            idempotency_key: request.idempotency_key.clone(),
+            grant_id: grant.grant_id().clone(),
+            nonce: grant.nonce().clone(),
+            plan_digest: plan.digest(),
+            grant_digest: Sha256Digest::from_bytes(Sha256::digest(grant.as_bytes()).into()),
+            host_id: enrolled.host_id.clone(),
+            host_epoch: enrolled.host_epoch.clone(),
+            site_id: plan.site_id().clone(),
+            release_id: plan.release_id().to_owned(),
+            runtime: plan.runtime(),
+            artifact_sha256: plan.artifact_sha256().clone(),
+            manifest_sha256: plan.manifest_sha256().clone(),
+            file_count: plan.file_count(),
+            total_bytes: plan.total_bytes(),
+            migration_entrypoint: plan.migration_entrypoint().map(str::to_owned),
+            capture_operation_id: plan.capture_operation_id().cloned(),
+            health_path: plan.health_path().to_owned(),
+            expires_at: grant.expires_at(),
+        },
+        blue_green_cutover: plan.blue_green_cutover(),
     })
 }
 

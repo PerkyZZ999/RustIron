@@ -10,13 +10,17 @@ use std::{
 
 use rustiron_contracts::{
     Timestamp,
-    approval::{AppLifecycleAction, AppRuntime, Hostname, ProxyRoute, SiteId},
+    approval::{
+        AppDatabase, AppLifecycleAction, AppRuntime, AppTopology, Hostname, IngressEngine,
+        ProxyRoute, SiteId,
+    },
 };
 use rustiron_journal::{
-    AppFacts, AppLifecycleIntent, AppLifecycleResult, AppReleaseIntent, AppReleaseResult,
-    AppReleaseState, AppReleaseStep, CaptureIntent, CaptureMethod, DeleteIntent, DeleteResult,
-    FixtureJournal, JournalError, ProvisionIntent, ProvisionResult, ProvisionStep, ProxyFacts,
-    StepState,
+    AppFacts, AppFullstackSpec, AppLifecycleIntent, AppLifecycleResult, AppReleaseIntent,
+    AppReleaseResult, AppReleaseState, AppReleaseStep, AppSlot, CaddyGeneration,
+    CaddyGenerationState, CaddyIngressMode, CaptureIntent, CaptureMethod, DeleteIntent,
+    DeleteResult, FixtureJournal, JournalError, ProvisionIntent, ProvisionResult, ProvisionStep,
+    ProxyFacts, StepState,
 };
 
 #[expect(
@@ -461,7 +465,7 @@ fn a_v42_journal_migrates_cleanly_to_v43_and_preserves_records() {
     drop(journal);
 
     state.sql(
-        "DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; \
+        "DROP TABLE caddy_generations; DROP TABLE app_fullstack_specs; DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; \
          DROP TABLE app_releases; DROP TABLE apps; PRAGMA user_version=42;",
     );
     assert!(matches!(state.open(), Err(JournalError::Unavailable)));
@@ -476,4 +480,246 @@ fn a_v42_journal_migrates_cleanly_to_v43_and_preserves_records() {
             .unwrap(),
         ProvisionResult::New(_)
     ));
+}
+
+#[test]
+fn d102_v45_fullstack_specs_blue_green_slots_port_collisions_caddy_generations_and_v44_migration() {
+    let state = State::new("v45-fullstack");
+    let mut journal = state.init();
+
+    // 1. static_spa (Caddy, port 0, zero proxy routes, no DB)
+    let spa_intent = provision_intent("op_spa1", "docs1", "docs.example.test");
+    let spa_facts = AppFacts {
+        runtime: AppRuntime::StaticV1,
+        port: 0,
+        entrypoint: String::new(),
+        worker_entrypoint: None,
+        health_path: "/".to_owned(),
+        env_keys: Vec::new(),
+        memory_max_mib: 128,
+        tasks_max: 32,
+        quota_mib: 512,
+        routes: ProxyFacts {
+            routes: Vec::new(),
+            websockets: Vec::new(),
+        },
+    };
+    let spa_spec = AppFullstackSpec {
+        ingress: IngressEngine::Caddy,
+        topology: AppTopology::StaticSpa,
+        database: AppDatabase::None,
+        blue_green: false,
+        active_slot: AppSlot::A,
+        standby_port: None,
+        spa_fallback: true,
+        frontend_dir: Some("frontend".to_owned()),
+        frontend_runtime: None,
+        frontend_entrypoint: None,
+        frontend_port: None,
+        frontend_standby_port: None,
+        sse_prefixes: Vec::new(),
+        strip_api_prefixes: Vec::new(),
+    };
+    assert!(matches!(
+        journal
+            .record_fullstack_app_provision(&spa_intent, &spa_facts, &spa_spec, ts(1000))
+            .unwrap(),
+        ProvisionResult::New(_)
+    ));
+    finish_provision(&mut journal, "op_spa1");
+    assert_eq!(
+        journal.app_fullstack_spec(&id("op_spa1")).unwrap(),
+        Some(spa_spec.clone())
+    );
+    // A second static_spa (also port 0) succeeds without port collision.
+    let spa2 = provision_intent("op_spa2", "docs2", "docs2.example.test");
+    assert!(matches!(
+        journal
+            .record_fullstack_app_provision(&spa2, &spa_facts, &spa_spec, ts(1005))
+            .unwrap(),
+        ProvisionResult::New(_)
+    ));
+    finish_provision(&mut journal, "op_spa2");
+
+    // 2. fullstack_split (Caddy static `/` + Bun API `/api/` + PostgreSQL 18 + blue/green slot)
+    let split_intent = provision_intent("op_split1", "saas1", "saas.example.test");
+    let split_facts = AppFacts {
+        runtime: AppRuntime::Bun1V1,
+        port: 4101,
+        entrypoint: "backend/index.ts".to_owned(),
+        worker_entrypoint: None,
+        health_path: "/api/health".to_owned(),
+        env_keys: vec!["DATABASE_URL".to_owned()],
+        memory_max_mib: 1024,
+        tasks_max: 128,
+        quota_mib: 4096,
+        routes: ProxyFacts {
+            routes: vec![ProxyRoute {
+                prefix: "/api/".to_owned(),
+                port: 4101,
+            }],
+            websockets: vec![ProxyRoute {
+                prefix: "/ws/".to_owned(),
+                port: 4101,
+            }],
+        },
+    };
+    let split_spec = AppFullstackSpec {
+        ingress: IngressEngine::Caddy,
+        topology: AppTopology::FullstackSplit,
+        database: AppDatabase::Postgresql18,
+        blue_green: true,
+        active_slot: AppSlot::A,
+        standby_port: Some(4102),
+        spa_fallback: true,
+        frontend_dir: Some("frontend".to_owned()),
+        frontend_runtime: None,
+        frontend_entrypoint: None,
+        frontend_port: None,
+        frontend_standby_port: None,
+        sse_prefixes: vec!["/api/events/".to_owned()],
+        strip_api_prefixes: vec!["/api/".to_owned()],
+    };
+    assert!(matches!(
+        journal
+            .record_fullstack_app_provision(&split_intent, &split_facts, &split_spec, ts(1010))
+            .unwrap(),
+        ProvisionResult::New(_)
+    ));
+    // Exact retry returns Existing; mismatching spec returns Conflict.
+    assert!(matches!(
+        journal
+            .record_fullstack_app_provision(&split_intent, &split_facts, &split_spec, ts(1011))
+            .unwrap(),
+        ProvisionResult::Existing(_)
+    ));
+    finish_provision(&mut journal, "op_split1");
+
+    // Another app colliding with standby port 4102 is refused with Consumed.
+    let collide = provision_intent("op_col1", "col1", "col1.example.test");
+    assert_eq!(
+        journal.record_app_provision(&collide, &app_facts(AppRuntime::Node22V1, 4102), ts(1015)),
+        Err(JournalError::Consumed)
+    );
+
+    // Flip blue/green slot A -> B and confirm persistence across reopen.
+    let flipped = journal
+        .set_app_active_slot(&id("op_split1"), AppSlot::B)
+        .unwrap();
+    assert_eq!(flipped.active_slot, AppSlot::B);
+
+    // 3. Caddy generation ledger: stage -> activate -> stage second -> activate -> rollback to first.
+    let g1 = CaddyGeneration {
+        generation_id: id("caddy_gen_1"),
+        operation_id: id("op_cfg_1"),
+        ingress_mode: CaddyIngressMode::CaddyEdgeOverOls,
+        config_sha256: digest('1'),
+        site_count: 3,
+        created_at: ts(1020),
+        state: CaddyGenerationState::Staged,
+    };
+    let g2 = CaddyGeneration {
+        generation_id: id("caddy_gen_2"),
+        operation_id: id("op_cfg_2"),
+        ingress_mode: CaddyIngressMode::CaddyEdgeOverOls,
+        config_sha256: digest('2'),
+        site_count: 3,
+        created_at: ts(1025),
+        state: CaddyGenerationState::Staged,
+    };
+    journal.record_caddy_generation(&g1).unwrap();
+    assert_eq!(
+        journal
+            .activate_caddy_generation(&id("caddy_gen_1"))
+            .unwrap()
+            .state,
+        CaddyGenerationState::Active
+    );
+    journal.record_caddy_generation(&g2).unwrap();
+    journal
+        .activate_caddy_generation(&id("caddy_gen_2"))
+        .unwrap();
+    assert_eq!(
+        journal
+            .active_caddy_generation()
+            .unwrap()
+            .unwrap()
+            .generation_id,
+        id("caddy_gen_2")
+    );
+    journal
+        .rollback_caddy_generation(&id("caddy_gen_2"), Some(&id("caddy_gen_1")))
+        .unwrap();
+    assert_eq!(
+        journal
+            .active_caddy_generation()
+            .unwrap()
+            .unwrap()
+            .generation_id,
+        id("caddy_gen_1")
+    );
+    assert_eq!(journal.caddy_generations().unwrap().len(), 2);
+
+    // Reopen validates all v45 invariants cleanly.
+    drop(journal);
+    let reopened = state.open().unwrap();
+    assert_eq!(
+        reopened
+            .app_fullstack_spec_by_site(&SiteId::try_from("saas1".to_owned()).unwrap())
+            .unwrap()
+            .unwrap()
+            .active_slot,
+        AppSlot::B
+    );
+    assert_eq!(
+        reopened
+            .active_caddy_generation()
+            .unwrap()
+            .unwrap()
+            .generation_id,
+        id("caddy_gen_1")
+    );
+}
+
+#[test]
+fn a_v44_journal_migrates_cleanly_to_v45_and_preserves_apps() {
+    let state = State::new("v44-to-v45");
+    let mut journal = state.init();
+    let app = provision_intent("op_app_v44", "legacy1", "legacy1.example.test");
+    journal
+        .record_app_provision(&app, &app_facts(AppRuntime::Node22V1, 43187), ts(1000))
+        .unwrap();
+    finish_provision(&mut journal, "op_app_v44");
+    drop(journal);
+
+    // Downgrade to exact v44 schema (old CHECKs on apps, app_releases, credential_rotations).
+    state.sql(
+        "PRAGMA foreign_keys=OFF; \
+         DROP TABLE caddy_generations; DROP TABLE app_fullstack_specs; \
+         CREATE TEMP TABLE a44 AS SELECT * FROM apps; DROP TABLE apps; \
+         CREATE TABLE apps (operation_id TEXT PRIMARY KEY REFERENCES provisions(operation_id), runtime TEXT NOT NULL CHECK(runtime IN ('node_22_v1','bun_1_v1')), port INTEGER NOT NULL CHECK(port BETWEEN 1024 AND 65535 AND port<>3306), entrypoint TEXT NOT NULL CHECK(length(entrypoint) BETWEEN 1 AND 128), worker_entrypoint TEXT CHECK(worker_entrypoint IS NULL OR length(worker_entrypoint) BETWEEN 1 AND 128), health_path TEXT NOT NULL CHECK(length(health_path) BETWEEN 1 AND 128 AND health_path GLOB '/*'), env_keys TEXT NOT NULL CHECK(length(env_keys)<=4200 AND env_keys NOT GLOB '*[^A-Z0-9_,]*'), memory_max_mib INTEGER NOT NULL CHECK(memory_max_mib BETWEEN 64 AND 8192), tasks_max INTEGER NOT NULL CHECK(tasks_max BETWEEN 16 AND 1024), quota_mib INTEGER NOT NULL CHECK(quota_mib BETWEEN 128 AND 65536)) STRICT; \
+         INSERT INTO apps SELECT * FROM temp.a44; DROP TABLE temp.a44; \
+         CREATE TEMP TABLE r44 AS SELECT * FROM app_releases; DROP TABLE app_releases; \
+         CREATE TABLE app_releases (operation_id TEXT PRIMARY KEY, site_id TEXT NOT NULL REFERENCES provisions(site_id), release_id TEXT NOT NULL CHECK(length(release_id) BETWEEN 1 AND 64), runtime TEXT NOT NULL CHECK(runtime IN ('node_22_v1','bun_1_v1')), artifact_sha256 TEXT NOT NULL CHECK(length(artifact_sha256)=64 AND artifact_sha256 NOT GLOB '*[^0-9a-f]*'), manifest_sha256 TEXT NOT NULL CHECK(length(manifest_sha256)=64 AND manifest_sha256 NOT GLOB '*[^0-9a-f]*'), file_count INTEGER NOT NULL CHECK(file_count BETWEEN 1 AND 50000), total_bytes INTEGER NOT NULL CHECK(total_bytes BETWEEN 1 AND 536870912), migration_entrypoint TEXT CHECK(migration_entrypoint IS NULL OR length(migration_entrypoint) BETWEEN 1 AND 128), capture_operation_id TEXT REFERENCES captures(operation_id), health_path TEXT NOT NULL CHECK(length(health_path) BETWEEN 1 AND 128 AND health_path GLOB '/*'), idempotency_key TEXT NOT NULL UNIQUE, grant_id TEXT NOT NULL UNIQUE, nonce TEXT NOT NULL UNIQUE, plan_digest TEXT NOT NULL CHECK(length(plan_digest)=64 AND plan_digest NOT GLOB '*[^0-9a-f]*'), grant_digest TEXT NOT NULL CHECK(length(grant_digest)=64 AND grant_digest NOT GLOB '*[^0-9a-f]*'), expires_at INTEGER NOT NULL CHECK(expires_at>=0), state TEXT NOT NULL CHECK(state IN ('intent','done','rolled_back')), UNIQUE(site_id, release_id)) STRICT; \
+         CREATE UNIQUE INDEX one_open_app_release ON app_releases(site_id) WHERE state='intent'; \
+         INSERT INTO app_releases SELECT * FROM temp.r44; DROP TABLE temp.r44; \
+         CREATE TEMP TABLE c44 AS SELECT * FROM credential_rotations; DROP TABLE credential_rotations; \
+         CREATE TABLE credential_rotations (operation_id TEXT PRIMARY KEY, site_id TEXT NOT NULL REFERENCES provisions(site_id), hostname TEXT NOT NULL CHECK(length(hostname) BETWEEN 1 AND 253 AND hostname NOT GLOB '*[^a-z0-9.-]*'), target TEXT NOT NULL CHECK(target='mariadb_user_password'), idempotency_key TEXT NOT NULL UNIQUE, grant_id TEXT NOT NULL UNIQUE, nonce TEXT NOT NULL UNIQUE, plan_digest TEXT NOT NULL CHECK(length(plan_digest)=64 AND plan_digest NOT GLOB '*[^0-9a-f]*'), grant_digest TEXT NOT NULL CHECK(length(grant_digest)=64 AND grant_digest NOT GLOB '*[^0-9a-f]*'), expires_at INTEGER NOT NULL CHECK(expires_at>=0), state TEXT NOT NULL CHECK(state IN ('intent','done','failed_compensated','needs_attention','failed'))) STRICT; \
+         CREATE UNIQUE INDEX one_open_credential_rotation ON credential_rotations(site_id) WHERE state IN ('intent','needs_attention'); \
+         INSERT INTO credential_rotations SELECT * FROM temp.c44; DROP TABLE temp.c44; \
+         PRAGMA user_version=44;",
+    );
+    assert!(matches!(state.open(), Err(JournalError::Unavailable)));
+
+    let migrated =
+        FixtureJournal::migrate(&state.0, id("host_fixture"), id("epoch_fixture")).unwrap();
+    assert_eq!(migrated.admission_count().unwrap(), 1);
+    assert_eq!(
+        migrated.app_facts(&id("op_app_v44")).unwrap().unwrap().port,
+        43187
+    );
+    assert_eq!(
+        migrated.app_fullstack_spec(&id("op_app_v44")).unwrap(),
+        None
+    );
 }

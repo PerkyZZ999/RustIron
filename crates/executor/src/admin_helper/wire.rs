@@ -118,6 +118,10 @@ pub enum AdminStep {
     /// W598 (D-099): run the open step of the journal's `app_deploy`
     /// (`unpack`, `migrate`, `activate`, `health`, or `rollback`).
     AppDeployStep,
+    /// W659 (D-102): render, validate, and atomically activate the Caddy
+    /// generation after a healthy Caddy app deploy (and drain the previous
+    /// blue/green slot when applicable).
+    AppCaddyActivate,
     /// W598 (D-099): apply the open signed `app_lifecycle` unit state change.
     AppLifecycle,
     /// W609 (D-100): rotate a live WordPress site's MariaDB password and
@@ -131,7 +135,7 @@ pub enum AdminStep {
 
 impl AdminStep {
     /// Every step, in wire order.
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 34] = [
         Self::ProvisionStep,
         Self::CaptureRun,
         Self::ProbeRun,
@@ -162,6 +166,7 @@ impl AdminStep {
         Self::DnsZoneRead,
         Self::DnsChange,
         Self::AppDeployStep,
+        Self::AppCaddyActivate,
         Self::AppLifecycle,
         Self::SiteCredentialRotate,
         Self::SiteCredentialVerify,
@@ -200,6 +205,7 @@ impl AdminStep {
             Self::DnsZoneRead => "dns_zone_read",
             Self::DnsChange => "dns_change",
             Self::AppDeployStep => "app_deploy_step",
+            Self::AppCaddyActivate => "app_caddy_activate",
             Self::AppLifecycle => "app_lifecycle",
             Self::SiteCredentialRotate => "site_credential_rotate",
             Self::SiteCredentialVerify => "site_credential_verify",

@@ -1,20 +1,24 @@
-# C-01 / W640 (P27, D-099): dedicated MCS-constrained SELinux domain for
-# confined Node.js 22 (node_22_v1) and Bun 1.4 (bun_1_v1) app services,
-# companion background workers, and pre-activation migration jobs.
+# C-01 / W640 (P27, D-099) & W658 (D-102 Decision C2): dedicated MCS-constrained
+# SELinux domains for confined Node.js 22 (node_22_v1) and Bun 1.4 (bun_1_v1)
+# app services, companion background workers, and pre-activation migration jobs.
 #
-# Each app runs as system_u:system_r:rustiron_app_t:s0:c<N> matching its
-# per-site MCS category on /srv/sites/rs_<site>/:
+# Three strictly scoped per-app domains share the same MCS-isolated base rules:
+# - rustiron_app_t (none / sqlite): ZERO outbound TCP connect (no name_connect).
+# - rustiron_app_mariadb_t (database=mariadb): identical to rustiron_app_t PLUS
+#   local MariaDB Unix socket and loopback TCP 3306 (mysqld_port_t) connect ONLY.
+# - rustiron_app_pg_t (database=postgresql_18): identical to rustiron_app_t PLUS
+#   local PostgreSQL Unix socket and loopback TCP 5432 (postgresql_port_t) ONLY.
+#
+# Each app runs as system_u:system_r:<domain>:s0:c<N> matching its per-site MCS
+# category on /srv/sites/rs_<site>/:
 # - releases/, current, html/, private/ carry httpd_sys_content_t:s0:c<N>
-#   (read-only in rustiron_app_t + ProtectSystem=strict).
-# - data/, tmp/, logs/ carry httpd_sys_rw_content_t:s0:c<N> (read-write in
-#   rustiron_app_t, MCS-isolated per site, with mmap/lock for SQLite WAL).
+#   (read-only in all app domains + ProtectSystem=strict).
+# - data/, tmp/, logs/ carry httpd_sys_rw_content_t:s0:c<N> (read-write,
+#   MCS-isolated per site, with mmap/lock for SQLite WAL).
 # - No corecmd_exec_bin: compromised JS/TS code cannot exec shells or host
 #   binaries.
-# - No corenet_tcp_connect_*: outbound TCP (including cross-app loopback TCP
-#   to sibling app ports) is denied by SELinux in addition to systemd
-#   IPAddressDeny=any / IPAddressAllow=localhost (app) and PrivateNetwork=yes
-#   (worker & migration jobs).
-policy_module(rustiron_app, 0.1.0)
+# - No outbound HTTP/HTTPS connect, no cross-app loopback TCP to sibling apps.
+policy_module(rustiron_app, 0.2.1)
 
 gen_require(`
 	type init_t, bin_t, httpd_sys_content_t, httpd_sys_rw_content_t;
@@ -24,72 +28,100 @@ gen_require(`
 	role system_r;
 ')
 
+attribute rustiron_app_domain;
+
 type rustiron_app_t;
 domain_type(rustiron_app_t)
+typeattribute rustiron_app_t rustiron_app_domain;
 role system_r types rustiron_app_t;
 mcs_constrained(rustiron_app_t)
 
-# Enter rustiron_app_t when PID 1 execs pinned /usr/bin/node(-22) or
+type rustiron_app_mariadb_t;
+domain_type(rustiron_app_mariadb_t)
+typeattribute rustiron_app_mariadb_t rustiron_app_domain;
+role system_r types rustiron_app_mariadb_t;
+mcs_constrained(rustiron_app_mariadb_t)
+
+type rustiron_app_pg_t;
+domain_type(rustiron_app_pg_t)
+typeattribute rustiron_app_pg_t rustiron_app_domain;
+role system_r types rustiron_app_pg_t;
+mcs_constrained(rustiron_app_pg_t)
+
+# Enter each app domain when PID 1 execs pinned /usr/bin/node(-22) or
 # /usr/local/bin/bun (both bin_t) under NoNewPrivileges=yes.
 corecmd_bin_entry_type(rustiron_app_t)
-allow init_t rustiron_app_t:process transition;
-allow init_t rustiron_app_t:process2 { nnp_transition nosuid_transition };
-allow rustiron_app_t init_t:process sigchld;
-init_use_fds(rustiron_app_t)
+corecmd_bin_entry_type(rustiron_app_mariadb_t)
+corecmd_bin_entry_type(rustiron_app_pg_t)
+allow init_t rustiron_app_domain:process transition;
+allow init_t rustiron_app_domain:process2 { nnp_transition nosuid_transition };
+allow rustiron_app_domain init_t:process sigchld;
+init_use_fds(rustiron_app_domain)
 
 # Runtime process operations: V8/JSC JIT (execmem), libuv worker threads,
 # internal wakeup pipes, and rlimits.
-allow rustiron_app_t self:process { execmem signal sigchld getsched setsched setrlimit };
-allow rustiron_app_t self:fifo_file rw_fifo_file_perms;
-allow rustiron_app_t self:unix_stream_socket create_stream_socket_perms;
-allow rustiron_app_t self:unix_dgram_socket { create_socket_perms sendto };
+allow rustiron_app_domain self:process { execmem signal sigchld getsched setsched setrlimit };
+allow rustiron_app_domain self:fifo_file rw_fifo_file_perms;
+allow rustiron_app_domain self:unix_stream_socket create_stream_socket_perms;
+allow rustiron_app_domain self:unix_dgram_socket { create_socket_perms sendto };
 
 # Loopback HTTP/WebSocket server sockets ONLY: apps may bind/listen on high
 # unreserved loopback ports; outbound TCP connect (name_connect) is NOT
-# granted so a compromised app cannot reach sibling apps on 127.0.0.1.
-allow rustiron_app_t self:tcp_socket create_stream_socket_perms;
-corenet_tcp_bind_generic_node(rustiron_app_t)
-allow rustiron_app_t unreserved_port_t:tcp_socket name_bind;
+# granted on rustiron_app_domain or rustiron_app_t so a compromised app cannot
+# reach sibling apps on 127.0.0.1.
+allow rustiron_app_domain self:tcp_socket create_stream_socket_perms;
+corenet_tcp_bind_generic_node(rustiron_app_domain)
+allow rustiron_app_domain unreserved_port_t:tcp_socket name_bind;
 
 # Site files: releases/private read-only, data/tmp/logs read-write (MCS keeps
 # each app strictly to its own s0:c<N> category).
-read_files_pattern(rustiron_app_t, httpd_sys_content_t, httpd_sys_content_t)
-read_lnk_files_pattern(rustiron_app_t, httpd_sys_content_t, httpd_sys_content_t)
-list_dirs_pattern(rustiron_app_t, httpd_sys_content_t, httpd_sys_content_t)
-allow rustiron_app_t httpd_sys_content_t:file map;
+read_files_pattern(rustiron_app_domain, httpd_sys_content_t, httpd_sys_content_t)
+read_lnk_files_pattern(rustiron_app_domain, httpd_sys_content_t, httpd_sys_content_t)
+list_dirs_pattern(rustiron_app_domain, httpd_sys_content_t, httpd_sys_content_t)
+allow rustiron_app_domain httpd_sys_content_t:file map;
 
-manage_files_pattern(rustiron_app_t, httpd_sys_rw_content_t, httpd_sys_rw_content_t)
-manage_dirs_pattern(rustiron_app_t, httpd_sys_rw_content_t, httpd_sys_rw_content_t)
-manage_lnk_files_pattern(rustiron_app_t, httpd_sys_rw_content_t, httpd_sys_rw_content_t)
-allow rustiron_app_t httpd_sys_rw_content_t:file { map lock };
+manage_files_pattern(rustiron_app_domain, httpd_sys_rw_content_t, httpd_sys_rw_content_t)
+manage_dirs_pattern(rustiron_app_domain, httpd_sys_rw_content_t, httpd_sys_rw_content_t)
+manage_lnk_files_pattern(rustiron_app_domain, httpd_sys_rw_content_t, httpd_sys_rw_content_t)
+allow rustiron_app_domain httpd_sys_rw_content_t:file { map lock };
 
 # Runtime libraries, shared data, timezone/locale, certs, CPU/mem info, and
 # private /tmp + /dev/shm (scoped per unit by PrivateTmp=yes and tmpfs).
-files_read_usr_files(rustiron_app_t)
-miscfiles_read_localization(rustiron_app_t)
-miscfiles_read_generic_certs(rustiron_app_t)
-allow rustiron_app_t passwd_file_t:file read_file_perms;
-allow rustiron_app_t proc_t:dir list_dir_perms;
-kernel_read_system_state(rustiron_app_t)
-dev_read_sysfs(rustiron_app_t)
-dev_read_urand(rustiron_app_t)
-files_manage_generic_tmp_dirs(rustiron_app_t)
-files_manage_generic_tmp_files(rustiron_app_t)
-allow rustiron_app_t tmpfs_t:dir manage_dir_perms;
-allow rustiron_app_t tmpfs_t:file { manage_file_perms map lock };
-allow rustiron_app_t hugetlbfs_t:file { rw_file_perms map };
+files_read_usr_files(rustiron_app_domain)
+miscfiles_read_localization(rustiron_app_domain)
+miscfiles_read_generic_certs(rustiron_app_domain)
+allow rustiron_app_domain passwd_file_t:file read_file_perms;
+allow rustiron_app_domain proc_t:dir list_dir_perms;
+kernel_read_system_state(rustiron_app_domain)
+dev_read_sysfs(rustiron_app_domain)
+dev_read_urand(rustiron_app_domain)
+files_manage_generic_tmp_dirs(rustiron_app_domain)
+files_manage_generic_tmp_files(rustiron_app_domain)
+allow rustiron_app_domain tmpfs_t:dir manage_dir_perms;
+allow rustiron_app_domain tmpfs_t:file { manage_file_perms map lock };
+allow rustiron_app_domain hugetlbfs_t:file { rw_file_perms map };
 
 # Journal logging and systemd stdout/stderr stream.
-logging_send_syslog_msg(rustiron_app_t)
-init_search_pid_dirs(rustiron_app_t)
-allow rustiron_app_t init_t:unix_stream_socket { getattr write };
+logging_send_syslog_msg(rustiron_app_domain)
+init_search_pid_dirs(rustiron_app_domain)
+allow rustiron_app_domain init_t:unix_stream_socket { getattr write };
+
+# Opt-in database connectivity ONLY for explicitly enrolled DB domains (D-102 C2):
+# - MariaDB apps (rustiron_app_mariadb_t): local socket + loopback mysqld_port_t.
+mysql_stream_connect(rustiron_app_mariadb_t)
+mysql_search_db(rustiron_app_mariadb_t)
+corenet_tcp_connect_mysqld_port(rustiron_app_mariadb_t)
+
+# - PostgreSQL 18 apps (rustiron_app_pg_t): local socket + loopback postgresql_port_t.
+postgresql_stream_connect(rustiron_app_pg_t)
+corenet_tcp_connect_postgresql_port(rustiron_app_pg_t)
 
 # Silence benign startup stat/fs probes without granting access (exec,
-# cross-site MCS, and outbound TCP connect denials remain fully audited).
-dontaudit rustiron_app_t net_conf_t:file { getattr read };
-dontaudit rustiron_app_t fs_t:filesystem getattr;
-dontaudit rustiron_app_t cgroup_t:filesystem getattr;
-dontaudit rustiron_app_t cgroup_t:dir search;
-dontaudit rustiron_app_t sysctl_vm_t:file read;
-dontaudit rustiron_app_t var_t:dir read;
-dontaudit rustiron_app_t nsfs_t:file getattr;
+# cross-site MCS, and disallowed TCP connect denials remain fully audited).
+dontaudit rustiron_app_domain net_conf_t:file { getattr read };
+dontaudit rustiron_app_domain fs_t:filesystem getattr;
+dontaudit rustiron_app_domain cgroup_t:filesystem getattr;
+dontaudit rustiron_app_domain cgroup_t:dir search;
+dontaudit rustiron_app_domain sysctl_vm_t:file read;
+dontaudit rustiron_app_domain var_t:dir read;
+dontaudit rustiron_app_domain nsfs_t:file getattr;

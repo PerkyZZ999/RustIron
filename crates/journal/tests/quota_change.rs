@@ -279,7 +279,7 @@ fn a_v34_journal_migrates_and_a_change_of_an_unknown_site_is_refused() {
     let mut ledger = state.init();
     served(&mut ledger, "blog1");
     drop(ledger);
-    state.sql(&format!("DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; DROP TABLE proxy_routes; DROP TABLE dns_change_sets; DROP TABLE dns_changes; DROP TABLE dns_imports; DROP TABLE restore_steps; DROP TABLE restore_attempts; DROP TABLE site_restores; DROP TABLE clone_scrub_grants; DROP TABLE quota_changes; {TO_V40_DELETIONS} PRAGMA user_version=34;"));
+    state.sql(&format!("DROP TABLE caddy_generations; DROP TABLE app_fullstack_specs; DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; DROP TABLE proxy_routes; DROP TABLE dns_change_sets; DROP TABLE dns_changes; DROP TABLE dns_imports; DROP TABLE restore_steps; DROP TABLE restore_attempts; DROP TABLE site_restores; DROP TABLE clone_scrub_grants; DROP TABLE quota_changes; {TO_V40_DELETIONS} PRAGMA user_version=34;"));
     assert_eq!(state.open().err(), Some(JournalError::Unavailable));
     let mut ledger = state.migrate().unwrap();
     ledger

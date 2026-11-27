@@ -309,7 +309,7 @@ def pack_release(
     management_root: Path,
     out_dir: Path,
     channel: str = "stable",
-    journal_schema_version: int = 44,
+    journal_schema_version: int = 45,
     console_dir: Path | None = None,
     sbom_path: Path | None = None,
     release_notes_url: str | None = None,
@@ -572,7 +572,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_pack.add_argument("--management-root", type=Path, required=True)
     p_pack.add_argument("--out-dir", type=Path, required=True)
     p_pack.add_argument("--channel", choices=VALID_CHANNELS, default="stable")
-    p_pack.add_argument("--journal-schema-version", type=int, default=44)
+    p_pack.add_argument("--journal-schema-version", type=int, default=45)
     p_pack.add_argument("--console-dir", type=Path, default=None)
     p_pack.add_argument("--sbom", type=Path, default=None)
     p_pack.add_argument("--release-notes-url", default=None)

@@ -261,6 +261,22 @@ pub enum WorkerAction<'a> {
         /// Output file in the admin helper's runtime directory.
         output: &'a str,
     },
+    /// `backup-app-pg` (W658, D-102 C2): gated restic snapshot of a PostgreSQL 18
+    /// app site's `data/` directory and custom-format `pg_dump` file in `tmp/`.
+    BackupAppPg {
+        /// The journaled operation whose tag the snapshot carries.
+        operation: &'a Id,
+        /// Output file in the admin helper's runtime directory.
+        output: &'a str,
+    },
+    /// `backup-app-mariadb` (W658, D-102 C2): gated restic snapshot of a MariaDB
+    /// app site's `data/` directory and SQL dump file in `tmp/`.
+    BackupAppMariadb {
+        /// The journaled operation whose tag the snapshot carries.
+        operation: &'a Id,
+        /// Output file in the admin helper's runtime directory.
+        output: &'a str,
+    },
     /// `manifest` (W356, design step 10): the W203 manifest lines of one
     /// snapshot, read with the fetch key pair. PID 1 writes them to `output`.
     Manifest {
@@ -346,9 +362,11 @@ impl WorkerAction<'_> {
     /// 3, 6 and 9), the fetch principal for every other action.
     pub(crate) fn identity(&self) -> StoreIdentity {
         match self {
-            Self::Lock { .. } | Self::Backup { .. } | Self::BackupApp { .. } => {
-                StoreIdentity::Capture
-            }
+            Self::Lock { .. }
+            | Self::Backup { .. }
+            | Self::BackupApp { .. }
+            | Self::BackupAppPg { .. }
+            | Self::BackupAppMariadb { .. } => StoreIdentity::Capture,
             Self::RepositoryId
             | Self::SnapshotTag { .. }
             | Self::Check
@@ -398,6 +416,8 @@ impl WorkerAction<'_> {
             Self::Check => "check",
             Self::Backup { .. } => "backup",
             Self::BackupApp { .. } => "backup-app",
+            Self::BackupAppPg { .. } => "backup-app-pg",
+            Self::BackupAppMariadb { .. } => "backup-app-mariadb",
             Self::Lock { .. } => "lock",
             Self::Manifest { .. } => "manifest",
             Self::RestoreSize { .. } => "restore-size",
@@ -413,6 +433,8 @@ impl WorkerAction<'_> {
             Self::SnapshotTag { output, .. }
             | Self::Backup { output, .. }
             | Self::BackupApp { output, .. }
+            | Self::BackupAppPg { output, .. }
+            | Self::BackupAppMariadb { output, .. }
             | Self::Manifest { output, .. }
             | Self::RestoreSize { output, .. }
             | Self::CloneRestoreSize { output, .. }
@@ -433,6 +455,8 @@ impl WorkerAction<'_> {
             self,
             Self::Backup { .. }
                 | Self::BackupApp { .. }
+                | Self::BackupAppPg { .. }
+                | Self::BackupAppMariadb { .. }
                 | Self::Manifest { .. }
                 | Self::Restore { .. }
                 | Self::CloneRestore { .. }
@@ -532,7 +556,11 @@ pub fn worker_arguments(
             Some(output) => format!("StandardOutput=truncate:{output}"),
         },
     ];
-    if let WorkerAction::Backup { .. } | WorkerAction::BackupApp { .. } = action {
+    if let WorkerAction::Backup { .. }
+    | WorkerAction::BackupApp { .. }
+    | WorkerAction::BackupAppPg { .. }
+    | WorkerAction::BackupAppMariadb { .. } = action
+    {
         // Restic's temporary pack files: the one writable path, the site's
         // own tmp directory, which also holds the dump it reads.
         properties.push(format!(
@@ -577,7 +605,11 @@ pub fn worker_arguments(
     match action {
         WorkerAction::SnapshotTag { operation, .. }
         | WorkerAction::Backup { operation, .. }
-        | WorkerAction::BackupApp { operation, .. } => args.push(operation.as_str().to_owned()),
+        | WorkerAction::BackupApp { operation, .. }
+        | WorkerAction::BackupAppPg { operation, .. }
+        | WorkerAction::BackupAppMariadb { operation, .. } => {
+            args.push(operation.as_str().to_owned())
+        }
         WorkerAction::Lock {
             written: Some((operation, indexes)),
             ..
@@ -975,7 +1007,7 @@ pub fn write_snapshot(
     level: &str,
     operation: &Id,
 ) -> Result<WrittenSnapshot, WriteFailure> {
-    write_snapshot_kind(anchor, policy, site, level, operation, false)
+    write_snapshot_kind(anchor, policy, site, level, operation, None)
 }
 
 /// W601 (D-096/P30): as [`write_snapshot`] for a P27/EmDash app site (`data/`
@@ -987,7 +1019,27 @@ pub fn write_app_snapshot(
     level: &str,
     operation: &Id,
 ) -> Result<WrittenSnapshot, WriteFailure> {
-    write_snapshot_kind(anchor, policy, site, level, operation, true)
+    write_snapshot_kind(
+        anchor,
+        policy,
+        site,
+        level,
+        operation,
+        Some(rustiron_contracts::approval::AppDatabase::Sqlite),
+    )
+}
+
+/// W658 (D-102 C2): as [`write_app_snapshot`] selecting the exact closed worker
+/// action matching the app's enrolled database engine.
+pub fn write_app_snapshot_for_db(
+    anchor: &TrustAnchor,
+    policy: &ProductBackupPolicy,
+    site: &SiteId,
+    level: &str,
+    operation: &Id,
+    database: rustiron_contracts::approval::AppDatabase,
+) -> Result<WrittenSnapshot, WriteFailure> {
+    write_snapshot_kind(anchor, policy, site, level, operation, Some(database))
 }
 
 fn write_snapshot_kind(
@@ -996,19 +1048,27 @@ fn write_snapshot_kind(
     site: &SiteId,
     level: &str,
     operation: &Id,
-    is_app: bool,
+    app_db: Option<rustiron_contracts::approval::AppDatabase>,
 ) -> Result<WrittenSnapshot, WriteFailure> {
+    use rustiron_contracts::approval::AppDatabase;
     let job = Job::new("write", site).map_err(WriteFailure::NotLaunched)?;
-    let action = if is_app {
-        WorkerAction::BackupApp {
+    let action = match app_db {
+        None => WorkerAction::Backup {
             operation,
             output: &job.output,
-        }
-    } else {
-        WorkerAction::Backup {
+        },
+        Some(AppDatabase::None | AppDatabase::Sqlite) => WorkerAction::BackupApp {
             operation,
             output: &job.output,
-        }
+        },
+        Some(AppDatabase::Postgresql18) => WorkerAction::BackupAppPg {
+            operation,
+            output: &job.output,
+        },
+        Some(AppDatabase::Mariadb) => WorkerAction::BackupAppMariadb {
+            operation,
+            output: &job.output,
+        },
     };
     let launched = launch(
         anchor,

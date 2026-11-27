@@ -226,7 +226,7 @@ fn a_v39_journal_migrates_and_inconsistent_routes_are_refused() {
     finish(&mut ledger, &plain);
     drop(ledger);
     state.sql(&format!(
-        "DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; DROP TABLE proxy_routes; {TO_V40_DELETIONS} PRAGMA user_version=39;"
+        "DROP TABLE caddy_generations; DROP TABLE app_fullstack_specs; DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; DROP TABLE proxy_routes; {TO_V40_DELETIONS} PRAGMA user_version=39;"
     ));
     assert_eq!(state.open().err(), Some(JournalError::Unavailable));
     let mut ledger = state.migrate().unwrap();
@@ -357,7 +357,7 @@ fn a_v40_journal_migrates_with_its_deletions() {
     finish(&mut ledger, &proxy);
     drop(ledger);
     state.sql(&format!(
-        "DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; {TO_V40_DELETIONS} PRAGMA user_version=40;"
+        "DROP TABLE caddy_generations; DROP TABLE app_fullstack_specs; DROP TABLE credential_rotations; DROP TABLE app_lifecycles; DROP TABLE app_release_steps; DROP TABLE app_releases; DROP TABLE apps; DROP TABLE static_ejections; {TO_V40_DELETIONS} PRAGMA user_version=40;"
     ));
     assert_eq!(state.open().err(), Some(JournalError::Unavailable));
     let mut ledger = state.migrate().unwrap();

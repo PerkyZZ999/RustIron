@@ -128,6 +128,8 @@ fn state_of(text: &str) -> Result<CredentialRotateState, JournalError> {
 fn target_of(text: &str) -> Result<CredentialTarget, JournalError> {
     match text {
         "mariadb_user_password" => Ok(CredentialTarget::MariadbUserPassword),
+        "app_mariadb_password" => Ok(CredentialTarget::AppMariadbPassword),
+        "app_postgresql_18_password" => Ok(CredentialTarget::AppPostgresql18Password),
         _ => Err(JournalError::Unavailable),
     }
 }

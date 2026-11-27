@@ -1,7 +1,7 @@
 // W629 (P29 Slice 9): Better Auth + bun:sqlite real-HTTP integration & UI tests.
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -189,6 +189,49 @@ describe("Console Better Auth accounts & UI (W629)", () => {
       expect(blocked.status).toBe(429);
     } finally {
       auth.close();
+    }
+  });
+
+  it("requires a generated one-time setup token in production when none is configured (W663-C1)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ri-auth-c1-"));
+    const dbPath = join(dir, "auth.sqlite");
+    const hosts = allowedLoopbackHosts(4319);
+    const auth = createConsoleAuthBackend({
+      dbPath,
+      baseURL: "https://127.0.0.1:4319",
+      requireSetupToken: true,
+      getAllowedHosts: () => hosts,
+    });
+    const post = (setupToken: string) => {
+      const raw = JSON.stringify({
+        name: "Admin User",
+        email: "admin@example.test",
+        password: "LongEnoughPassword123!",
+        setupToken,
+      });
+      return {
+        method: "POST",
+        url: "https://127.0.0.1:4319/api/accounts/setup",
+        headers: new Headers({
+          host: "127.0.0.1:4319",
+          origin: "https://127.0.0.1:4319",
+          "sec-fetch-site": "same-origin",
+          "content-type": "application/json",
+        }),
+        text: async () => raw,
+      } as unknown as Request;
+    };
+    try {
+      const tokenPath = `${dbPath}.setup-token`;
+      expect(statSync(tokenPath).mode & 0o777).toBe(0o600);
+      const token = readFileSync(tokenPath, "utf8").trim();
+      expect(token.length).toBeGreaterThanOrEqual(32);
+      expect((await auth.setupAdmin(post(""))).status).toBe(403);
+      expect((await auth.setupAdmin(post(token))).status).toBe(201);
+      expect(existsSync(tokenPath)).toBe(false);
+    } finally {
+      auth.close();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

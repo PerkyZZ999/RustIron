@@ -28,9 +28,11 @@ const OBSERVATION_SCHEMA: &str = "rustiron-lab-observation/1";
 const STATUS_SCHEMA: &str = "rustiron-host-status/1";
 
 /// Units the lab profile depends on, in display order.
-const UNITS: [(&str, &str); 12] = [
+const UNITS: [(&str, &str); 14] = [
     ("lshttpd.service", "OpenLiteSpeed web server"),
+    ("rustiron-caddy.service", "Caddy edge ingress"),
     ("mariadb.service", "MariaDB database"),
+    ("postgresql-18.service", "PostgreSQL 18 database"),
     (
         "rustiron-s02-lab-executor.service",
         "Rustiron executor (lab)",
@@ -527,12 +529,59 @@ fn stack_versions() -> Value {
         "mariadb": command_version("/usr/bin/mariadb", &["--version"], "Distrib "),
         "php": php,
         "php_extensions": php_extensions,
-        // W562 / W651: Optional components (`when_installed: true` in support-matrix.json)
+        // W562 / W651 / W656: Optional components (`when_installed: true` in support-matrix.json)
         // report their version only when installed; absent binaries/packages stay null.
         "powerdns": command_version(RPM, &["-q", "--qf", "%{VERSION}", "pdns"], ""),
         "nodejs": command_version("/usr/bin/node", &["--version"], "v")
             .or_else(|| command_version(RPM, &["-q", "--qf", "%{VERSION}", "nodejs"], "")),
         "bun": command_version("/usr/local/bin/bun", &["--version"], ""),
+        "caddy": command_version("/usr/local/bin/caddy", &["version"], "v")
+            .or_else(|| command_version("/usr/bin/caddy", &["version"], "v")),
+        "postgresql": command_version("/usr/pgsql-18/bin/postgres", &["--version"], "postgres (PostgreSQL) ")
+            .or_else(|| command_version(RPM, &["-q", "--qf", "%{VERSION}", "postgresql18-server"], "")),
+    })
+}
+
+fn postgresql_status() -> Value {
+    let pg_isready = Path::new("/usr/pgsql-18/bin/pg_isready");
+    let installed = pg_isready.is_file() || Path::new("/usr/pgsql-18/bin/postgres").is_file();
+    if !installed {
+        return json!({
+            "installed": false,
+            "ping": "not_installed",
+            "listeners_beyond_loopback": 0,
+        });
+    }
+    let output = Command::new(pg_isready)
+        .args(["-h", "127.0.0.1", "-p", "5432", "-q"])
+        .env_clear()
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    let ping = match output {
+        Ok(out) if out.status.success() => "responding",
+        Ok(_) => "not_responding",
+        Err(_) => "unknown",
+    };
+    json!({
+        "installed": true,
+        "ping": ping,
+        "listeners_beyond_loopback": exposed_listeners_on(5432),
+    })
+}
+
+fn caddy_status() -> Value {
+    let installed =
+        Path::new("/usr/local/bin/caddy").is_file() || Path::new("/usr/bin/caddy").is_file();
+    if !installed {
+        return json!({
+            "installed": false,
+            "admin_port_listeners": 0,
+        });
+    }
+    json!({
+        "installed": true,
+        "admin_port_listeners": listeners_on(2019),
     })
 }
 
@@ -1033,6 +1082,8 @@ pub(crate) fn status() -> Value {
         "ssh": ssh_policy(),
         "firewall": firewall_policy(),
         "database": database_status(),
+        "postgresql": postgresql_status(),
+        "caddy": caddy_status(),
         "stack": stack_versions(),
         "tls": { "listeners_443": listeners_on(443) },
         "failed_units": failed_units(),
@@ -1667,6 +1718,14 @@ mod tests {
         assert_eq!(
             version_after("PHP 8.4.27 (litespeed)\n", "PHP ").as_deref(),
             Some("8.4.27")
+        );
+        assert_eq!(
+            version_after("v2.10.2 h1:abc123\n", "v").as_deref(),
+            Some("2.10.2")
+        );
+        assert_eq!(
+            version_after("postgres (PostgreSQL) 18.7\n", "postgres (PostgreSQL) ").as_deref(),
+            Some("18.7")
         );
         assert_eq!(version_after("PHP ..1\n", "PHP "), None);
         assert_eq!(

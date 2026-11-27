@@ -105,12 +105,16 @@ fn main() -> ExitCode {
     // A partial write or an unverified index delta exits 2.
     #[cfg(rustiron_profile = "product")]
     if let [action, site, digest, operation] = args.as_slice()
-        && (action == "backup" || action == "backup-app")
+        && matches!(
+            action.as_str(),
+            "backup" | "backup-app" | "backup-app-pg" | "backup-app-mariadb"
+        )
     {
-        let Some(written) = (if action == "backup-app" {
-            repository::backup_app(site, digest, operation)
-        } else {
-            repository::backup(site, digest, operation)
+        let Some(written) = (match action.as_str() {
+            "backup-app" => repository::backup_app(site, digest, operation),
+            "backup-app-pg" => repository::backup_app_pg(site, digest, operation),
+            "backup-app-mariadb" => repository::backup_app_mariadb(site, digest, operation),
+            _ => repository::backup(site, digest, operation),
         }) else {
             return ExitCode::from(2);
         };

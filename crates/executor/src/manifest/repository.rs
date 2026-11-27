@@ -476,6 +476,26 @@ fn app_backup_sources(site: &SiteId) -> (String, String) {
     )
 }
 
+/// W658 (D-102 C2): the two sources of a PostgreSQL 18 modern app capture:
+/// persistent `data/` and the custom-format `pg_dump` file in `tmp/`.
+fn app_pg_backup_sources(site: &SiteId) -> (String, String) {
+    let root = format!("{}/{}", super::layout::SITES_ROOT, site.account_name());
+    (
+        format!("{root}/data"),
+        format!("{root}/tmp/{}", super::layout::APP_PG_DUMP_FILE),
+    )
+}
+
+/// W658 (D-102 C2): the two sources of a MariaDB modern app capture:
+/// persistent `data/` and the single-transaction SQL dump in `tmp/`.
+fn app_mariadb_backup_sources(site: &SiteId) -> (String, String) {
+    let root = format!("{}/{}", super::layout::SITES_ROOT, site.account_name());
+    (
+        format!("{root}/data"),
+        format!("{root}/tmp/{}", super::layout::APP_MARIADB_DUMP_FILE),
+    )
+}
+
 /// The fixed `restic backup` command after the global arguments (W356):
 /// JSON output without status lines, the fixed host name, the operation
 /// tag, and the two sources. No exclude, no `--skip-if-unchanged` (an
@@ -550,6 +570,36 @@ pub(super) fn backup_app(site: &str, digest: &str, operation: &str) -> Option<Wr
         PRODUCT_WRITES_ENABLED,
         operation,
         app_backup_sources,
+        || {
+            let session = Session::open(site, digest)?;
+            let site = SiteId::try_from(site.to_owned()).ok()?;
+            Some((session, site))
+        },
+    )
+}
+
+/// `backup-app-pg SITE DIGEST OPERATION` (W658, D-102 C2): backs up a
+/// PostgreSQL 18 modern app site's `data/` and `pg_dump` file in `tmp/`.
+pub(super) fn backup_app_pg(site: &str, digest: &str, operation: &str) -> Option<Written> {
+    backup_with(
+        PRODUCT_WRITES_ENABLED,
+        operation,
+        app_pg_backup_sources,
+        || {
+            let session = Session::open(site, digest)?;
+            let site = SiteId::try_from(site.to_owned()).ok()?;
+            Some((session, site))
+        },
+    )
+}
+
+/// `backup-app-mariadb SITE DIGEST OPERATION` (W658, D-102 C2): backs up a
+/// MariaDB modern app site's `data/` and SQL dump in `tmp/`.
+pub(super) fn backup_app_mariadb(site: &str, digest: &str, operation: &str) -> Option<Written> {
+    backup_with(
+        PRODUCT_WRITES_ENABLED,
+        operation,
+        app_mariadb_backup_sources,
         || {
             let session = Session::open(site, digest)?;
             let site = SiteId::try_from(site.to_owned()).ok()?;

@@ -5,12 +5,13 @@
 use rustiron_contracts::{
     CanonicalObject, Id, Timestamp,
     approval::{
-        AppBindingContext, AppDeployGrant, AppDeployPlan, AppLifecycleAction, AppLifecycleGrant,
-        AppLifecyclePlan, AppProvisionGrant, AppProvisionPlan, AppRuntime, ApprovalError,
-        ImpactScope, PlanKind, PreparedPlan, Sha256Digest, check_app_deploy_binding,
-        check_app_lifecycle_binding, check_app_provision_binding, envelope_for_plan,
-        valid_entrypoint, valid_env_key, valid_env_keys, valid_health_path, valid_manifest_path,
-        valid_release_id,
+        AppBindingContext, AppDatabase, AppDeployGrant, AppDeployPlan, AppLifecycleAction,
+        AppLifecycleGrant, AppLifecyclePlan, AppProvisionGrant, AppProvisionPlan, AppRuntime,
+        AppTopology, ApprovalError, CredentialRotatePlan, CredentialTarget, ImpactScope,
+        IngressEngine, PlanKind, PreparedPlan, Sha256Digest, app_routable_port,
+        check_app_deploy_binding, check_app_lifecycle_binding, check_app_provision_binding,
+        envelope_for_plan, valid_entrypoint, valid_env_key, valid_env_keys, valid_frontend_dir,
+        valid_health_path, valid_manifest_path, valid_release_id,
     },
 };
 use serde_json::{Value, json};
@@ -505,4 +506,264 @@ fn app_lifecycle_decodes_binds_and_refuses_unknown_actions() {
         check_app_lifecycle_binding(&plan, &grant, &context(&h, &e, &p, &r, &i, &s, Some(1500))),
         Ok(())
     );
+}
+
+#[test]
+fn d102_schema_v2_covers_all_four_topologies_databases_blue_green_and_rejects_invalid_combos() {
+    assert!(!app_routable_port(3306));
+    assert!(!app_routable_port(5432));
+    assert!(!app_routable_port(2019));
+    assert!(app_routable_port(4100));
+    assert!(valid_frontend_dir("frontend"));
+    assert!(valid_frontend_dir("web/dist"));
+    assert!(!valid_frontend_dir("../dist"));
+
+    // 1. static_spa (Caddy only, zero daemon port, no DB)
+    let static_spa = json!({
+        "schema_version": 2,
+        "plan_id": "plan_spa_1",
+        "host_id": "host_lab",
+        "host_epoch": "epoch_1",
+        "profile_digest": sha('a'),
+        "requester": "agent_1",
+        "verb": "app_provision",
+        "site_id": "docsapp",
+        "hostname": "docs.example.test",
+        "runtime": "static_v1",
+        "port": 0,
+        "routes": [],
+        "websockets": [],
+        "entrypoint": "",
+        "health_path": "/",
+        "env_keys": [],
+        "memory_max_mib": 128,
+        "tasks_max": 32,
+        "quota_mib": 512,
+        "ingress": "caddy",
+        "topology": "static_spa",
+        "database": "none",
+        "blue_green": false,
+        "spa_fallback": true,
+        "frontend_dir": "frontend",
+        "expected_effects": {
+            "creates_account": true,
+            "forwards_to_loopback": false,
+            "installs_app_unit": false,
+            "creates_database": false,
+            "traffic_activation": false,
+            "runs_package_scripts": false
+        },
+        "risk_class": "lab_only",
+        "valid_from": 1000,
+        "expires_at": 2000,
+        "limitations": ["v2 static spa"]
+    });
+    let spa_bytes = canonical(&static_spa);
+    let spa = AppProvisionPlan::decode(&spa_bytes).unwrap();
+    assert_eq!(spa.schema_version(), 2);
+    assert_eq!(spa.runtime(), AppRuntime::StaticV1);
+    assert_eq!(spa.ingress(), IngressEngine::Caddy);
+    assert_eq!(spa.topology(), AppTopology::StaticSpa);
+    assert_eq!(spa.database(), AppDatabase::None);
+    assert!(spa.spa_fallback());
+    assert_eq!(spa.frontend_dir(), Some("frontend"));
+    assert!(spa.all_ports().is_empty());
+    assert_eq!(
+        PreparedPlan::decode(&spa_bytes).unwrap().kind(),
+        PlanKind::AppProvision
+    );
+
+    // 2. fullstack_split (Caddy static `/` + Bun API `/api/` + PostgreSQL 18 + blue/green + SSE + strip)
+    let split = json!({
+        "schema_version": 2,
+        "plan_id": "plan_split_1",
+        "host_id": "host_lab",
+        "host_epoch": "epoch_1",
+        "profile_digest": sha('a'),
+        "requester": "agent_1",
+        "verb": "app_provision",
+        "site_id": "saas1",
+        "hostname": "saas.example.test",
+        "runtime": "bun_1_v1",
+        "port": 4101,
+        "routes": [{"prefix": "/api/", "port": 4101}],
+        "websockets": [{"prefix": "/ws/", "port": 4101}],
+        "entrypoint": "backend/index.ts",
+        "health_path": "/api/health",
+        "env_keys": ["DATABASE_URL", "JWT_SECRET"],
+        "memory_max_mib": 1024,
+        "tasks_max": 128,
+        "quota_mib": 4096,
+        "ingress": "caddy",
+        "topology": "fullstack_split",
+        "database": "postgresql_18",
+        "blue_green": true,
+        "standby_port": 4102,
+        "spa_fallback": true,
+        "frontend_dir": "frontend",
+        "sse_prefixes": ["/api/events/"],
+        "strip_api_prefixes": ["/api/"],
+        "expected_effects": {
+            "creates_account": true,
+            "forwards_to_loopback": true,
+            "installs_app_unit": true,
+            "creates_database": true,
+            "traffic_activation": false,
+            "runs_package_scripts": false
+        },
+        "risk_class": "lab_only",
+        "valid_from": 1000,
+        "expires_at": 2000,
+        "limitations": ["v2 fullstack split"]
+    });
+    let split_bytes = canonical(&split);
+    let split_plan = AppProvisionPlan::decode(&split_bytes).unwrap();
+    assert_eq!(split_plan.database(), AppDatabase::Postgresql18);
+    assert_eq!(split_plan.standby_port(), Some(4102));
+    assert_eq!(split_plan.sse_prefixes(), ["/api/events/"]);
+    assert_eq!(split_plan.strip_api_prefixes(), ["/api/"]);
+    assert_eq!(split_plan.all_ports(), vec![4101, 4102]);
+    let split_env = envelope_for_plan(&split_bytes).unwrap();
+    assert!(split_env.resource_budget.contains("postgresql_18"));
+    assert!(split_env.resource_budget.contains("blue/green"));
+
+    // 3. fullstack_dual_ssr (Node SSR on `/` + Bun API on `/api/` + MariaDB + blue/green 4 ports)
+    let dual = json!({
+        "schema_version": 2,
+        "plan_id": "plan_dual_1",
+        "host_id": "host_lab",
+        "host_epoch": "epoch_1",
+        "profile_digest": sha('a'),
+        "requester": "agent_1",
+        "verb": "app_provision",
+        "site_id": "ssr1",
+        "hostname": "ssr.example.test",
+        "runtime": "bun_1_v1",
+        "port": 4201,
+        "routes": [
+            {"prefix": "/", "port": 4203},
+            {"prefix": "/api/", "port": 4201}
+        ],
+        "websockets": [{"prefix": "/ws/", "port": 4201}],
+        "entrypoint": "api/server.ts",
+        "health_path": "/health",
+        "env_keys": ["DATABASE_URL"],
+        "memory_max_mib": 1024,
+        "tasks_max": 128,
+        "quota_mib": 4096,
+        "ingress": "caddy",
+        "topology": "fullstack_dual_ssr",
+        "database": "mariadb",
+        "blue_green": true,
+        "standby_port": 4202,
+        "spa_fallback": false,
+        "frontend_runtime": "node_22_v1",
+        "frontend_entrypoint": "web/server.mjs",
+        "frontend_port": 4203,
+        "frontend_standby_port": 4204,
+        "expected_effects": {
+            "creates_account": true,
+            "forwards_to_loopback": true,
+            "installs_app_unit": true,
+            "creates_database": true,
+            "traffic_activation": false,
+            "runs_package_scripts": false
+        },
+        "risk_class": "lab_only",
+        "valid_from": 1000,
+        "expires_at": 2000,
+        "limitations": ["v2 dual ssr"]
+    });
+    let dual_bytes = canonical(&dual);
+    let dual_plan = AppProvisionPlan::decode(&dual_bytes).unwrap();
+    assert_eq!(dual_plan.topology(), AppTopology::FullstackDualSsr);
+    assert_eq!(dual_plan.frontend_runtime(), Some(AppRuntime::Node22V1));
+    assert_eq!(dual_plan.frontend_port(), Some(4203));
+    assert_eq!(dual_plan.frontend_standby_port(), Some(4204));
+    assert_eq!(dual_plan.all_ports(), vec![4201, 4202, 4203, 4204]);
+
+    // Refusals: Postgres 5432, Caddy 2019, duplicate standby port, v2 field in v1, OLS on fullstack_split, wrong creates_database.
+    let mut bad_pg_port = split.clone();
+    bad_pg_port["standby_port"] = json!(5432);
+    assert!(AppProvisionPlan::decode(&canonical(&bad_pg_port)).is_err());
+
+    let mut bad_caddy_port = split.clone();
+    bad_caddy_port["standby_port"] = json!(2019);
+    assert!(AppProvisionPlan::decode(&canonical(&bad_caddy_port)).is_err());
+
+    let mut bad_dup_port = split.clone();
+    bad_dup_port["standby_port"] = json!(4101);
+    assert!(AppProvisionPlan::decode(&canonical(&bad_dup_port)).is_err());
+
+    let mut bad_ols_split = split.clone();
+    bad_ols_split["ingress"] = json!("ols");
+    assert!(AppProvisionPlan::decode(&canonical(&bad_ols_split)).is_err());
+
+    let mut bad_db_effect = split.clone();
+    bad_db_effect["expected_effects"]["creates_database"] = json!(false);
+    assert!(AppProvisionPlan::decode(&canonical(&bad_db_effect)).is_err());
+
+    let mut bad_v1_with_v2 = provision_plan_json();
+    bad_v1_with_v2["ingress"] = json!("caddy");
+    assert!(AppProvisionPlan::decode(&canonical(&bad_v1_with_v2)).is_err());
+
+    // 4. app_deploy schema v2 (blue/green + static_v1)
+    let mut dep_bg = deploy_plan_json();
+    dep_bg["schema_version"] = json!(2);
+    dep_bg["blue_green_cutover"] = json!(true);
+    dep_bg["expected_effects"]["reloads_caddy"] = json!(true);
+    let dep_bg_bytes = canonical(&dep_bg);
+    let dep_bg_plan = AppDeployPlan::decode(&dep_bg_bytes).unwrap();
+    assert_eq!(dep_bg_plan.schema_version(), 2);
+    assert!(dep_bg_plan.blue_green_cutover());
+    assert!(
+        envelope_for_plan(&dep_bg_bytes)
+            .unwrap()
+            .resource_budget
+            .contains("blue/green Caddy cutover")
+    );
+
+    // 5. site_credential_rotate schema v2 (app_postgresql_18_password + app_mariadb_password)
+    for (target, expected) in [
+        ("app_mariadb_password", CredentialTarget::AppMariadbPassword),
+        (
+            "app_postgresql_18_password",
+            CredentialTarget::AppPostgresql18Password,
+        ),
+    ] {
+        let rot = json!({
+            "schema_version": 2,
+            "plan_id": "plan_rot_app_1",
+            "host_id": "host_lab",
+            "host_epoch": "epoch_1",
+            "profile_digest": sha('a'),
+            "requester": "agent_1",
+            "verb": "site_credential_rotate",
+            "site_id": "saas1",
+            "hostname": "saas.example.test",
+            "target": target,
+            "expected_effects": {
+                "rotates_db_password": true,
+                "updates_db_cnf": false,
+                "restarts_site_php": false,
+                "updates_app_env": true,
+                "restarts_app_unit": true,
+                "traffic_activation": false,
+                "network_access": false,
+                "secret_in_plan": false
+            },
+            "risk_class": "lab_only",
+            "valid_from": 1000,
+            "expires_at": 2000,
+            "limitations": ["v2 app db rotate"]
+        });
+        let rot_bytes = canonical(&rot);
+        let decoded = CredentialRotatePlan::decode(&rot_bytes).unwrap();
+        assert_eq!(decoded.schema_version(), 2);
+        assert_eq!(decoded.target(), expected);
+        assert_eq!(
+            PreparedPlan::decode(&rot_bytes).unwrap().kind(),
+            PlanKind::SiteCredentialRotate
+        );
+    }
 }

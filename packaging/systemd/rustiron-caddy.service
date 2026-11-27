@@ -1,0 +1,65 @@
+# W657 (D-102, Decisions A1 + B1): confined Caddy edge ingress daemon.
+# Runs unprivileged as rustiron-caddy in SELinux domain rustiron_caddy_t with
+# the admin API only on a 0700 Unix socket (never TCP :2019; W662-F4, so
+# reload needs no restart), auto_https cert management disabled
+# (auto_https disable_certs), read-only config (/etc/rustiron-caddy/current)
+# and read-only shared rustiron-acme certificates (/etc/rustiron-tls).
+[Unit]
+Description=Rustiron Caddy Edge Ingress (D-102)
+Documentation=file:///usr/share/doc/rustiron/README.md
+After=network-online.target
+Wants=network-online.target
+ConditionPathIsSymbolicLink=/etc/rustiron-caddy/current
+
+[Service]
+Type=notify
+User=rustiron-caddy
+Group=rustiron-caddy
+ExecStart=/usr/local/bin/caddy run --config /etc/rustiron-caddy/current/Caddyfile --adapter caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /etc/rustiron-caddy/current/Caddyfile --adapter caddyfile --address unix//run/rustiron-caddy/admin.sock --force
+RuntimeDirectory=rustiron-caddy
+RuntimeDirectoryMode=0700
+TimeoutStopSec=15s
+LimitNOFILE=1048576
+KillMode=mixed
+Restart=on-failure
+RestartSec=3s
+UMask=0077
+
+# Least-privilege capabilities: bind TCP 80/443 and UDP 443 only.
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+
+# Strict read-only filesystem; Caddy persists no config or ACME state.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+InaccessiblePaths=-/etc/rustiron -/var/lib/rustiron -/var/lib/rustiron-coordinator -/var/lib/rustiron-acme -/run/rustiron -/run/rustiron-admin -/run/rustiron-coordinator -/run/rustiron-sites
+
+# Resource ceiling for edge reverse-proxy / static serving.
+MemoryMax=512M
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

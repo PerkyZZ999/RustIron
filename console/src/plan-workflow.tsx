@@ -20,12 +20,14 @@ import {
 import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from "react";
 
 import {
+  type AppRuntimeProfile,
   buildAppDeployCmd,
   buildConfigActivateCmd,
   buildProductBackupCaptureCmd,
   buildProductRestoreProbeCmd,
   buildSiteCredentialRotateCmd,
   buildSiteProvisionCmd,
+  type CredentialRotateTarget,
   INSPECT_AND_SIGN_STEPS,
 } from "./cli-commands";
 import { useData } from "./data";
@@ -58,8 +60,10 @@ type PlanDraft = {
   newSiteId: string;
   newHostname: string;
   quotaMib: string;
+  credentialTarget: CredentialRotateTarget;
   appReleaseId: string;
-  appRuntime: "node_22_v1" | "bun_1_v1";
+  appRuntime: AppRuntimeProfile;
+  appBlueGreen: boolean;
   appMigrating: boolean;
   reason: string;
 };
@@ -77,8 +81,10 @@ const defaultDraft: PlanDraft = {
   newSiteId: "site_new",
   newHostname: "new.example.test",
   quotaMib: "2048",
+  credentialTarget: "mariadb_user_password",
   appReleaseId: "rel-20261124-01",
   appRuntime: "node_22_v1",
+  appBlueGreen: false,
   appMigrating: false,
   reason: "",
 };
@@ -303,27 +309,45 @@ function provisionMeta({ draft, hostId, reason }: PlanMetaInput): ComputedPlanMe
   };
 }
 
-function credentialMeta({ safeSite, safeHost, hostId, reason }: PlanMetaInput): ComputedPlanMeta {
+function credentialMeta({
+  draft,
+  safeSite,
+  safeHost,
+  hostId,
+  reason,
+}: PlanMetaInput): ComputedPlanMeta {
+  const isAppTarget = draft.credentialTarget !== "mariadb_user_password";
   return {
     verb: "site_credential_rotate",
     title: "Database credential rotation",
     targetLabel: safeHost,
     olsReload: false,
-    downtime: "Brief per-site PHP pool restart only",
+    downtime: isAppTarget
+      ? "Brief per-app systemd restart after atomic private/app.env DATABASE_URL swap"
+      : "Brief per-site PHP pool restart only",
     dataLoss: "None (DB password generated locally via getrandom; secret_in_plan: false)",
-    rollback: "1 bounded automatic rollback if db.cnf swap or health probe fails",
-    cliCommand: buildSiteCredentialRotateCmd({ siteId: safeSite, hostname: safeHost, hostId }),
+    rollback: isAppTarget
+      ? "1 bounded automatic rollback if private/app.env swap or app restart fails"
+      : "1 bounded automatic rollback if db.cnf swap or health probe fails",
+    cliCommand: buildSiteCredentialRotateCmd({
+      siteId: safeSite,
+      hostname: safeHost,
+      target: draft.credentialTarget,
+      hostId,
+    }),
     changes: [
       ["Target site", `${safeHost} (${safeSite})`],
+      ["Credential target", draft.credentialTarget],
       ["Secret custody", "Generated on host; never in plan, grant, logs, or browser"],
-      ["Verification", "New login ok + old password rejected + HTTP 200"],
+      ["Verification", "New login ok + old password rejected + service healthy"],
     ],
     draftJson: {
-      schema_version: 1,
+      schema_version: isAppTarget ? 2 : 1,
       verb: "site_credential_rotate",
       host_id: hostId,
       site_id: safeSite,
       hostname: safeHost,
+      target: draft.credentialTarget,
       secret_in_plan: false,
       reason,
     },
@@ -332,20 +356,28 @@ function credentialMeta({ safeSite, safeHost, hostId, reason }: PlanMetaInput): 
 
 function appMeta({ draft, safeSite, safeHost, hostId, reason }: PlanMetaInput): ComputedPlanMeta {
   const rel = draft.appReleaseId || "rel-01";
+  const isV2 = draft.appBlueGreen || draft.appRuntime === "static_v1";
   return {
     verb: "app_deploy",
     title: "Modern app deploy",
     targetLabel: safeHost,
     olsReload: false,
-    downtime: "Atomic current symlink switch + systemd unit restart",
+    downtime:
+      draft.appRuntime === "static_v1"
+        ? "Zero downtime (atomic current symlink switch for static files)"
+        : draft.appBlueGreen
+          ? "Zero downtime (standby slot health probe + atomic Caddy reload)"
+          : "Atomic current symlink switch + systemd unit restart",
     dataLoss: draft.appMigrating
-      ? "Requires a verified backup capture within 24 h for SQLite rollback"
+      ? "Requires a verified backup capture within 24 h for DB/SQLite rollback"
       : "None (previous release retained read-only under releases/)",
-    rollback: "Automatic restore of previous release (and SQLite snapshot) if health probe fails",
+    rollback:
+      "Automatic restore of previous release (and DB/SQLite snapshot) if health probe fails",
     cliCommand: buildAppDeployCmd({
       siteId: safeSite,
       releaseId: rel,
       runtime: draft.appRuntime,
+      blueGreenCutover: draft.appBlueGreen,
       migrating: draft.appMigrating,
       hostId,
     }),
@@ -353,18 +385,20 @@ function appMeta({ draft, safeSite, safeHost, hostId, reason }: PlanMetaInput): 
       ["Target app", `${safeHost} (${safeSite})`],
       ["Release ID", rel],
       ["Runtime profile", draft.appRuntime],
+      ["Cutover mode", draft.appBlueGreen ? "Blue/Green Caddy zero-downtime" : "Standard atomic"],
       [
         "Migration guard",
         draft.appMigrating ? "Requires <= 24 h verified backup capture" : "No schema migration",
       ],
     ],
     draftJson: {
-      schema_version: 1,
+      schema_version: isV2 ? 2 : 1,
       verb: "app_deploy",
       host_id: hostId,
       site_id: safeSite,
       release_id: rel,
       runtime: draft.appRuntime,
+      blue_green_cutover: draft.appBlueGreen,
       migrating: draft.appMigrating,
       reason,
     },
@@ -622,12 +656,27 @@ function AppActionFields({
           id="p-rt"
           className="input"
           value={draft.appRuntime}
-          onChange={(e) => patch({ appRuntime: e.target.value as "node_22_v1" | "bun_1_v1" })}
+          onChange={(e) => patch({ appRuntime: e.target.value as AppRuntimeProfile })}
         >
-          <option value="node_22_v1">node_22_v1 (Node.js 22 LTS / EmDash 1.6.0)</option>
           <option value="bun_1_v1">bun_1_v1 (Bun 1.4)</option>
+          <option value="node_22_v1">node_22_v1 (Node.js 22 LTS / EmDash 1.6.0)</option>
+          <option value="static_v1">static_v1 (Static SPA — no daemon)</option>
         </select>
       </div>
+      {draft.appRuntime !== "static_v1" ? (
+        <div className="form-row">
+          <label htmlFor="p-bg">Cutover strategy</label>
+          <select
+            id="p-bg"
+            className="input"
+            value={draft.appBlueGreen ? "blue-green" : "standard"}
+            onChange={(e) => patch({ appBlueGreen: e.target.value === "blue-green" })}
+          >
+            <option value="standard">Standard atomic release switch</option>
+            <option value="blue-green">Zero-downtime Blue/Green Caddy cutover</option>
+          </select>
+        </div>
+      ) : null}
       <div className="form-row">
         <label htmlFor="p-mig">Database / SQLite migration</label>
         <select
@@ -705,6 +754,28 @@ function ActionInputs({
 
         {draft.action === "provision" ? (
           <ProvisionActionFields draft={draft} patch={patch} quotaErr={quotaErr} />
+        ) : null}
+
+        {draft.action === "credential" ? (
+          <div className="form-row">
+            <label htmlFor="p-cred-target">Credential target</label>
+            <select
+              id="p-cred-target"
+              className="input"
+              value={draft.credentialTarget}
+              onChange={(e) =>
+                patch({ credentialTarget: e.target.value as CredentialRotateTarget })
+              }
+            >
+              <option value="mariadb_user_password">WordPress MariaDB (db.cnf + PHP pool)</option>
+              <option value="app_postgresql_18_password">
+                Modern App PostgreSQL 18 (DATABASE_URL in app.env)
+              </option>
+              <option value="app_mariadb_password">
+                Modern App MariaDB (DATABASE_URL in app.env)
+              </option>
+            </select>
+          </div>
         ) : null}
 
         {draft.action === "app" ? <AppActionFields draft={draft} patch={patch} /> : null}

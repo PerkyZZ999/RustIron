@@ -127,7 +127,7 @@ fn a_fresh_journal_is_v20_with_the_exact_signed_tables() {
     let version: i64 = c
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 44);
+    assert_eq!(version, 45);
     for (name, sql) in DDL_V20 {
         let actual: String = c
             .query_row("SELECT sql FROM sqlite_master WHERE name=?1", [name], |r| {
@@ -369,7 +369,7 @@ fn migrates_to_v20(downgrade: &str, version: i64) {
     assert_eq!(migrated.admission_count().unwrap(), count);
     drop(migrated);
     let c = rusqlite::Connection::open(state.0.join("fixture-journal.sqlite")).unwrap();
-    assert_eq!(read(&c), (44, 3));
+    assert_eq!(read(&c), (45, 3));
     for (name, sql) in DDL_V20 {
         let actual: String = c
             .query_row("SELECT sql FROM sqlite_master WHERE name=?1", [name], |r| {

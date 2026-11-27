@@ -3,7 +3,7 @@
 // separate host signing custody (Console auth gates panel access & roles, never host keys).
 import { Database } from "bun:sqlite";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { betterAuth } from "better-auth";
@@ -42,6 +42,8 @@ export type AuthBackendOptions = {
   dbPath?: string;
   secret?: string;
   setupToken?: string;
+  /** W663-C1: production refuses first-run setup without a token; one is generated if unset. */
+  requireSetupToken?: boolean;
   baseURL: string;
   trustedOrigins?: string[];
   forceRequired?: boolean;
@@ -66,10 +68,10 @@ function defaultAuthDbPath(): string {
   return join(homedir(), ".config", "rustiron-console", "auth.sqlite");
 }
 
-function loadOrCreateSecret(dbPath: string, explicit?: string): string {
+function loadOrCreateSecret(dbPath: string, explicit?: string, suffix = ".secret"): string {
   if (explicit && explicit.length >= 32) return explicit;
   if (dbPath === ":memory:") return randomBytes(32).toString("hex");
-  const secretPath = `${dbPath}.secret`;
+  const secretPath = `${dbPath}${suffix}`;
   mkdirSync(dirname(secretPath), { recursive: true, mode: 0o700 });
   if (existsSync(secretPath)) {
     const stored = readFileSync(secretPath, "utf8").trim();
@@ -79,6 +81,16 @@ function loadOrCreateSecret(dbPath: string, explicit?: string): string {
   writeFileSync(secretPath, `${generated}\n`, { mode: 0o600 });
   chmodSync(secretPath, 0o600);
   return generated;
+}
+
+/** Users before migrations ran: a missing `user` table means none. */
+function countUsersIn(db: Database): number {
+  try {
+    const row = db.query("SELECT COUNT(*) as c FROM user").get() as { c: number } | null;
+    return row?.c ?? 0;
+  } catch {
+    return 0;
+  }
 }
 
 const AUTH_SCHEMA_VERSION = 1;
@@ -193,6 +205,15 @@ export function createConsoleAuthBackend(options: AuthBackendOptions) {
   const dbPath = options.dbPath ?? defaultAuthDbPath();
   const db = openAuthDatabase(dbPath);
   const secret = loadOrCreateSecret(dbPath, options.secret);
+  const setupTokenPath = `${dbPath}.setup-token`;
+  const setupToken =
+    options.setupToken ||
+    (options.requireSetupToken && countUsersIn(db) === 0
+      ? loadOrCreateSecret(dbPath, undefined, ".setup-token")
+      : undefined);
+  if (setupToken && !options.setupToken && dbPath !== ":memory:") {
+    console.log(`Rustiron console first-run setup token: read it from ${setupTokenPath} (0600)`);
+  }
   const trustedOrigins = options.trustedOrigins ?? [options.baseURL];
 
   const isHttpsOrigin = options.baseURL.trim().toLowerCase().startsWith("https://");
@@ -350,7 +371,7 @@ export function createConsoleAuthBackend(options: AuthBackendOptions) {
   }
 
   async function createFirstAdmin(parsed: ParsedAccount): Promise<Response> {
-    if (options.setupToken && !tokenEquals(options.setupToken, parsed.setupToken)) {
+    if (setupToken && !tokenEquals(setupToken, parsed.setupToken)) {
       failedSetupAttempts.push(Date.now());
       return jsonReply(403, {
         error: "SETUP_TOKEN_REQUIRED",
@@ -365,6 +386,7 @@ export function createConsoleAuthBackend(options: AuthBackendOptions) {
       db.query("UPDATE user SET role = 'admin' WHERE id = ?").run(created.user.id);
     }
     failedSetupAttempts.length = 0;
+    if (!options.setupToken) rmSync(setupTokenPath, { force: true });
     const headers = new Headers(signUpRes.headers);
     headers.set("cache-control", "no-store");
     return withD090Headers(

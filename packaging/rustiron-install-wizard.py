@@ -94,6 +94,15 @@ class WizardConfig:
     console_port: int = DEFAULT_CONSOLE_PORT
     console_domain: str | None = None
     job_profile: str = DEFAULT_JOB_PROFILE
+    # W657 (D-102, Decision A1): dual-mode Caddy ingress enrollment.
+    ingress_mode: str = "ols_only"
+    caddy_ipv4: str | None = None
+    ols_loopback_port: int = 8080
+    # W658 (D-102, Decision C2): optional PostgreSQL 18.7 (PGDG EL-10) stack.
+    enable_postgres: bool = False
+
+
+VALID_INGRESS_MODES = ("ols_only", "caddy_only", "caddy_multi_ip", "caddy_edge_over_ols")
 
 
 def validate_config(cfg: WizardConfig) -> None:
@@ -167,6 +176,23 @@ def validate_config(cfg: WizardConfig) -> None:
             if not HOSTNAME_RE.fullmatch(dom) or len(dom) > 253:
                 raise WizardError("--console-domain must be a lowercase FQDN")
 
+    if cfg.ingress_mode not in VALID_INGRESS_MODES:
+        raise WizardError(f"--ingress-mode must be one of {', '.join(VALID_INGRESS_MODES)}")
+    if cfg.ingress_mode == "caddy_multi_ip":
+        if not cfg.caddy_ipv4:
+            raise WizardError("--caddy-ipv4 is required when --ingress-mode is caddy_multi_ip")
+        try:
+            cip = ipaddress.ip_address(cfg.caddy_ipv4)
+        except ValueError:
+            raise WizardError("--caddy-ipv4 must be a valid IPv4 address") from None
+        if cip.version != 4 or cip.is_unspecified or cip.is_multicast or str(cip) == cfg.public_ipv4:
+            raise WizardError("--caddy-ipv4 must be a distinct unicast IPv4 address")
+    elif cfg.caddy_ipv4 is not None:
+        raise WizardError("--caddy-ipv4 is only valid with --ingress-mode caddy_multi_ip")
+    if cfg.ingress_mode == "caddy_edge_over_ols":
+        if not 1024 <= cfg.ols_loopback_port <= 65535 or cfg.ols_loopback_port in (2019, 3306, 5432, cfg.ols_webadmin_port):
+            raise WizardError("--ols-loopback-port must be an unprivileged port other than 2019, 3306, 5432, or WebAdmin")
+
 
 def inspect_host(root: Path = Path("/")) -> dict:
     """Read-only inspection of AlmaLinux 10 host prerequisites."""
@@ -214,6 +240,8 @@ def inspect_host(root: Path = Path("/")) -> dict:
         "restic": (root / "usr/bin/restic").is_file(),
         "firewalld": (root / "usr/sbin/firewalld").is_file(),
         "bun": (root / "usr/local/bin/bun").is_file(),
+        "caddy": (root / "usr/local/bin/caddy").is_file(),
+        "postgresql18": (root / "usr/pgsql-18/bin/postgres").is_file(),
     }
     return {
         "os_id": os_id or "unknown",
@@ -335,13 +363,39 @@ def build_enrollment_command(cfg: WizardConfig) -> list[str]:
         "--ols-listener",
         cfg.ols_listener,
         "--ols-address",
-        f"{cfg.public_ipv4}:{cfg.ols_http_port}",
-        "--ols-tls-address",
-        f"{cfg.public_ipv4}:{cfg.ols_tls_port}",
+        (
+            f"127.0.0.1:{cfg.ols_loopback_port}"
+            if cfg.ingress_mode == "caddy_edge_over_ols"
+            else f"{cfg.public_ipv4}:{cfg.ols_http_port}"
+        ),
+        *(
+            []
+            if cfg.ingress_mode == "caddy_edge_over_ols"
+            else ["--ols-tls-address", f"{cfg.public_ipv4}:{cfg.ols_tls_port}"]
+        ),
         "--ols-parent-sha256",
         "<OLS_PARENT_SHA256_FROM_INSTALL>",
         "--ols-webadmin-port",
         str(cfg.ols_webadmin_port),
+        *(
+            [
+                "--caddy-mode",
+                cfg.ingress_mode,
+                "--caddy-http-address",
+                f"{cfg.caddy_ipv4 or cfg.public_ipv4}:80",
+                "--caddy-https-address",
+                f"{cfg.caddy_ipv4 or cfg.public_ipv4}:443",
+                "--caddy-binary-sha256",
+                "$(sha256sum /usr/local/bin/caddy | awk '{print $1}')",
+                *(
+                    ["--caddy-ols-upstream", f"127.0.0.1:{cfg.ols_loopback_port}"]
+                    if cfg.ingress_mode == "caddy_edge_over_ols"
+                    else []
+                ),
+            ]
+            if cfg.ingress_mode != "ols_only"
+            else []
+        ),
         "--acme-directory",
         cfg.acme_directory,
         "--firewall-ssh-port",
@@ -378,6 +432,28 @@ def build_plan(cfg: WizardConfig, host_facts: dict) -> dict:
             "lsphp84-intl lsphp84-mbstring lsphp84-opcache lsphp84-xml lsphp84-zip lsphp84-curl",
         ],
     })
+
+    if cfg.enable_postgres:
+        steps.append({
+            "id": "postgresql_18_setup",
+            "title": "Install and harden PostgreSQL 18 (18.7+ PGDG EL-10, loopback + SCRAM-SHA-256)",
+            "automated_in_apply": False,
+            "already_installed": bool(host_facts.get("packages", {}).get("postgresql18", False)),
+            "commands": [
+                "curl -fsSL https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL -o /etc/pki/rpm-gpg/PGDG-RPM-GPG-KEY-RHEL",
+                "(cd /etc/pki/rpm-gpg && sha256sum -c /opt/rustiron/packaging/repos/pgdg-keys.sha256)",
+                "install -m 0644 packaging/repos/rustiron-pgdg-18.repo /etc/yum.repos.d/rustiron-pgdg-18.repo",
+                "dnf -y install postgresql18-server postgresql18 postgresql18-libs",
+                # W662-F2: label the PGDG server postgresql_exec_t (rustiron_app.fc) so it runs as postgresql_t.
+                "restorecon -RF /usr/pgsql-18/bin",
+                "/usr/pgsql-18/bin/postgresql-18-setup initdb",
+                "install -d -m 0700 -o postgres -g postgres /var/lib/pgsql/18/data/conf.d",
+                "install -m 0600 -o postgres -g postgres /usr/share/rustiron/postgres/zz-rustiron-loopback.conf /var/lib/pgsql/18/data/conf.d/zz-rustiron-loopback.conf",
+                "install -m 0600 -o postgres -g postgres /usr/share/rustiron/postgres/pg_hba.conf /var/lib/pgsql/18/data/pg_hba.conf",
+                "grep -qxF \"include_dir = 'conf.d'\" /var/lib/pgsql/18/data/postgresql.conf || echo \"include_dir = 'conf.d'\" >> /var/lib/pgsql/18/data/postgresql.conf",
+                "systemctl enable --now postgresql-18.service",
+            ],
+        })
 
     steps.append({
         "id": "ssh_hardening",
@@ -639,6 +715,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--console-port", type=int, default=DEFAULT_CONSOLE_PORT)
     parser.add_argument("--console-domain", default=None)
     parser.add_argument("--job-profile", default=DEFAULT_JOB_PROFILE)
+    parser.add_argument(
+        "--ingress-mode",
+        default="ols_only",
+        choices=VALID_INGRESS_MODES,
+        help="Host edge ingress mode (D-102 A1: ols_only, caddy_only, caddy_multi_ip, caddy_edge_over_ols)",
+    )
+    parser.add_argument("--caddy-ipv4", default=None, help="Dedicated IPv4 for Caddy when --ingress-mode=caddy_multi_ip")
+    parser.add_argument("--ols-loopback-port", type=int, default=8080, help="Loopback OLS upstream port for caddy_edge_over_ols")
+    parser.add_argument("--enable-postgres", action="store_true", help="Include PostgreSQL 18 (PGDG EL-10) installation & hardening steps (D-102 C2)")
     return parser
 
 
@@ -666,6 +751,10 @@ def main(argv: list[str] | None = None) -> int:
         console_port=args.console_port,
         console_domain=args.console_domain,
         job_profile=args.job_profile,
+        ingress_mode=args.ingress_mode,
+        caddy_ipv4=args.caddy_ipv4,
+        ols_loopback_port=args.ols_loopback_port,
+        enable_postgres=args.enable_postgres,
     )
     try:
         if args.interactive:

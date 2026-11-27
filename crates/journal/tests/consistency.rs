@@ -123,7 +123,7 @@ fn a_fresh_journal_has_the_exact_v11_consistency_table() {
     let version: i64 = c
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 44);
+    assert_eq!(version, 45);
     let sql: String = c
         .query_row(
             "SELECT sql FROM sqlite_master WHERE name='capture_consistency'",

@@ -61,7 +61,7 @@ type StagedFwRule = {
   source: string;
 };
 
-const BLOCKED_EXTERNAL_PORTS = new Set(["3306", "7080", "4319"]);
+const BLOCKED_EXTERNAL_PORTS = new Set(["2019", "3306", "4319", "5432", "7080"]);
 
 function renderFirewallCmds(rules: StagedFwRule[]): string {
   const cmds = rules.map((r) => {
@@ -197,9 +197,11 @@ export function FirewallRuleBuilderPanel() {
         <div className="attention err" role="alert">
           <Glyph icon={TriangleAlert} />
           <div className="att-body">
-            <strong>Warning: sensitive local port selected (3306 / 7080 / 4319).</strong> MariaDB,
-            OLS WebAdmin, and the Console loopback listener should stay restricted to localhost or a
-            private VPN CIDR.
+            <strong>
+              Warning: sensitive local port selected (2019 / 3306 / 4319 / 5432 / 7080).
+            </strong>{" "}
+            Caddy Admin, MariaDB, Console loopback, PostgreSQL 18, and OLS WebAdmin must stay
+            restricted to localhost or a private VPN CIDR.
           </div>
         </div>
       ) : null}
@@ -418,8 +420,10 @@ const logUnits = [
   ["coordinator", "RustIron Coordinator (rustiron-coordinator.service)"],
   ["admin", "RustIron Admin Helper (rustiron-admin-helper.service)"],
   ["console", "RustIron Console (rustiron-console.service)"],
+  ["caddy", "Caddy Edge Ingress (rustiron-caddy.service)"],
   ["ols", "OpenLiteSpeed (lshttpd.service)"],
   ["mariadb", "MariaDB (mariadb.service)"],
+  ["postgresql", "PostgreSQL 18 (postgresql-18.service)"],
   ["sitecron", "Site Cron (rustiron-site-cron.service)"],
   ["pdns", "PowerDNS (pdns.service)"],
   ["postfix", "Postfix Mail (postfix.service)"],

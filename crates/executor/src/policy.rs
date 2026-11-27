@@ -42,6 +42,9 @@ pub(crate) struct Policy {
     /// Lab OLS listener enrollment; absent means `config_activate` is refused.
     #[serde(default)]
     pub ols: Option<OlsPolicy>,
+    /// W657 (D-102, Decision A1): enrolled Caddy edge ingress; absent means OLS-only host.
+    #[serde(default)]
+    pub caddy: Option<CaddyPolicy>,
     /// W462 (D-059): the ACME CA; absent means `certificate_issue` is refused.
     #[serde(default)]
     pub acme: Option<AcmePolicy>,
@@ -273,6 +276,109 @@ impl OlsPolicy {
     }
 }
 
+/// W657 (D-102, Decision A1): closed Caddy host ingress modes in `policy.json`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) enum CaddyMode {
+    /// Dedicated modern app host where Caddy directly owns HTTP/HTTPS/HTTP3.
+    #[serde(rename = "caddy_only")]
+    Only,
+    /// Multi-IP mixed host where OLS binds one IP and Caddy binds another.
+    #[serde(rename = "caddy_multi_ip")]
+    MultiIp,
+    /// Single-IP mixed host where Caddy owns `:80/:443` and bridges WordPress/OLS over loopback.
+    #[serde(rename = "caddy_edge_over_ols")]
+    EdgeOverOls,
+}
+
+impl CaddyMode {
+    /// Converts to the durable journal `CaddyIngressMode`.
+    #[allow(dead_code)]
+    pub(crate) const fn to_journal(self) -> rustiron_journal::CaddyIngressMode {
+        match self {
+            Self::Only => rustiron_journal::CaddyIngressMode::CaddyOnly,
+            Self::MultiIp => rustiron_journal::CaddyIngressMode::CaddyMultiIp,
+            Self::EdgeOverOls => rustiron_journal::CaddyIngressMode::CaddyEdgeOverOls,
+        }
+    }
+}
+
+/// W657 (D-102, Decision A1): enrolled Caddy edge ingress policy.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CaddyPolicy {
+    /// Enrolled host ingress mode.
+    pub mode: CaddyMode,
+    /// Enrolled HTTP listener address (`IP:PORT`, e.g. `203.0.113.10:80`).
+    pub http_address: String,
+    /// Enrolled HTTPS listener address (`IP:PORT`, e.g. `203.0.113.10:443`).
+    pub https_address: String,
+    /// Loopback OLS upstream (`127.0.0.1:8080`); required iff `mode == CaddyEdgeOverOls`.
+    #[serde(default)]
+    pub ols_upstream: Option<String>,
+    /// Pinned SHA-256 of `/usr/local/bin/caddy`.
+    pub binary_sha256: Sha256Digest,
+}
+
+impl CaddyPolicy {
+    /// Validates listener socket addresses, port separation, forbidden service
+    /// ports (`2019` admin API, `3306` MariaDB, `5432` PostgreSQL), and mode
+    /// compatibility with any enrolled [`OlsPolicy`].
+    pub fn valid(&self, ols: Option<&OlsPolicy>) -> bool {
+        let Ok(http) = self.http_address.parse::<std::net::SocketAddr>() else {
+            return false;
+        };
+        let Ok(https) = self.https_address.parse::<std::net::SocketAddr>() else {
+            return false;
+        };
+        let forbidden = |port: u16| matches!(port, 0 | 2019 | 3306 | 5432);
+        if http.port() == https.port() || forbidden(http.port()) || forbidden(https.port()) {
+            return false;
+        }
+        match self.mode {
+            CaddyMode::EdgeOverOls => {
+                let Some(upstream) = self.ols_upstream.as_deref() else {
+                    return false;
+                };
+                let Ok(up) = upstream.parse::<std::net::SocketAddr>() else {
+                    return false;
+                };
+                if !up.ip().is_loopback() || forbidden(up.port()) {
+                    return false;
+                }
+                ols.is_some_and(|ols| ols.http_is_loopback() && ols.address == upstream)
+            }
+            CaddyMode::Only => self.ols_upstream.is_none(),
+            CaddyMode::MultiIp => {
+                if self.ols_upstream.is_some() {
+                    return false;
+                }
+                ols.is_none_or(|ols| {
+                    ols.address != self.http_address
+                        && ols.address != self.https_address
+                        && ols.tls_address.as_deref() != Some(self.http_address.as_str())
+                        && ols.tls_address.as_deref() != Some(self.https_address.as_str())
+                })
+            }
+        }
+    }
+
+    /// Every port Caddy binds directly (`http_address` and `https_address`).
+    #[allow(dead_code)]
+    pub fn reserved_ports(&self) -> Result<[u16; 2], crate::ExecutorError> {
+        let http = self
+            .http_address
+            .parse::<std::net::SocketAddr>()
+            .map_err(|_| crate::ExecutorError::Unavailable)?
+            .port();
+        let https = self
+            .https_address
+            .parse::<std::net::SocketAddr>()
+            .map_err(|_| crate::ExecutorError::Unavailable)?
+            .port();
+        Ok([http, https])
+    }
+}
+
 pub(crate) fn loopback_listener(address: &str) -> bool {
     address
         .parse::<std::net::SocketAddr>()
@@ -462,6 +568,10 @@ pub(crate) fn load(directory: &OwnedFd, owner: u32) -> Result<LoadedPolicy, Exec
             .as_ref()
             .is_some_and(|migration| !migration.valid())
         || policy.ols.as_ref().is_some_and(|ols| !ols.valid())
+        || policy
+            .caddy
+            .as_ref()
+            .is_some_and(|caddy| !caddy.valid(policy.ols.as_ref()))
         || policy.acme.as_ref().is_some_and(|acme| !acme.valid())
         || policy.dns.as_ref().is_some_and(|dns| !dns.valid())
         || policy
@@ -771,5 +881,95 @@ mod tests {
         assert!(
             !make("127.0.0.1:8090", Some("127.0.0.1:8443"), true, false).static_eject_enabled(true)
         );
+    }
+
+    /// W657 (D-102, Decision A1): Caddy policy validates dual-mode bindings,
+    /// loopback OLS upstream coupling, and forbidden ports.
+    #[test]
+    fn caddy_policy_validates_modes_ports_and_ols_coupling() {
+        let decode = |value: serde_json::Value| -> super::CaddyPolicy {
+            serde_json::from_value(value).unwrap()
+        };
+        let sha = "a".repeat(64);
+        let ols_loopback: OlsPolicy = serde_json::from_value(serde_json::json!({
+            "listener": "Edge", "address": "127.0.0.1:8080", "adopted": [],
+            "parent_sha256": "c".repeat(64), "webadmin_port": 7080,
+        }))
+        .unwrap();
+        let ols_public: OlsPolicy = serde_json::from_value(serde_json::json!({
+            "listener": "Pub", "address": "203.0.113.10:80", "tls_address": "203.0.113.10:443",
+            "adopted": [], "parent_sha256": "c".repeat(64), "webadmin_port": 7080,
+        }))
+        .unwrap();
+
+        let edge = decode(serde_json::json!({
+            "mode": "caddy_edge_over_ols",
+            "http_address": "203.0.113.10:80",
+            "https_address": "203.0.113.10:443",
+            "ols_upstream": "127.0.0.1:8080",
+            "binary_sha256": sha,
+        }));
+        assert!(edge.valid(Some(&ols_loopback)));
+        assert!(!edge.valid(None));
+        assert!(!edge.valid(Some(&ols_public)));
+        assert_eq!(edge.reserved_ports().unwrap(), [80, 443]);
+        assert_eq!(
+            edge.mode.to_journal(),
+            rustiron_journal::CaddyIngressMode::CaddyEdgeOverOls
+        );
+
+        let caddy_only = decode(serde_json::json!({
+            "mode": "caddy_only",
+            "http_address": "203.0.113.10:80",
+            "https_address": "203.0.113.10:443",
+            "binary_sha256": sha,
+        }));
+        assert!(caddy_only.valid(None));
+
+        let multi_ip = decode(serde_json::json!({
+            "mode": "caddy_multi_ip",
+            "http_address": "203.0.113.11:80",
+            "https_address": "203.0.113.11:443",
+            "binary_sha256": sha,
+        }));
+        assert!(multi_ip.valid(Some(&ols_public)));
+        let multi_ip_collision = decode(serde_json::json!({
+            "mode": "caddy_multi_ip",
+            "http_address": "203.0.113.10:80",
+            "https_address": "203.0.113.11:443",
+            "binary_sha256": sha,
+        }));
+        assert!(!multi_ip_collision.valid(Some(&ols_public)));
+
+        for bad in [
+            serde_json::json!({
+                "mode": "caddy_only",
+                "http_address": "203.0.113.10:2019",
+                "https_address": "203.0.113.10:443",
+                "binary_sha256": sha,
+            }),
+            serde_json::json!({
+                "mode": "caddy_only",
+                "http_address": "203.0.113.10:80",
+                "https_address": "203.0.113.10:80",
+                "binary_sha256": sha,
+            }),
+            serde_json::json!({
+                "mode": "caddy_only",
+                "http_address": "203.0.113.10:80",
+                "https_address": "203.0.113.10:443",
+                "ols_upstream": "127.0.0.1:8080",
+                "binary_sha256": sha,
+            }),
+            serde_json::json!({
+                "mode": "caddy_edge_over_ols",
+                "http_address": "203.0.113.10:80",
+                "https_address": "203.0.113.10:443",
+                "ols_upstream": "203.0.113.10:8080",
+                "binary_sha256": sha,
+            }),
+        ] {
+            assert!(!decode(bad.clone()).valid(Some(&ols_loopback)), "{bad}");
+        }
     }
 }

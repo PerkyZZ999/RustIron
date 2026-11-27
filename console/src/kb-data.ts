@@ -443,6 +443,160 @@ export const kbArticles: KbArticle[] = [
     ],
   },
   {
+    slug: "fullstack-caddy",
+    category: "hosting",
+    title: "Full-Stack Bun & Node.js Apps with Confined Caddy HTTP/3",
+    summary:
+      "Deploy modern front-end + back-end applications (Vite + Elysia, React + Hono, Next.js, Astro, TanStack Start, Static SPA) behind confined Caddy HTTP/3 with zero-downtime blue/green cutover and Dual-Mode Edge-over-OLS.",
+    readMinutes: 6,
+    runbooks: ["Runbook 32", "Runbook 34"],
+    keywords: [
+      "caddy",
+      "fullstack",
+      "full-stack",
+      "spa",
+      "vite",
+      "react",
+      "elysia",
+      "hono",
+      "nextjs",
+      "astro",
+      "tanstack",
+      "blue-green",
+      "http3",
+      "sse",
+      "websocket",
+      "rustiron-app-pack",
+    ],
+    consoleLinks: [
+      { to: "/sites/new", label: "Deploy full-stack app wizard" },
+      { to: "/apps", label: "Apps" },
+      { to: "/host/logs", label: "Caddy logs" },
+    ],
+    sections: [
+      {
+        id: "four-topologies",
+        heading: "Four supported full-stack topologies",
+        paragraphs: [
+          "RustIron v0.1.1 supports four closed modern-app topologies behind confined Caddy 2.10+ (HTTP/2, HTTP/3 QUIC on 443/udp, Brotli/Zstd compression, WebSockets, and unbuffered SSE) without ever reloading OpenLiteSpeed or interrupting WordPress traffic.",
+        ],
+        bullets: [
+          "static_spa — Static SPA assets (Vite/React/Vue/Svelte) served directly by Caddy with SPA index.html fallback and zero background daemon.",
+          "backend_api — Single Bun 1.4 or Node.js 22 backend or full-stack SSR app (Next.js Standalone, Astro SSR, Elysia/Hono API) on a loopback port.",
+          "fullstack_split — Static SPA front-end served directly by Caddy alongside a confined Bun/Node API backend on /api/ (with optional prefix stripping and WebSocket/SSE routes).",
+          "fullstack_dual_ssr — Dedicated SSR frontend service (rustiron-app-web@) plus a separate API backend service (rustiron-app@), each with optional blue/green standby slots.",
+        ],
+      },
+      {
+        id: "dual-mode-and-tls",
+        heading: "Dual-Mode Caddy Ingress & Shared TLS Custody",
+        paragraphs: [
+          "On single-IP servers running both WordPress and modern apps, enable caddy_edge_over_ols in the installation wizard. Caddy binds :80/:443 (TCP + 443/udp), serves modern apps directly, and transparently bridges WordPress/PHP domains to OpenLiteSpeed on 127.0.0.1:8080 with authentic X-Forwarded-* headers — preserving .htaccess, LSPHP 8.4, and LiteSpeed Cache.",
+        ],
+        bullets: [
+          "Single TLS custody (Decision B1): Caddy keeps its admin API on a 0700 Unix socket (never TCP :2019) and runs with auto_https disable_certs, reading certificates read-only from /etc/rustiron-tls/<account>/live/ managed by rustiron-acme.",
+          "Confined SELinux domain (rustiron_caddy_t): Caddy cannot bind outbound HTTP/HTTPS, cannot write certificates, and runs with ProtectSystem=strict and CapabilityBoundingSet=CAP_NET_BIND_SERVICE.",
+        ],
+        commands: [
+          {
+            label: "Enable Dual-Mode Caddy Edge-over-OLS with HTTP/3",
+            where: "Server (root)",
+            code: "sudo python3 packaging/rustiron-install-wizard.py --ingress-mode caddy_edge_over_ols --dry-run",
+          },
+        ],
+      },
+      {
+        id: "pack-and-blue-green",
+        heading: "Off-host packaging & zero-downtime blue/green deploys",
+        paragraphs: [
+          "Never run npm install or bundlers as root on the server. Build locally or in CI, pack a deterministic tarball with packaging/rustiron-app-pack.py (which refuses symlinks, .env secrets, and missing entrypoints), upload it, and sign an app-deploy plan.",
+          "When blue/green is enabled, RustIron unpacks the new release, starts the standby slot (Slot B or A), probes its loopback health endpoint, reloads Caddy atomically onto the healthy standby port, and drains the old slot — rolling back automatically if health checks fail.",
+        ],
+        commands: [
+          {
+            label: "List built-in presets and pack a Vite + Elysia full-stack bundle off-host",
+            where: "Workstation (operator)",
+            code: "python3 packaging/rustiron-app-pack.py presets\npython3 packaging/rustiron-app-pack.py pack \\\n  --preset vite-elysia \\\n  --frontend-dist ./frontend/dist \\\n  --backend-dist ./backend/dist \\\n  --out ./release-out \\\n  --site-id saasapp \\\n  --release-id rel-20261126-01 \\\n  --database postgresql_18 \\\n  --blue-green-cutover",
+          },
+        ],
+      },
+    ],
+  },
+  {
+    slug: "postgresql-18",
+    category: "hosting",
+    title: "PostgreSQL 18.7 Setup, Hardening & Multi-DB Selection",
+    summary:
+      "Enable optional PostgreSQL 18 (18.7+) alongside MariaDB and SQLite, give each full-stack app its own least-privilege role and DATABASE_URL, rotate passwords locally, and verify pg_dump backups.",
+    readMinutes: 5,
+    runbooks: ["Runbook 27", "Runbook 32", "Runbook 35"],
+    keywords: [
+      "postgresql",
+      "postgres",
+      "pg18",
+      "18.7",
+      "scram-sha-256",
+      "database_url",
+      "pg_dump",
+      "pg_restore",
+      "pgdg",
+      "mariadb",
+      "sqlite",
+      "rotate",
+    ],
+    consoleLinks: [
+      { to: "/databases", label: "Databases" },
+      { to: "/sites/new", label: "Deploy app with DB" },
+      { to: "/host/updates", label: "Stack versions" },
+    ],
+    sections: [
+      {
+        id: "selectable-db",
+        heading: "Choose the right database engine per app",
+        paragraphs: [
+          "When provisioning a modern app, select one of four closed database modes: none (stateless), sqlite (local WAL file in site data/), mariadb (isolated 127.0.0.1:3306 account), or postgresql_18 (PostgreSQL 18.7+ on 127.0.0.1:5432 with SCRAM-SHA-256).",
+        ],
+        bullets: [
+          "Opt-in SELinux database confinement: stateless and SQLite apps remain in rustiron_app_t with zero TCP connect permissions. Apps choosing MariaDB run in rustiron_app_mariadb_t (loopback 3306 only); apps choosing PostgreSQL 18 run in rustiron_app_pg_t (loopback 5432 only).",
+          "PostgreSQL 18 is pinned via AlmaLinux 10 PGDG EL-10 repositories with SHA-256 key verification, listen_addresses = '127.0.0.1', and strict scram-sha-256 pg_hba.conf rules.",
+        ],
+        commands: [
+          {
+            label: "Enable hardened PostgreSQL 18.7 during host setup",
+            where: "Server (root)",
+            code: "sudo python3 packaging/rustiron-install-wizard.py --enable-postgres --dry-run",
+          },
+        ],
+      },
+      {
+        id: "database-url-rotation",
+        heading: "Zero-exposure DATABASE_URL provisioning & password rotation",
+        paragraphs: [
+          "RustIron creates one isolated role (rs_<site_id>) and database (rs_<site_id>_app) per app, generates a high-entropy password locally inside the executor, and writes DATABASE_URL atomically into /srv/sites/<site_id>/private/app.env (mode 0400). Passwords never enter plans, logs, or the browser.",
+        ],
+        commands: [
+          {
+            label: "Rotate an app's PostgreSQL 18 password and update DATABASE_URL",
+            where: "Workstation (operator)",
+            code: "rustiron plan create site-credential-rotate \\\n  --plan-id <plan_id> --host-id <host_id> --host-epoch <epoch> \\\n  --profile-digest <sha256> --requester <requester> \\\n  --site-id saasapp --hostname app.example.com \\\n  --target app_postgresql_18_password \\\n  --valid-from <unix> --expires-at <unix> > ./plan.json",
+          },
+        ],
+      },
+      {
+        id: "pg-backups-migrations",
+        heading: "Pre-migration snapshots & encrypted restic backups",
+        paragraphs: [
+          "Before running any schema migration during app-deploy, RustIron captures a consistent custom-format pg_dump (-Fc) into a root-only 0700 staging directory and automatically runs pg_restore --clean if the migration or post-deploy health check fails. Backup captures include the PostgreSQL 18 dump inside the encrypted restic snapshot alongside site files.",
+        ],
+        callout: {
+          tone: "info",
+          title: "Never expose port 5432 externally",
+          body: "Host Diagnoses and the Firewall Rule Builder continuously guard TCP port 5432 so PostgreSQL 18 stays loopback-only (127.0.0.1).",
+        },
+      },
+    ],
+  },
+  {
     slug: "domains-ssl-and-dns",
     category: "domains-mail",
     title: "Domains, Let's Encrypt HTTPS & PowerDNS Zones",

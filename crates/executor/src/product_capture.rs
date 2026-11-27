@@ -18,7 +18,7 @@
 
 use rustiron_contracts::{
     Id, Timestamp,
-    approval::{ProductBackupPolicy, SiteId},
+    approval::{AppDatabase, ProductBackupPolicy, SiteId},
 };
 use rustiron_journal::{Capture, CaptureConsistency, FixtureJournal, UnmatchedReason};
 
@@ -61,8 +61,9 @@ pub(crate) struct EnrolledStore<'a> {
     pub(crate) site: &'a SiteId,
     /// The site's MCS level.
     pub(crate) level: &'a str,
-    /// W601 (D-096/P30): `true` for P27/EmDash apps (`data/` + SQLite bundle).
-    pub(crate) is_app: bool,
+    /// W601 (D-096/P30) & W658 (D-102 C2): `Some(database)` for modern apps,
+    /// `None` for WordPress/static sites.
+    pub(crate) app_db: Option<AppDatabase>,
 }
 
 impl Store for EnrolledStore<'_> {
@@ -78,13 +79,14 @@ impl Store for EnrolledStore<'_> {
     }
 
     fn write(&mut self, operation: &Id) -> Result<WrittenSnapshot, WriteFailure> {
-        if self.is_app {
-            store_network::write_app_snapshot(
+        if let Some(database) = self.app_db {
+            store_network::write_app_snapshot_for_db(
                 self.anchor,
                 self.policy,
                 self.site,
                 self.level,
                 operation,
+                database,
             )
         } else {
             store_network::write_snapshot(
@@ -120,6 +122,7 @@ impl Store for EnrolledStore<'_> {
 /// `layout`, handling both WordPress/static sites (`app = None`) and
 /// P27/EmDash apps (`app = Some(facts)` with SQLite online backup + `data/`
 /// uploads).
+#[allow(dead_code)]
 pub(crate) fn capture_site_for(
     anchor: &TrustAnchor,
     policy: &ProductBackupPolicy,
@@ -129,6 +132,23 @@ pub(crate) fn capture_site_for(
     frozen: bool,
     app: Option<&rustiron_journal::AppFacts>,
 ) -> CaptureOutcome {
+    capture_site_for_app_db(anchor, policy, site, layout, operation, frozen, app, None)
+}
+
+/// W658 (D-102 C2): runs product capture for WordPress/static sites or modern
+/// app sites with any enrolled database engine (`none`, `sqlite`, `mariadb`,
+/// `postgresql_18`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn capture_site_for_app_db(
+    anchor: &TrustAnchor,
+    policy: &ProductBackupPolicy,
+    site: &SiteId,
+    layout: &SiteLayout,
+    operation: &Id,
+    frozen: bool,
+    app: Option<&rustiron_journal::AppFacts>,
+    app_database: Option<AppDatabase>,
+) -> CaptureOutcome {
     let level = match capture::site_level(layout) {
         Ok(level) => level,
         Err(error) => return CaptureOutcome::NotStarted(error),
@@ -136,14 +156,16 @@ pub(crate) fn capture_site_for(
     let Some(root) = layout.root.to_str() else {
         return CaptureOutcome::NotStarted(ExecutorError::StepFailed);
     };
+    let effective_db = app.map(|_| app_database.unwrap_or(AppDatabase::Sqlite));
     let mut store = EnrolledStore {
         anchor,
         policy,
         site,
         level: &level,
-        is_app: app.is_some(),
+        app_db: effective_db,
     };
     if let Some(facts) = app {
+        let database = effective_db.unwrap_or(AppDatabase::Sqlite);
         let mut freeze = match frozen.then(|| {
             crate::app_site::AppFreeze::new(&layout.account, facts.worker_entrypoint.is_some())
         }) {
@@ -151,6 +173,17 @@ pub(crate) fn capture_site_for(
             Some(Ok(f)) => Some(f),
             Some(Err(error)) => return CaptureOutcome::NotStarted(error),
         };
+        if matches!(database, AppDatabase::Mariadb | AppDatabase::Postgresql18) {
+            return capture_app_external_db_steps(
+                root,
+                database,
+                operation,
+                &mut store,
+                || crate::app_site::dump_app_external_db(layout, database),
+                || crate::app_site::remove_app_db_dump(layout, database),
+                freeze.as_mut().map(|f| f as &mut dyn Freeze),
+            );
+        }
         return capture_app_steps(
             root,
             &layout.account,
@@ -175,6 +208,113 @@ pub(crate) fn capture_site_for(
         || capture::remove_dump(layout),
         freeze.as_mut().map(|f| f as &mut dyn Freeze),
     )
+}
+
+/// W658 (D-102 C2): product capture sequence for a MariaDB or PostgreSQL 18
+/// modern app site (`data/` + consistent SQL/`pg_dump` file in `tmp/`, Object
+/// Lock precheck/postcheck, and canonical `data/` manifest).
+pub(crate) fn capture_app_external_db_steps(
+    root: &str,
+    database: AppDatabase,
+    operation: &Id,
+    store: &mut impl Store,
+    dump: impl FnOnce() -> Result<(), ExecutorError>,
+    remove: impl FnOnce() -> Result<(), ExecutorError>,
+    mut freeze: Option<&mut dyn Freeze>,
+) -> CaptureOutcome {
+    if let Err(error) = store.repository() {
+        return CaptureOutcome::NotStarted(error);
+    }
+    let Ok(precheck) = store.lock(None) else {
+        return CaptureOutcome::NotStarted(ExecutorError::RetentionUnverified);
+    };
+    if let Some(f) = freeze.as_deref_mut()
+        && let Err(error) = f.arm().and_then(|()| f.stop())
+    {
+        f.thaw();
+        return CaptureOutcome::NotStarted(error);
+    }
+    let outcome = match dump() {
+        Err(error) => CaptureOutcome::NotStarted(error),
+        Ok(()) => {
+            let written = match store.write(operation) {
+                Ok(written) => written,
+                Err(WriteFailure::NotLaunched(error)) => {
+                    if let Some(f) = freeze.take() {
+                        f.thaw();
+                    }
+                    return capture::settle(remove(), CaptureOutcome::NotStarted(error));
+                }
+                Err(WriteFailure::Launched { error, snapshot }) => {
+                    if let Some(f) = freeze.take() {
+                        f.thaw();
+                    }
+                    return capture::settle(
+                        remove(),
+                        CaptureOutcome::Uncertain { error, snapshot },
+                    );
+                }
+            };
+            let held = freeze.take().map(|f| {
+                let held = f.held();
+                f.thaw();
+                held
+            });
+            let mut snapshot = CapturedSnapshot {
+                id: written.id,
+                files: Some(written.files),
+                bytes: Some(written.bytes),
+                manifest: None,
+                consistency: if held == Some(true) {
+                    CaptureConsistency::Matched
+                } else if held == Some(false) {
+                    CaptureConsistency::Unmatched(UnmatchedReason::FreezeNotHeld)
+                } else {
+                    CaptureConsistency::Unmatched(UnmatchedReason::MarkerUnavailable)
+                },
+                retention: None,
+            };
+            let uncertain = |error, id: &str| CaptureOutcome::Uncertain {
+                error,
+                snapshot: Some(id.to_owned()),
+            };
+            if let Err(error) = store.check() {
+                uncertain(error, &snapshot.id)
+            } else {
+                match store.find(operation) {
+                    Ok(Some(found)) if found == snapshot.id => {
+                        let evidence = store
+                            .lock(Some((operation, &written.indexes)))
+                            .ok()
+                            .filter(|postcheck| written.indexes.matches(postcheck))
+                            .and_then(|postcheck| {
+                                retention_evidence::evidence(&precheck, &postcheck, &snapshot.id)
+                            });
+                        match evidence {
+                            None => uncertain(ExecutorError::RetentionUnverified, &snapshot.id),
+                            Some(ev) => {
+                                snapshot.retention = Some(ev);
+                                let dump_path = crate::app_site::app_db_dump_path(root, database);
+                                snapshot.manifest =
+                                    store.manifest(&snapshot.id).ok().and_then(|lines| {
+                                        crate::manifest::from_worker_for(
+                                            &lines, root, "data", &dump_path,
+                                        )
+                                    });
+                                CaptureOutcome::Succeeded(snapshot)
+                            }
+                        }
+                    }
+                    Ok(_) => uncertain(ExecutorError::PreconditionChanged, &snapshot.id),
+                    Err(error) => uncertain(error, &snapshot.id),
+                }
+            }
+        }
+    };
+    if let Some(f) = freeze.take() {
+        f.thaw();
+    }
+    capture::settle(remove(), outcome)
 }
 
 fn read_app_marker(

@@ -179,8 +179,22 @@ function servingIcon(kind: AppRecord["servingKind"]) {
   return CircleMinus;
 }
 
-const appStackFilters = ["All", "EmDash CMS", "Node.js app", "Bun app"] as const;
+const appStackFilters = [
+  "All",
+  "Full-stack app",
+  "EmDash CMS",
+  "Node.js app",
+  "Bun app",
+  "Static SPA",
+] as const;
 type AppStackFilter = (typeof appStackFilters)[number];
+
+const dbEngineLabels: Record<AppRecord["database"], string> = {
+  none: "None",
+  sqlite: "SQLite (WAL)",
+  mariadb: "MariaDB 10.11",
+  postgresql_18: "PostgreSQL 18",
+};
 
 function AppStackFilterBar({
   value,
@@ -251,7 +265,10 @@ function AppsTable({
                   </span>
                 </td>
                 <td className="mono">{app.currentRelease}</td>
-                <td className="mono">127.0.0.1:{app.port}</td>
+                <td className="mono">
+                  {app.port > 0 ? `127.0.0.1:${app.port}` : "Static files"}
+                  <div className="cap">{app.ingress}</div>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -282,6 +299,21 @@ function AppInspector({ selected, onClose }: { selected: AppRecord; onClose: () 
       <dl className="kv">
         <dt>Runtime</dt>
         <dd>{selected.runtime}</dd>
+        <dt>Edge ingress</dt>
+        <dd>
+          {selected.ingress} · <span className="mono">{selected.topology}</span>
+        </dd>
+        <dt>Database</dt>
+        <dd>{dbEngineLabels[selected.database]}</dd>
+        {selected.blueGreen ? (
+          <>
+            <dt>Blue/Green slot</dt>
+            <dd className="mono">
+              active slot {selected.blueGreen.activeSlot.toUpperCase()} · standby 127.0.0.1:
+              {selected.blueGreen.standbyPort}
+            </dd>
+          </>
+        ) : null}
         <dt>Systemd unit</dt>
         <dd className="mono">{selected.unit}</dd>
         <dt>Worker unit</dt>
@@ -327,8 +359,8 @@ export function AppsPage() {
         <div>
           <h1>Apps</h1>
           <p className="sub">
-            Managed Node.js 22, Bun 1.4, and EmDash CMS applications running in isolated per-site
-            services behind OpenLiteSpeed.
+            Managed full-stack Bun 1.4, Node.js 22, Static SPA, and EmDash CMS applications running
+            in isolated per-site services behind confined Caddy HTTP/3 or OpenLiteSpeed.
           </p>
         </div>
         <Link className="btn primary sm" to="/sites/new">
@@ -420,17 +452,28 @@ function AppOverviewTab({ app }: { app: AppRecord }) {
       <section className="grid g2">
         <article className="panel">
           <div className="panel-head">
-            <h2>Runtime and OLS ingress</h2>
+            <h2>Runtime, ingress &amp; database</h2>
           </div>
           <dl className="kv">
             <dt>Profile</dt>
-            <dd className="mono">{app.runtimeProfile}</dd>
+            <dd className="mono">
+              {app.runtimeProfile} · {app.topology}
+            </dd>
+            <dt>Edge ingress</dt>
+            <dd>{app.ingress}</dd>
+            <dt>Database engine</dt>
+            <dd>{dbEngineLabels[app.database]}</dd>
             <dt>Unit</dt>
             <dd className="mono">{app.unit}</dd>
             <dt>Companion worker</dt>
             <dd className="mono">{app.workerUnit ?? "None"}</dd>
-            <dt>OLS proxy target</dt>
-            <dd className="mono">http://127.0.0.1:{app.port}</dd>
+            <dt>Proxy target</dt>
+            <dd className="mono">
+              {app.port > 0 ? `http://127.0.0.1:${app.port}` : "Static root served by Caddy"}
+              {app.blueGreen
+                ? ` (slot ${app.blueGreen.activeSlot.toUpperCase()} · standby :${app.blueGreen.standbyPort})`
+                : ""}
+            </dd>
             <dt>WebSocket prefix</dt>
             <dd className="mono">{app.websocketPrefix ?? "Disabled"}</dd>
             <dt>Backup status</dt>
@@ -521,10 +564,15 @@ function AppConfigTab({ app }: { app: AppRecord }) {
           <h2>CLI deploy and lifecycle workflow</h2>
         </div>
         <pre className="code signed-bytes">
-          {`# Build deterministic release off-host
+          {app.kind === "EmDash CMS"
+            ? `# Build deterministic EmDash release off-host
 python3 packaging/emdash-recipe.py package-release --src ./app --out ./out --release-id ${app.currentRelease}
 # Draft signed app_deploy plan (requires <=24h capture when migrating)
-rustiron plan create app-deploy --site ${app.siteId} --release-id ${app.currentRelease} --out ./req`}
+rustiron plan create app-deploy --site-id ${app.siteId} --release-id ${app.currentRelease} --runtime ${app.runtimeProfile}`
+            : `# Pack deterministic full-stack release off-host (zero server build step)
+python3 packaging/rustiron-app-pack.py pack --site-id ${app.siteId} --release-id ${app.currentRelease} --out ./out --topology ${app.topology} --runtime ${app.runtimeProfile} --backend-dist ./dist${app.blueGreen ? " --blue-green-cutover" : ""}
+# Draft signed app_deploy plan${app.blueGreen ? " with zero-downtime blue/green cutover" : ""}
+rustiron plan create app-deploy --site-id ${app.siteId} --release-id ${app.currentRelease} --runtime ${app.runtimeProfile}${app.blueGreen ? " --blue-green-cutover" : ""}`}
         </pre>
       </article>
     </section>

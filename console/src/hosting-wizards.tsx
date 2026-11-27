@@ -22,6 +22,11 @@ import {
 import { useEffect, useState } from "react";
 
 import {
+  type AppDatabaseEngine,
+  type AppIngressEngine,
+  type AppRuntimeProfile,
+  type AppTopologyKind,
+  buildAppPackCmd,
   buildAppProvisionCmd,
   buildDnsChangeCmd,
   buildDnsZoneImportCmd,
@@ -41,9 +46,15 @@ type WebsiteKind = "wordpress" | "emdash" | "app" | "proxy";
 const websiteKinds: [WebsiteKind, string, string][] = [
   ["wordpress", "WordPress", "Isolated PHP 8.4 pool, MariaDB database, and LiteSpeed Cache."],
   ["emdash", "EmDash CMS", "Node.js 22 CMS with native SQLite FTS5 behind OpenLiteSpeed."],
-  ["app", "Node.js / Bun app", "Prebuilt Node.js 22 or Bun 1.4 service on a local loopback port."],
+  [
+    "app",
+    "Modern full-stack app",
+    "Vite/React/Next/Astro/TanStack front-end + Bun/Node back-end behind Caddy HTTP/3 & selectable DB.",
+  ],
   ["proxy", "Reverse proxy", "HTTPS reverse proxy with WebSocket support to a local backend port."],
 ];
+
+const RESERVED_INFRA_PORTS = new Set([2019, 3306, 4319, 5432, 7080]);
 
 const HOSTNAME_RE =
   /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i;
@@ -124,10 +135,233 @@ type WebsiteFormState = {
   siteId: string;
   hostname: string;
   quotaMib: string;
-  runtime: "node_22_v1" | "bun_1_v1";
+  runtime: AppRuntimeProfile;
+  ingress: AppIngressEngine;
+  topology: AppTopologyKind;
+  database: AppDatabaseEngine;
+  blueGreen: boolean;
   port: string;
+  standbyPort: string;
+  spaFallback: boolean;
+  frontendDir: string;
+  frontendRuntime: "node_22_v1" | "bun_1_v1";
+  frontendEntrypoint: string;
+  frontendPort: string;
+  frontendStandbyPort: string;
+  entrypoint: string;
+  routePrefix: string;
+  websocketPrefix: string;
+  ssePrefix: string;
+  stripApiPrefix: boolean;
   healthPath: string;
 };
+
+type AppPresetDef = {
+  id: string;
+  label: string;
+  patch: Partial<WebsiteFormState>;
+};
+
+const APP_PRESETS: readonly AppPresetDef[] = [
+  {
+    id: "vite-elysia",
+    label: "Vite + Elysia (Bun)",
+    patch: {
+      topology: "fullstack_split",
+      ingress: "caddy",
+      runtime: "bun_1_v1",
+      database: "postgresql_18",
+      blueGreen: true,
+      port: "3301",
+      standbyPort: "3302",
+      frontendDir: "web",
+      spaFallback: true,
+      entrypoint: "api/server.js",
+      routePrefix: "/api/",
+      websocketPrefix: "/ws/",
+      ssePrefix: "",
+      stripApiPrefix: true,
+      healthPath: "/api/health",
+    },
+  },
+  {
+    id: "react-hono",
+    label: "React + Hono (Bun)",
+    patch: {
+      topology: "fullstack_split",
+      ingress: "caddy",
+      runtime: "bun_1_v1",
+      database: "postgresql_18",
+      blueGreen: true,
+      port: "3301",
+      standbyPort: "3302",
+      frontendDir: "web",
+      spaFallback: true,
+      entrypoint: "api/index.js",
+      routePrefix: "/api/",
+      websocketPrefix: "",
+      ssePrefix: "",
+      stripApiPrefix: false,
+      healthPath: "/api/health",
+    },
+  },
+  {
+    id: "nextjs-standalone",
+    label: "Next.js Standalone",
+    patch: {
+      topology: "backend_api",
+      ingress: "caddy",
+      runtime: "node_22_v1",
+      database: "postgresql_18",
+      blueGreen: true,
+      port: "3301",
+      standbyPort: "3302",
+      spaFallback: false,
+      entrypoint: "server.js",
+      routePrefix: "/",
+      websocketPrefix: "",
+      ssePrefix: "",
+      stripApiPrefix: false,
+      healthPath: "/api/health",
+    },
+  },
+  {
+    id: "astro-ssr",
+    label: "Astro SSR",
+    patch: {
+      topology: "backend_api",
+      ingress: "caddy",
+      runtime: "node_22_v1",
+      database: "sqlite",
+      blueGreen: true,
+      port: "3301",
+      standbyPort: "3302",
+      spaFallback: false,
+      entrypoint: "dist/server/entry.mjs",
+      routePrefix: "/",
+      websocketPrefix: "",
+      ssePrefix: "",
+      stripApiPrefix: false,
+      healthPath: "/healthz",
+    },
+  },
+  {
+    id: "tanstack-start",
+    label: "TanStack Dual SSR",
+    patch: {
+      topology: "fullstack_dual_ssr",
+      ingress: "caddy",
+      runtime: "bun_1_v1",
+      database: "postgresql_18",
+      blueGreen: true,
+      frontendRuntime: "bun_1_v1",
+      frontendEntrypoint: "web/server.js",
+      frontendPort: "3301",
+      frontendStandbyPort: "3302",
+      port: "3303",
+      standbyPort: "3304",
+      spaFallback: false,
+      entrypoint: "api/server.js",
+      routePrefix: "/api/",
+      websocketPrefix: "",
+      ssePrefix: "",
+      stripApiPrefix: false,
+      healthPath: "/api/health",
+    },
+  },
+  {
+    id: "static-spa",
+    label: "Static SPA",
+    patch: {
+      topology: "static_spa",
+      ingress: "caddy",
+      runtime: "static_v1",
+      database: "none",
+      blueGreen: false,
+      port: "0",
+      standbyPort: "",
+      frontendDir: "dist",
+      spaFallback: true,
+      entrypoint: "",
+      routePrefix: "",
+      websocketPrefix: "",
+      ssePrefix: "",
+      stripApiPrefix: false,
+      healthPath: "/",
+    },
+  },
+];
+
+function splitPrefixes(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+}
+
+function effectiveAppRuntime(f: WebsiteFormState): AppRuntimeProfile {
+  if (f.topology === "static_spa") return "static_v1";
+  return f.runtime === "static_v1" ? "bun_1_v1" : f.runtime;
+}
+
+function buildDualSsrOpts(f: WebsiteFormState, useBg: boolean) {
+  if (f.topology !== "fullstack_dual_ssr") return {};
+  return {
+    frontendRuntime: f.frontendRuntime,
+    frontendEntrypoint: f.frontendEntrypoint,
+    frontendPort: f.frontendPort,
+    frontendStandbyPort: useBg ? f.frontendStandbyPort : undefined,
+  };
+}
+
+function buildStaticAppProvisionCmd(f: WebsiteFormState, s: string, h: string): string {
+  return buildAppProvisionCmd({
+    siteId: s,
+    hostname: h,
+    runtime: "static_v1",
+    port: 0,
+    ingress: "caddy",
+    topology: "static_spa",
+    database: "none",
+    spaFallback: f.spaFallback,
+    frontendDir: f.frontendDir || "dist",
+    healthPath: "/",
+  });
+}
+
+function buildCaddyPrefixOpts(f: WebsiteFormState, routes: string[]) {
+  if (f.ingress !== "caddy") return {};
+  const isSplit = f.topology === "fullstack_split";
+  return {
+    spaFallback: isSplit && f.spaFallback,
+    frontendDir: isSplit ? f.frontendDir || "web" : undefined,
+    ssePrefixes: splitPrefixes(f.ssePrefix),
+    stripApiPrefixes: f.stripApiPrefix ? routes : [],
+  };
+}
+
+function buildModernAppProvisionCmd(f: WebsiteFormState, s: string, h: string): string {
+  if (f.topology === "static_spa") return buildStaticAppProvisionCmd(f, s, h);
+  const useBg = f.ingress === "caddy" && f.blueGreen;
+  const routes = splitPrefixes(f.routePrefix);
+  return buildAppProvisionCmd({
+    siteId: s,
+    hostname: h,
+    runtime: effectiveAppRuntime(f),
+    port: f.port || "3301",
+    ingress: f.ingress,
+    topology: f.topology,
+    database: f.database,
+    blueGreen: useBg,
+    standbyPort: useBg ? f.standbyPort : undefined,
+    entrypoint: f.entrypoint || "api/server.js",
+    routePrefixes: routes,
+    websocketPrefixes: splitPrefixes(f.websocketPrefix),
+    healthPath: f.healthPath || "/api/health",
+    ...buildDualSsrOpts(f, useBg),
+    ...buildCaddyPrefixOpts(f, routes),
+  });
+}
 
 const websiteCmdMap: Record<WebsiteKind, (f: WebsiteFormState, s: string, h: string) => string> = {
   wordpress: (f, s, h) =>
@@ -141,14 +375,7 @@ const websiteCmdMap: Record<WebsiteKind, (f: WebsiteFormState, s: string, h: str
       healthPath: f.healthPath || "/_emdash/api/health",
       entrypoint: "dist/server/entry.mjs",
     }),
-  app: (f, s, h) =>
-    buildAppProvisionCmd({
-      siteId: s,
-      hostname: h,
-      runtime: f.runtime,
-      port: f.port || "3210",
-      healthPath: f.healthPath || "/healthz",
-    }),
+  app: buildModernAppProvisionCmd,
   proxy: (f, s, h) =>
     buildManualVerbPlanNote({
       verb: "proxy_site_provision",
@@ -163,6 +390,29 @@ function buildWebsiteCommand(form: WebsiteFormState): string {
     form.siteId.trim() || "sitenew",
     form.hostname.trim() || "example.com",
   );
+}
+
+function buildAppPackSnippet(form: WebsiteFormState): string | null {
+  if (form.kind !== "app") return null;
+  const s = form.siteId.trim() || "sitenew";
+  const isStatic = form.topology === "static_spa";
+  const runtime: AppRuntimeProfile = isStatic
+    ? "static_v1"
+    : form.runtime === "static_v1"
+      ? "bun_1_v1"
+      : form.runtime;
+  return buildAppPackCmd({
+    siteId: s,
+    releaseId: "rel-20261126-01",
+    topology: form.topology,
+    runtime,
+    database: isStatic ? "none" : form.database,
+    frontendDir: form.frontendDir,
+    entrypoint: form.entrypoint,
+    frontendRuntime: form.frontendRuntime,
+    frontendEntrypoint: form.frontendEntrypoint,
+    blueGreen: form.ingress === "caddy" && form.blueGreen,
+  });
 }
 
 function validateHost(hostname: string, existingHosts: Set<string>): string | null {
@@ -180,12 +430,395 @@ function validateIntRange(raw: string, min: number, max: number, label: string):
     : `${label} must be between ${min} and ${max}.`;
 }
 
+function validateAppPort(raw: string, label: string): string | null {
+  const rangeErr = validateIntRange(raw, 1024, 65535, label);
+  if (rangeErr) return rangeErr;
+  const n = Number(raw);
+  if (RESERVED_INFRA_PORTS.has(n)) {
+    return `${label} ${n} is reserved for host infrastructure (2019/3306/4319/5432/7080).`;
+  }
+  return null;
+}
+
+function collectAppPorts(form: WebsiteFormState): [string, string][] {
+  const useBg = form.ingress === "caddy" && form.blueGreen;
+  const ports: [string, string][] = [["Backend port", form.port]];
+  if (useBg) ports.push(["Standby port", form.standbyPort]);
+  if (form.topology === "fullstack_dual_ssr") {
+    ports.push(["Frontend SSR port", form.frontendPort]);
+    if (useBg) ports.push(["Frontend standby port", form.frontendStandbyPort]);
+  }
+  return ports;
+}
+
+function validateUniquePorts(ports: [string, string][]): string | null {
+  const seen = new Set<number>();
+  for (const [label, raw] of ports) {
+    const err = validateAppPort(raw, label);
+    if (err) return err;
+    const n = Number(raw);
+    if (seen.has(n)) {
+      return `Port ${n} is used twice; every active and standby slot needs a unique port.`;
+    }
+    seen.add(n);
+  }
+  return null;
+}
+
+function validateAppPorts(form: WebsiteFormState): string | null {
+  if (form.kind === "wordpress") return null;
+  if (form.kind !== "app") return validateAppPort(form.port, "Loopback port");
+  if (form.topology === "static_spa") return null;
+  return validateUniquePorts(collectAppPorts(form));
+}
+
 type WebsiteErrors = {
   hostErr: string | null;
   idErr: string | null;
   quotaErr: string | null;
   portErr: string | null;
 };
+
+function AppPresetStrip({ patch }: { patch: (p: Partial<WebsiteFormState>) => void }) {
+  return (
+    <div className="form-row" style={{ gridColumn: "1 / -1" }}>
+      <span className="cap">Quick-fill preset (matches packaging/rustiron-app-pack.py)</span>
+      <div className="row" style={{ gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+        {APP_PRESETS.map((preset) => (
+          <button
+            key={preset.id}
+            type="button"
+            className="btn quiet sm"
+            onClick={() => patch(preset.patch)}
+          >
+            {preset.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AppDualSsrFields({
+  form,
+  useBg,
+  patch,
+}: {
+  form: WebsiteFormState;
+  useBg: boolean;
+  patch: (p: Partial<WebsiteFormState>) => void;
+}) {
+  return (
+    <>
+      <div className="form-row">
+        <label htmlFor="ws-frt">Frontend SSR runtime</label>
+        <select
+          id="ws-frt"
+          className="input"
+          value={form.frontendRuntime}
+          onChange={(e) => patch({ frontendRuntime: e.target.value as "node_22_v1" | "bun_1_v1" })}
+        >
+          <option value="bun_1_v1">Bun 1.4</option>
+          <option value="node_22_v1">Node.js 22 LTS</option>
+        </select>
+      </div>
+      <div className="form-row">
+        <label htmlFor="ws-fentry">Frontend SSR entrypoint</label>
+        <input
+          id="ws-fentry"
+          className="input mono"
+          value={form.frontendEntrypoint}
+          onChange={(e) => patch({ frontendEntrypoint: e.target.value })}
+        />
+      </div>
+      <div className="form-row">
+        <label htmlFor="ws-fport">Frontend SSR port (Slot A)</label>
+        <input
+          id="ws-fport"
+          className="input tnum"
+          type="number"
+          min={1024}
+          max={65535}
+          value={form.frontendPort}
+          onChange={(e) => patch({ frontendPort: e.target.value })}
+        />
+      </div>
+      {useBg ? (
+        <div className="form-row">
+          <label htmlFor="ws-fstandby">Frontend standby port (Slot B)</label>
+          <input
+            id="ws-fstandby"
+            className="input tnum"
+            type="number"
+            min={1024}
+            max={65535}
+            value={form.frontendStandbyPort}
+            onChange={(e) => patch({ frontendStandbyPort: e.target.value })}
+          />
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function AppBackendFields({
+  form,
+  errs,
+  patch,
+}: {
+  form: WebsiteFormState;
+  errs: WebsiteErrors;
+  patch: (p: Partial<WebsiteFormState>) => void;
+}) {
+  const isCaddy = form.ingress === "caddy";
+  const runtimeVal = form.runtime === "static_v1" ? "bun_1_v1" : form.runtime;
+  return (
+    <>
+      <div className="form-row">
+        <label htmlFor="ws-runtime">Backend runtime</label>
+        <select
+          id="ws-runtime"
+          className="input"
+          value={runtimeVal}
+          onChange={(e) => patch({ runtime: e.target.value as "node_22_v1" | "bun_1_v1" })}
+        >
+          <option value="bun_1_v1">Bun 1.4 (bun_1_v1)</option>
+          <option value="node_22_v1">Node.js 22 LTS (node_22_v1)</option>
+        </select>
+      </div>
+      <div className="form-row">
+        <label htmlFor="ws-database">Database engine</label>
+        <select
+          id="ws-database"
+          className="input"
+          value={form.database}
+          onChange={(e) => patch({ database: e.target.value as AppDatabaseEngine })}
+        >
+          <option value="postgresql_18">PostgreSQL 18 (18.7+, SCRAM-SHA-256)</option>
+          <option value="mariadb">MariaDB 10.11 (local 127.0.0.1:3306)</option>
+          <option value="sqlite">SQLite (WAL mode in site data/)</option>
+          <option value="none">None (stateless / external API)</option>
+        </select>
+      </div>
+      <div className="form-row">
+        <label htmlFor="ws-entry">Backend entrypoint</label>
+        <input
+          id="ws-entry"
+          className="input mono"
+          value={form.entrypoint}
+          onChange={(e) => patch({ entrypoint: e.target.value })}
+        />
+      </div>
+      <div className="form-row">
+        <label htmlFor="ws-port">Backend loopback port (Slot A)</label>
+        <input
+          id="ws-port"
+          className="input tnum"
+          type="number"
+          min={1024}
+          max={65535}
+          value={form.port}
+          aria-invalid={errs.portErr ? "true" : "false"}
+          aria-describedby={errs.portErr ? "ws-port-err" : undefined}
+          onChange={(e) => patch({ port: e.target.value })}
+        />
+        <InlineErr id="ws-port-err" message={errs.portErr} />
+      </div>
+      {isCaddy && form.blueGreen ? (
+        <div className="form-row">
+          <label htmlFor="ws-standby">Backend standby port (Slot B)</label>
+          <input
+            id="ws-standby"
+            className="input tnum"
+            type="number"
+            min={1024}
+            max={65535}
+            value={form.standbyPort}
+            onChange={(e) => patch({ standbyPort: e.target.value })}
+          />
+        </div>
+      ) : null}
+      <div className="form-row">
+        <label htmlFor="ws-routes">API route prefix(es)</label>
+        <input
+          id="ws-routes"
+          className="input mono"
+          value={form.routePrefix}
+          placeholder="/api/"
+          onChange={(e) => patch({ routePrefix: e.target.value })}
+        />
+      </div>
+      <div className="form-row">
+        <label htmlFor="ws-ws">WebSocket prefix (optional)</label>
+        <input
+          id="ws-ws"
+          className="input mono"
+          value={form.websocketPrefix}
+          placeholder="/ws/"
+          onChange={(e) => patch({ websocketPrefix: e.target.value })}
+        />
+      </div>
+      {isCaddy ? (
+        <div className="form-row">
+          <label htmlFor="ws-sse">SSE prefix (optional, unbuffered)</label>
+          <input
+            id="ws-sse"
+            className="input mono"
+            value={form.ssePrefix}
+            placeholder="/events/"
+            onChange={(e) => patch({ ssePrefix: e.target.value })}
+          />
+        </div>
+      ) : null}
+      <div className="form-row">
+        <label htmlFor="ws-health">Health check path</label>
+        <input
+          id="ws-health"
+          className="input mono"
+          value={form.healthPath}
+          onChange={(e) => patch({ healthPath: e.target.value })}
+        />
+      </div>
+    </>
+  );
+}
+
+function AppOptionCheckboxes({
+  form,
+  patch,
+}: {
+  form: WebsiteFormState;
+  patch: (p: Partial<WebsiteFormState>) => void;
+}) {
+  if (form.ingress !== "caddy") return null;
+  const isStatic = form.topology === "static_spa";
+  const isSplit = form.topology === "fullstack_split";
+  return (
+    <div className="form-row" style={{ gridColumn: "1 / -1" }}>
+      <div className="row" style={{ gap: 16, flexWrap: "wrap" }}>
+        {!isStatic ? (
+          <label className="row" style={{ gap: 6, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={form.blueGreen}
+              onChange={(e) => patch({ blueGreen: e.target.checked })}
+            />
+            <span>Zero-downtime blue/green cutover</span>
+          </label>
+        ) : null}
+        {isStatic || isSplit ? (
+          <label className="row" style={{ gap: 6, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={form.spaFallback}
+              onChange={(e) => patch({ spaFallback: e.target.checked })}
+            />
+            <span>SPA index.html fallback</span>
+          </label>
+        ) : null}
+        {isSplit ? (
+          <label className="row" style={{ gap: 6, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={form.stripApiPrefix}
+              onChange={(e) => patch({ stripApiPrefix: e.target.checked })}
+            />
+            <span>Strip API prefix before upstream</span>
+          </label>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function topologyPatch(form: WebsiteFormState, next: AppTopologyKind): Partial<WebsiteFormState> {
+  if (next === "static_spa") {
+    return {
+      topology: next,
+      ingress: "caddy",
+      runtime: "static_v1",
+      database: "none",
+      blueGreen: false,
+      spaFallback: true,
+      frontendDir: form.frontendDir || "dist",
+      healthPath: "/",
+    };
+  }
+  const forceCaddy = next !== "backend_api";
+  return {
+    topology: next,
+    runtime: form.runtime === "static_v1" ? "bun_1_v1" : form.runtime,
+    ingress: forceCaddy ? "caddy" : form.ingress,
+    routePrefix: next === "backend_api" ? "/" : "/api/",
+    healthPath: next === "backend_api" ? "/healthz" : "/api/health",
+  };
+}
+
+function AppFullstackFields({
+  form,
+  errs,
+  patch,
+}: {
+  form: WebsiteFormState;
+  errs: WebsiteErrors;
+  patch: (p: Partial<WebsiteFormState>) => void;
+}) {
+  const isStatic = form.topology === "static_spa";
+  const hasFrontendDir = isStatic || form.topology === "fullstack_split";
+  return (
+    <>
+      <AppPresetStrip patch={patch} />
+      <div className="form-row">
+        <label htmlFor="ws-topology">App topology</label>
+        <select
+          id="ws-topology"
+          className="input"
+          value={form.topology}
+          onChange={(e) => patch(topologyPatch(form, e.target.value as AppTopologyKind))}
+        >
+          <option value="fullstack_split">Full-stack split (Static SPA + API backend)</option>
+          <option value="backend_api">Backend / Full-stack SSR single process</option>
+          <option value="fullstack_dual_ssr">Full-stack dual SSR (SSR web + API backend)</option>
+          <option value="static_spa">Static SPA (zero daemon, Caddy file server)</option>
+        </select>
+      </div>
+      <div className="form-row">
+        <label htmlFor="ws-ingress">Edge ingress</label>
+        <select
+          id="ws-ingress"
+          className="input"
+          value={form.ingress}
+          disabled={form.topology !== "backend_api"}
+          onChange={(e) => patch({ ingress: e.target.value as AppIngressEngine })}
+        >
+          <option value="caddy">Caddy (HTTP/3, zero-downtime, SPA fallback)</option>
+          <option value="ols">OpenLiteSpeed (legacy v1 proxy)</option>
+        </select>
+      </div>
+      {hasFrontendDir ? (
+        <div className="form-row">
+          <label htmlFor="ws-fdir">Static frontend directory (in bundle)</label>
+          <input
+            id="ws-fdir"
+            className="input mono"
+            value={form.frontendDir}
+            placeholder="web"
+            onChange={(e) => patch({ frontendDir: e.target.value })}
+          />
+        </div>
+      ) : null}
+      {form.topology === "fullstack_dual_ssr" ? (
+        <AppDualSsrFields
+          form={form}
+          useBg={form.ingress === "caddy" && form.blueGreen}
+          patch={patch}
+        />
+      ) : null}
+      {!isStatic ? <AppBackendFields form={form} errs={errs} patch={patch} /> : null}
+      <AppOptionCheckboxes form={form} patch={patch} />
+    </>
+  );
+}
 
 function WebsiteRuntimeFields({
   form,
@@ -215,22 +848,11 @@ function WebsiteRuntimeFields({
       </div>
     );
   }
+  if (form.kind === "app") {
+    return <AppFullstackFields form={form} errs={errs} patch={patch} />;
+  }
   return (
     <>
-      {form.kind === "app" ? (
-        <div className="form-row">
-          <label htmlFor="ws-runtime">Runtime</label>
-          <select
-            id="ws-runtime"
-            className="input"
-            value={form.runtime}
-            onChange={(e) => patch({ runtime: e.target.value as "node_22_v1" | "bun_1_v1" })}
-          >
-            <option value="node_22_v1">Node.js 22 LTS</option>
-            <option value="bun_1_v1">Bun 1.4</option>
-          </select>
-        </div>
-      ) : null}
       <div className="form-row">
         <label htmlFor="ws-port">Local loopback port (1024–65535)</label>
         <input
@@ -261,22 +883,44 @@ function WebsiteRuntimeFields({
   );
 }
 
+function runtimeSummaryText(form: WebsiteFormState): string {
+  if (form.kind === "wordpress") return `MariaDB + LSPHP 8.4 · ${form.quotaMib} MiB quota`;
+  if (form.kind !== "app") return `Loopback 127.0.0.1:${form.port} behind OpenLiteSpeed`;
+  const edge = form.ingress === "caddy" ? "Caddy HTTP/3" : "OpenLiteSpeed";
+  if (form.topology === "static_spa") return `Static SPA (${form.frontendDir || "dist"}) · ${edge}`;
+  const dbMap: Record<AppDatabaseEngine, string> = {
+    none: "No DB",
+    sqlite: "SQLite WAL",
+    mariadb: "MariaDB",
+    postgresql_18: "PostgreSQL 18",
+  };
+  const bg = form.ingress === "caddy" && form.blueGreen ? ` · blue/green :${form.standbyPort}` : "";
+  return `${form.topology} · ${edge} · ${dbMap[form.database]}${bg}`;
+}
+
+function summaryIngressNote(form: WebsiteFormState): string {
+  if (form.kind === "app" && form.ingress === "caddy") {
+    return "Confined Caddy reloads atomically without touching OpenLiteSpeed or WordPress pools.";
+  }
+  return "New sites stay unserved until you activate ingress configuration and issue an SSL certificate.";
+}
+
 function WebsiteSummaryAside({
   form,
   valid,
   signCmd,
+  packCmd,
   draftPayload,
 }: {
   form: WebsiteFormState;
   valid: boolean;
   signCmd: string;
+  packCmd: string | null;
   draftPayload: string;
 }) {
   const kindTitle = websiteKinds.find(([id]) => id === form.kind)?.[1] ?? form.kind;
-  const runtimeNote =
-    form.kind === "wordpress"
-      ? `MariaDB + LSPHP 8.4 · ${form.quotaMib} MiB quota`
-      : `Loopback 127.0.0.1:${form.port} behind OpenLiteSpeed`;
+  const hostDisplay = form.hostname.trim() || "—";
+  const accountId = form.siteId.trim() || "site";
 
   return (
     <aside className="stack">
@@ -291,21 +935,20 @@ function WebsiteSummaryAside({
           <li>
             <Glyph icon={Globe} className="list-muted" />
             <span className="grow">
-              <span className="t mono">{form.hostname.trim() || "—"}</span>
-              <span className="s">Account: rs_{form.siteId.trim() || "site"}</span>
+              <span className="t mono">{hostDisplay}</span>
+              <span className="s">Account: rs_{accountId}</span>
             </span>
           </li>
           <li>
             <Glyph icon={Layers} className="list-muted" />
             <span className="grow">
               <span className="t">{kindTitle}</span>
-              <span className="s">{runtimeNote}</span>
+              <span className="s">{runtimeSummaryText(form)}</span>
             </span>
           </li>
         </ul>
         <p className="cap" style={{ marginTop: 10 }}>
-          New sites stay unserved until you activate OpenLiteSpeed configuration and issue an SSL
-          certificate.
+          {summaryIngressNote(form)}
         </p>
       </section>
 
@@ -319,7 +962,7 @@ function WebsiteSummaryAside({
               className="btn quiet sm"
               onClick={() =>
                 downloadTextFile(
-                  `${form.siteId.trim() || "website"}-draft.json`,
+                  `${accountId}-draft.json`,
                   draftPayload,
                   "application/json;charset=utf-8",
                 )
@@ -332,6 +975,20 @@ function WebsiteSummaryAside({
         </div>
         <pre className="code signed-bytes">{signCmd}</pre>
       </section>
+
+      {packCmd ? (
+        <section className="panel">
+          <div className="panel-head">
+            <h2>Off-host release pack command</h2>
+            <CopySnippetButton text={packCmd} label="Copy app pack command" />
+          </div>
+          <p className="cap" style={{ marginBottom: 8 }}>
+            Build locally or in CI, then pack a deterministic tarball with SHA-256 manifest before
+            running <span className="mono">app-deploy</span>.
+          </p>
+          <pre className="code signed-bytes">{packCmd}</pre>
+        </section>
+      ) : null}
     </aside>
   );
 }
@@ -341,11 +998,27 @@ export function CreateWebsitePage() {
   const [form, setForm] = useState<WebsiteFormState>({
     kind: "wordpress",
     hostname: "newsite.example.com",
-    siteId: "newsite_example",
+    siteId: "newsite",
     quotaMib: "2048",
-    runtime: "node_22_v1",
-    port: "3210",
-    healthPath: "/healthz",
+    runtime: "bun_1_v1",
+    ingress: "caddy",
+    topology: "fullstack_split",
+    database: "postgresql_18",
+    blueGreen: true,
+    port: "3301",
+    standbyPort: "3302",
+    spaFallback: true,
+    frontendDir: "web",
+    frontendRuntime: "bun_1_v1",
+    frontendEntrypoint: "web/server.js",
+    frontendPort: "3301",
+    frontendStandbyPort: "3302",
+    entrypoint: "api/server.js",
+    routePrefix: "/api/",
+    websocketPrefix: "/ws/",
+    ssePrefix: "",
+    stripApiPrefix: true,
+    healthPath: "/api/health",
   });
   const [siteIdEdited, setSiteIdEdited] = useState(false);
 
@@ -355,14 +1028,14 @@ export function CreateWebsitePage() {
     hostErr: validateHost(form.hostname, existingHosts),
     idErr: SITE_ID_RE.test(form.siteId.trim())
       ? null
-      : "Use 2–24 lowercase letters, digits, or underscores starting with a letter.",
+      : "Use 3–16 lowercase letters or digits starting with a letter.",
     quotaErr:
       form.kind === "wordpress" ? validateIntRange(form.quotaMib, 256, 65536, "Quota (MiB)") : null,
-    portErr:
-      form.kind !== "wordpress" ? validateIntRange(form.port, 1024, 65535, "Loopback port") : null,
+    portErr: validateAppPorts(form),
   };
   const valid = !errs.hostErr && !errs.idErr && !errs.quotaErr && !errs.portErr;
   const signCmd = `${buildWebsiteCommand(form)}\n${INSPECT_AND_SIGN_STEPS}`;
+  const packCmd = buildAppPackSnippet(form);
   const draftPayload = JSON.stringify(form, null, 2);
 
   return (
@@ -467,6 +1140,7 @@ export function CreateWebsitePage() {
           form={form}
           valid={valid}
           signCmd={signCmd}
+          packCmd={packCmd}
           draftPayload={draftPayload}
         />
       </div>

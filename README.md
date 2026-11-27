@@ -8,7 +8,7 @@
 
 ### Security-first, open-source Linux hosting control plane built with Rust and TypeScript
 
-Orchestrate **WordPress**, **Node.js 22**, **Bun 1.4**, and **EmDash CMS** on **AlmaLinux 10** with Enforcing SELinux MCS, off-host SSHSIG signed operations, and a hardened Console Admin Panel — without reimplementing web, DNS, database, firewall, or backup engines.
+Orchestrate **WordPress**, full-stack **Node.js 22** / **Bun 1.4** / static SPA apps, and **EmDash CMS** on **AlmaLinux 10**, behind OpenLiteSpeed or a confined **Caddy HTTP/3** edge, with Enforcing SELinux MCS, off-host SSHSIG signed operations, and a hardened Console Admin Panel — without reimplementing web, DNS, database, firewall, or backup engines.
 
 <p>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/License-Apache--2.0-4169E1?style=flat-square" /></a>
@@ -21,6 +21,7 @@ Orchestrate **WordPress**, **Node.js 22**, **Bun 1.4**, and **EmDash CMS** on **
 </p>
 
 <p>
+  <a href="#whats-new-in-v011">What's New</a> ·
   <a href="#console-admin-panel">Screenshots</a> ·
   <a href="#architecture">Architecture</a> ·
   <a href="#key-features">Key Features</a> ·
@@ -36,6 +37,20 @@ Orchestrate **WordPress**, **Node.js 22**, **Bun 1.4**, and **EmDash CMS** on **
 > [!NOTE]
 > **Experimental pre-release software.** No production-supported release exists yet. Review [SECURITY.md](SECURITY.md) before exposing any management surface.
 > Website HTTP/HTTPS traffic bypasses RustIron completely — if management stops, hosted sites keep serving uninterrupted.
+
+---
+
+## What's New in v0.1.1
+
+| Area | What changed |
+| :--- | :--- |
+| **Full-stack app topologies** | Four signed app shapes: `static_spa`, `backend_api`, `fullstack_split` (static frontend + `/api` backend), and `fullstack_dual_ssr` (SSR frontend + API backend), on Node.js 22 or Bun 1.4. |
+| **Confined Caddy edge** | Optional Caddy `2.10` ingress with HTTP/3, WebSockets, and unbuffered SSE, confined in `rustiron_caddy_t`. Modes: `caddy_only`, `caddy_multi_ip`, and `caddy_edge_over_ols`, which bridges WordPress sites to OpenLiteSpeed over loopback. The admin API listens only on a `0700` Unix socket, and `rustiron-acme` stays the only certificate issuer. |
+| **Blue/green cutover** | Deploys start and health-check a standby slot, then reload Caddy onto it without a restart. |
+| **Database per app** | `none`, `sqlite`, `mariadb`, or `postgresql_18` (PGDG `18.7+`, loopback and SCRAM-SHA-256 only), each with its own SELinux app domain. Restores replay a dump as the site role, never as a superuser. |
+| **Deterministic packager** | `packaging/rustiron-app-pack.py` turns a build output into a byte-reproducible bundle and manifest with 6 framework presets, and refuses symlinks, special files, and `.env` files. |
+
+See [Modern Apps](docs/technical/MODERN-APPS.md) and [Runbook 32: Modern Apps](docs/operator/32-MODERN-APPS.md).
 
 ---
 
@@ -100,11 +115,15 @@ flowchart TB
 
     subgraph Host["AlmaLinux 10 Host Workloads (Per-Site UID · SELinux MCS · XFS Quotas)"]
         OLS["OpenLiteSpeed 1.9 + LSPHP 8.4<br/>rustiron_php_t"]
+        CADDY["Caddy 2.10 Edge · HTTP/3<br/>rustiron_caddy_t (optional)"]
         APPS["Node.js 22 / Bun 1.4 / EmDash 1.6<br/>rustiron_app_t"]
-        DATA["MariaDB 10.11 · PowerDNS 5.1<br/>firewalld · restic · Postfix Relay"]
+        DATA["MariaDB 10.11 · PostgreSQL 18.7 · PowerDNS 5.1<br/>firewalld · restic · Postfix Relay"]
     end
 
     VISITOR["Website Visitors (HTTP/HTTPS)"] ==>|"Direct traffic — bypasses RustIron"| OLS
+    VISITOR ==>|"Direct traffic (Caddy modes)"| CADDY
+    CADDY -->|"Loopback"| APPS
+    CADDY -.->|"A1 loopback bridge"| OLS
     UI --> COORD
     CLI --> COORD
     MCP --> COORD
@@ -113,6 +132,7 @@ flowchart TB
     EXEC <--> JRN
     EXEC -->|"Fixed Scoped Operations"| OLS
     EXEC -->|"Fixed Scoped Operations"| APPS
+    EXEC -->|"Fixed Scoped Operations"| CADDY
     EXEC -->|"Fixed Scoped Operations"| DATA
 ```
 
@@ -125,7 +145,7 @@ flowchart TB
 | **Separate-Custody Signed Operations** | Every privileged host mutation requires a canonical JSON plan and an off-host OpenSSH SSHSIG grant (`rustiron-plan-v1`), independently validated by `rustiron-executor` against peer identity, blast-radius budgets, non-replay admission marks, and durable SQLite intent. |
 | **Hard Multi-Layer Tenant Isolation** | Per-site Linux accounts, XFS disk quotas, systemd hardening (`IPAddressDeny=any`, `PrivateNetwork=yes` for workers), and Enforcing SELinux MCS types (`rustiron_php_t`, `rustiron_app_t`, `rustiron_mail_relay_t`) confine WordPress pools, Node/Bun/EmDash apps, and mail relays. |
 | **Hardened Console Admin Panel** | Full-screen Better Auth login lockdown (`Admin` / `Operator` / `Viewer` RBAC, `HttpOnly; SameSite=Strict; Secure`, rate-limited setup & sign-in), `Host` allowlisting (`421`), zero CORS, and strict CSP/HSTS/`X-Frame-Options: DENY`/`Permissions-Policy`/COOP/CORP headers on every HTML, static, and API route. |
-| **Web, App & CMS Lifecycle** | Manage WordPress (with LiteSpeed Page Cache & credential rotation), static/alias/reverse-proxy sites, Node.js 22 & Bun 1.4 services, EmDash 1.6.0 CMS, PowerDNS 5.1 authoritative zones, ACME TLS certificates, MariaDB & SQLite databases, and CyberPanel / WXR migrations. |
+| **Web, App & CMS Lifecycle** | Manage WordPress (with LiteSpeed Page Cache & credential rotation), static/alias/reverse-proxy sites, full-stack Node.js 22 & Bun 1.4 apps (4 topologies, blue/green cutover), EmDash 1.6.0 CMS, PowerDNS 5.1 authoritative zones, ACME TLS certificates, MariaDB, PostgreSQL 18.7 & SQLite databases, and CyberPanel / WXR migrations. |
 | **Observability & Recovery** | Live host health diagnoses, version support-matrix tracking, firewall zone controls, systemd timers & WP-Cron visibility, redacted live `systemd-journal` Server Logs, immutable `restic` backups with guided restore probes, and an integrated searchable Knowledge Base (`/help`). |
 | **Installer, Bundler & Atomic Updater** | Interactive & non-interactive AlmaLinux 10 install wizard (`packaging/rustiron-install-wizard.py`), deterministic signed release bundler (`scripts/release/bundle_release.py`, namespace `rustiron-release-v1`), and one-command atomic updater with rollback (`packaging/rustiron-updater.py`). |
 | **Safe AI / MCP Inspection** | Workstation-local read-only stdio MCP server (`rustiron-mcp`) with recursive control-character and Unicode Bidi sanitization and zero host mutation authority by default. |
@@ -144,6 +164,8 @@ Exact version floors and upstream end-of-life dates are tracked in [`crates/cont
 | **MariaDB** | `10.11 LTS` | Required loopback-only relational database |
 | **firewalld · restic · Certbot** | Host packages | Required network zone, encrypted backups, and ACME TLS |
 | **Node.js · Bun** | `22 LTS` / `1.4` | Optional modern JS/TS app runtimes & Console server |
+| **Caddy** | `2.10+` | Optional confined HTTP/3 edge ingress for full-stack apps (`rustiron_caddy_t`) |
+| **PostgreSQL** | `18.7+` (PGDG) | Optional loopback-only per-app database (`postgresql_18`) |
 | **EmDash CMS** | `1.6.0` | Optional Node.js + SQLite WAL/FTS5 CMS (`rustiron_app_t`) |
 | **PowerDNS Authoritative** | `5.1` | Optional authoritative DNS zones & TSIG AXFR |
 | **Postfix** | Loopback relay | Optional per-site Unix-socket outbound mail relay |
@@ -200,10 +222,10 @@ For AlmaLinux 10 hosts, RustIron ships an interactive setup wizard, a signed rel
 sudo python3 packaging/rustiron-install-wizard.py
 
 # Pack & sign a unified release bundle (off-host signing workstation, namespace rustiron-release-v1)
-python3 scripts/release/bundle_release.py pack   --version 0.1.0   --stage-dir /path/to/staged-release   --out-dir /path/to/dist   --console-dir console   --signing-key ~/.ssh/rustiron_release_ed25519
+python3 scripts/release/bundle_release.py pack   --version 0.1.1   --stage-dir /path/to/staged-release   --out-dir /path/to/dist   --console-dir console   --signing-key ~/.ssh/rustiron_release_ed25519
 
 # Verify and atomically apply a signed bundle on the host (with automatic rollback on failure)
-sudo python3 packaging/rustiron-updater.py apply   --bundle rustiron-0.1.0-almalinux10-x86_64.tar.gz   --release-signers /etc/rustiron/release-allowed-signers   --release-signer-id release_signer
+sudo python3 packaging/rustiron-updater.py apply   --bundle rustiron-0.1.1-almalinux10-x86_64.tar.gz   --release-signers /etc/rustiron/release-allowed-signers   --release-signer-id release_signer
 ```
 
 See [Packaging & Installer Guide](packaging/README.md), [Release Bundler Guide](scripts/release/README.md), [Runbook 16: Product Update](docs/operator/16-PRODUCT-UPDATE.md), and [Runbook 38: Console Production Deployment](docs/operator/38-CONSOLE-PRODUCTION-DEPLOYMENT.md).

@@ -174,10 +174,10 @@ pub fn prepared_plan(input: &[u8]) -> bool {
         (Some("dns_zone_import"), Some(1)) => DnsImportPlan::decode(input).unwrap().digest(),
         (Some("dns_change"), Some(1)) => DnsChangePlan::decode(input).unwrap().digest(),
         (Some("proxy_site_provision"), Some(1)) => ProxyPlan::decode(input).unwrap().digest(),
-        (Some("app_provision"), Some(1)) => AppProvisionPlan::decode(input).unwrap().digest(),
-        (Some("app_deploy"), Some(1)) => AppDeployPlan::decode(input).unwrap().digest(),
+        (Some("app_provision"), Some(1 | 2)) => AppProvisionPlan::decode(input).unwrap().digest(),
+        (Some("app_deploy"), Some(1 | 2)) => AppDeployPlan::decode(input).unwrap().digest(),
         (Some("app_lifecycle"), Some(1)) => AppLifecyclePlan::decode(input).unwrap().digest(),
-        (Some("site_credential_rotate"), Some(1)) => {
+        (Some("site_credential_rotate"), Some(1 | 2)) => {
             CredentialRotatePlan::decode(input).unwrap().digest()
         }
         _ => panic!("unsupported plan verb or version accepted"),

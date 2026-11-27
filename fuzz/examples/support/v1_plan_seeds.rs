@@ -94,7 +94,7 @@ fn sha(ch: char) -> String {
     std::iter::repeat_n(ch, 64).collect()
 }
 
-fn app_and_credential_plans() -> [(&'static str, Value, &'static str); 4] {
+fn app_and_credential_plans() -> [(&'static str, Value, &'static str); 6] {
     [
         (
             "app-provision",
@@ -217,6 +217,82 @@ fn app_and_credential_plans() -> [(&'static str, Value, &'static str); 4] {
                 "valid_from": 1000,
                 "expires_at": 2000,
                 "limitations": ["fuzz seed"]
+            }),
+            "site_credential_rotate",
+        ),
+        (
+            "app-provision-v2-fullstack",
+            json!({
+                "schema_version": 2,
+                "plan_id": "plan_app_v2_fuzz",
+                "host_id": "host_lab",
+                "host_epoch": "epoch_1",
+                "profile_digest": sha('a'),
+                "requester": "agent_1",
+                "verb": "app_provision",
+                "site_id": "saas1",
+                "hostname": "saas.example.test",
+                "runtime": "bun_1_v1",
+                "port": 4101,
+                "routes": [{"prefix": "/api/", "port": 4101}],
+                "websockets": [{"prefix": "/ws/", "port": 4101}],
+                "entrypoint": "backend/index.ts",
+                "health_path": "/api/health",
+                "env_keys": ["DATABASE_URL"],
+                "memory_max_mib": 1024,
+                "tasks_max": 128,
+                "quota_mib": 4096,
+                "ingress": "caddy",
+                "topology": "fullstack_split",
+                "database": "postgresql_18",
+                "blue_green": true,
+                "standby_port": 4102,
+                "spa_fallback": true,
+                "frontend_dir": "frontend",
+                "sse_prefixes": ["/api/events/"],
+                "strip_api_prefixes": ["/api/"],
+                "expected_effects": {
+                    "creates_account": true,
+                    "forwards_to_loopback": true,
+                    "installs_app_unit": true,
+                    "creates_database": true,
+                    "traffic_activation": false,
+                    "runs_package_scripts": false
+                },
+                "risk_class": "lab_only",
+                "valid_from": 1000,
+                "expires_at": 2000,
+                "limitations": ["fuzz seed v2"]
+            }),
+            "app_provision",
+        ),
+        (
+            "site-credential-rotate-v2-pg18",
+            json!({
+                "schema_version": 2,
+                "plan_id": "plan_rot_pg18_fuzz",
+                "host_id": "host_lab",
+                "host_epoch": "epoch_1",
+                "profile_digest": sha('a'),
+                "requester": "agent_1",
+                "verb": "site_credential_rotate",
+                "site_id": "saas1",
+                "hostname": "saas.example.test",
+                "target": "app_postgresql_18_password",
+                "expected_effects": {
+                    "rotates_db_password": true,
+                    "updates_db_cnf": false,
+                    "restarts_site_php": false,
+                    "updates_app_env": true,
+                    "restarts_app_unit": true,
+                    "traffic_activation": false,
+                    "network_access": false,
+                    "secret_in_plan": false
+                },
+                "risk_class": "lab_only",
+                "valid_from": 1000,
+                "expires_at": 2000,
+                "limitations": ["fuzz seed v2"]
             }),
             "site_credential_rotate",
         ),

@@ -1,0 +1,108 @@
+# W657 (D-102, Decisions A1 + B1): confined SELinux domain for the Rustiron
+# Caddy edge ingress daemon (`rustiron-caddy.service`).
+#
+# Security boundary:
+# - Binds public HTTP/HTTPS/HTTP3 ports ONLY (TCP 80/443, UDP 443).
+# - Reads immutable generated configs in /etc/rustiron-caddy/ read-only.
+# - Admin API only on /run/rustiron-caddy/admin.sock (rustiron_caddy_run_t,
+#   0700 RuntimeDirectory); zero TCP :2019 (W662-F4).
+# - Reads installed TLS chains/keys in /etc/rustiron-tls/ read-only (Decision B1:
+#   rustiron-acme/certbot stays the sole TLS issuer; auto_https disable_certs).
+# - Reads static SPA assets and ACME HTTP-01 challenge tokens in
+#   /srv/sites/rs_*/ (httpd_sys_content_t) read-only; NEVER writes site files
+#   and NEVER reads httpd_sys_rw_content_t (SQLite data/, tmp/) or 0400 private/app.env.
+# - Connects ONLY to local app ports (unreserved_port_t) and loopback OLS
+#   bridge ports (http_cache_port_t / rustiron_ols_port_t).
+# - ZERO outbound TCP 80/443 (`http_port_t` name_connect NOT granted), ZERO
+#   database port connect (mysqld_port_t, postgresql_port_t), ZERO shell/binary
+#   exec (corecmd_exec_bin NOT granted), ZERO access to /etc/rustiron or
+#   /var/lib/rustiron journal/secrets.
+policy_module(rustiron_caddy, 0.1.1)
+
+gen_require(`
+	type init_t, httpd_sys_content_t;
+	type rustiron_caddy_generation_t, rustiron_tls_t, rustiron_ols_port_t;
+	type http_port_t, http_cache_port_t, unreserved_port_t;
+	type passwd_file_t, proc_t, tmpfs_t, net_conf_t, fs_t, cgroup_t, sysctl_net_t;
+	role system_r;
+')
+
+type rustiron_caddy_t;
+type rustiron_caddy_exec_t;
+init_daemon_domain(rustiron_caddy_t, rustiron_caddy_exec_t)
+init_nnp_daemon_domain(rustiron_caddy_t)
+
+# Minimal state root (kept read-only/empty under persist_config off).
+type rustiron_caddy_var_lib_t;
+files_type(rustiron_caddy_var_lib_t)
+
+# W662-F4: admin API socket in the unit's 0700 RuntimeDirectory
+# (/run/rustiron-caddy/admin.sock); `caddy reload` (ExecReload, same domain)
+# connects to it. No TCP admin listener exists.
+type rustiron_caddy_run_t;
+files_pid_file(rustiron_caddy_run_t)
+allow rustiron_caddy_t rustiron_caddy_run_t:dir rw_dir_perms;
+allow rustiron_caddy_t rustiron_caddy_run_t:sock_file manage_sock_file_perms;
+allow rustiron_caddy_t self:unix_stream_socket connectto;
+
+# Only CAP_NET_BIND_SERVICE for TCP 80/443 and UDP 443 (HTTP/3).
+allow rustiron_caddy_t self:capability net_bind_service;
+allow rustiron_caddy_t self:process { signal sigchld getsched setsched setrlimit };
+allow rustiron_caddy_t self:fifo_file rw_fifo_file_perms;
+allow rustiron_caddy_t self:unix_stream_socket create_stream_socket_perms;
+allow rustiron_caddy_t self:unix_dgram_socket { create_socket_perms sendto };
+
+# Inbound public listeners: TCP 80/443 and UDP 443 (QUIC / HTTP/3).
+allow rustiron_caddy_t self:tcp_socket create_stream_socket_perms;
+allow rustiron_caddy_t self:udp_socket create_socket_perms;
+corenet_tcp_bind_generic_node(rustiron_caddy_t)
+corenet_udp_bind_generic_node(rustiron_caddy_t)
+allow rustiron_caddy_t http_port_t:tcp_socket name_bind;
+allow rustiron_caddy_t http_port_t:udp_socket name_bind;
+
+# Outbound connections strictly to local app backends and A1 loopback OLS bridge.
+# Note: http_port_t name_connect is deliberately NOT granted (zero outbound 80/443).
+allow rustiron_caddy_t unreserved_port_t:tcp_socket name_connect;
+allow rustiron_caddy_t http_cache_port_t:tcp_socket name_connect;
+allow rustiron_caddy_t rustiron_ols_port_t:tcp_socket name_connect;
+
+# Read-only immutable generated Caddyfiles (/etc/rustiron-caddy/).
+files_list_root(rustiron_caddy_t)
+files_list_etc(rustiron_caddy_t)
+list_dirs_pattern(rustiron_caddy_t, rustiron_caddy_generation_t, rustiron_caddy_generation_t)
+read_files_pattern(rustiron_caddy_t, rustiron_caddy_generation_t, rustiron_caddy_generation_t)
+read_lnk_files_pattern(rustiron_caddy_t, rustiron_caddy_generation_t, rustiron_caddy_generation_t)
+
+# Decision B1: read-only access to rustiron-acme managed certs (/etc/rustiron-tls/).
+search_dirs_pattern(rustiron_caddy_t, rustiron_tls_t, rustiron_tls_t)
+read_files_pattern(rustiron_caddy_t, rustiron_tls_t, rustiron_tls_t)
+read_lnk_files_pattern(rustiron_caddy_t, rustiron_tls_t, rustiron_tls_t)
+
+# Read-only static SPA assets & ACME HTTP-01 webroot (/srv/sites/rs_*/).
+# httpd_sys_rw_content_t (SQLite data/, tmp/) is deliberately NOT readable.
+# W662-F6: list (not only search) so try_files {path}/ and index lookups on
+# directories do not raise an AVC per request; file_server browse stays off.
+list_dirs_pattern(rustiron_caddy_t, httpd_sys_content_t, httpd_sys_content_t)
+read_files_pattern(rustiron_caddy_t, httpd_sys_content_t, httpd_sys_content_t)
+read_lnk_files_pattern(rustiron_caddy_t, httpd_sys_content_t, httpd_sys_content_t)
+
+# Read-only Go runtime basics (CPU count, entropy, system timezone/certs, journald).
+files_read_usr_files(rustiron_caddy_t)
+miscfiles_read_localization(rustiron_caddy_t)
+miscfiles_read_generic_certs(rustiron_caddy_t)
+allow rustiron_caddy_t passwd_file_t:file read_file_perms;
+allow rustiron_caddy_t proc_t:dir list_dir_perms;
+kernel_read_system_state(rustiron_caddy_t)
+dev_read_sysfs(rustiron_caddy_t)
+dev_read_urand(rustiron_caddy_t)
+allow rustiron_caddy_t sysctl_net_t:dir search_dir_perms;
+allow rustiron_caddy_t sysctl_net_t:file read_file_perms;
+allow rustiron_caddy_t tmpfs_t:file { rw_file_perms map };
+logging_send_syslog_msg(rustiron_caddy_t)
+allow rustiron_caddy_t init_t:unix_stream_socket { getattr write };
+
+# Silence benign startup probes without granting access.
+dontaudit rustiron_caddy_t net_conf_t:file { getattr read };
+dontaudit rustiron_caddy_t fs_t:filesystem getattr;
+dontaudit rustiron_caddy_t cgroup_t:filesystem getattr;
+dontaudit rustiron_caddy_t cgroup_t:dir search;

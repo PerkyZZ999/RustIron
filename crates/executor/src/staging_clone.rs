@@ -198,6 +198,18 @@ pub(crate) fn fetched_manifest_for(
     root: &str,
     is_app: bool,
 ) -> Result<Option<crate::manifest::Built>, ExecutorError> {
+    let app_db = is_app.then_some(rustiron_contracts::approval::AppDatabase::Sqlite);
+    fetched_manifest_for_db(layout, level, root, app_db)
+}
+
+/// W658 (D-102 C2): as [`fetched_manifest_for`], selecting the exact app dump
+/// file matching the app's enrolled database engine.
+pub(crate) fn fetched_manifest_for_db(
+    layout: &SiteLayout,
+    level: &str,
+    root: &str,
+    app_db: Option<rustiron_contracts::approval::AppDatabase>,
+) -> Result<Option<crate::manifest::Built>, ExecutorError> {
     let name = format!("{}.tree", unit(layout, "tree")?);
     let output = format!("{}/{name}", crate::capture::OUTPUT_DIR);
     let tmp = layout.root.join("tmp");
@@ -215,13 +227,12 @@ pub(crate) fn fetched_manifest_for(
     );
     let _ = fs::unlinkat(&directory, name.as_str(), AtFlags::empty());
     ran?;
-    let (subdir, dump) = if is_app {
-        ("data", crate::app_site::app_bundle_path(root))
-    } else {
-        (
+    let (subdir, dump) = match app_db {
+        Some(db) => ("data", crate::app_site::app_db_dump_path(root, db)),
+        None => (
             "html",
             format!("{root}/tmp/{}", crate::layout::CAPTURE_DUMP_FILE),
-        )
+        ),
     };
     Ok(crate::manifest::from_worker_for(
         &bytes?, root, subdir, &dump,

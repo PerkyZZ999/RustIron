@@ -62,15 +62,15 @@ MODULE_DIR = "usr/share/rustiron/selinux"
 INSTALL_RECORD = "var/lib/rustiron/install-record.json"
 INSTALL_RECORD_SCHEMA = "rustiron-install-record/1"
 # The identities that the sysusers file creates.
-SYSUSERS_USERS = ("rustiron-coordinator", "rustiron-acme")
-SYSUSERS_GROUPS = ("rustiron-coordinator", "rustiron-requesters", "rustiron-acme")
+SYSUSERS_USERS = ("rustiron-coordinator", "rustiron-acme", "rustiron-caddy")
+SYSUSERS_GROUPS = ("rustiron-coordinator", "rustiron-requesters", "rustiron-acme", "rustiron-caddy")
 # W646: certbot runs as rustiron-acme with ReadWritePaths=/var/lib/rustiron-acme.
 ACME_STATE = "var/lib/rustiron-acme"
 ACME_SUBDIRS = ("config", "work", "logs")
 LSPHP = "usr/local/lsws/lsphp84/bin/lsphp"
 # Paths whose labels the loaded modules define; restorecon reads them again.
 RELABEL = (
-    "etc/rustiron", "etc/rustiron-ols", "etc/rustiron-ejected", "var/lib/rustiron",
+    "etc/rustiron", "etc/rustiron-ols", "etc/rustiron-caddy", "etc/rustiron-ejected", "var/lib/rustiron",
     ACME_STATE,
     "srv/sites", "srv/restore-probes", "usr/bin/rustiron", "usr/libexec/rustiron",
     "usr/share/rustiron", "usr/share/doc/rustiron", "usr/share/licenses/rustiron",

@@ -7,14 +7,18 @@
 //! retries, enforce one open release/lifecycle per site, and validate every
 //! invariant on open. Nothing here touches a host.
 
+use std::collections::BTreeSet;
+
 use rusqlite::{Connection, OptionalExtension, params};
 use rustiron_contracts::{
     Id, Timestamp,
     approval::{
-        AppLifecycleAction, AppRuntime, MAX_APP_MEMORY_MIB, MAX_APP_QUOTA_MIB,
-        MAX_APP_RELEASE_BYTES, MAX_APP_RELEASE_FILES, MAX_APP_TASKS_MAX, MIN_APP_MEMORY_MIB,
-        MIN_APP_QUOTA_MIB, MIN_APP_TASKS_MAX, Sha256Digest, SiteId, routable_port,
-        valid_entrypoint, valid_env_keys, valid_health_path, valid_release_id,
+        AppDatabase, AppLifecycleAction, AppRuntime, AppTopology, IngressEngine,
+        MAX_APP_MEMORY_MIB, MAX_APP_QUOTA_MIB, MAX_APP_RELEASE_BYTES, MAX_APP_RELEASE_FILES,
+        MAX_APP_TASKS_MAX, MAX_PROXY_ROUTES, MIN_APP_MEMORY_MIB, MIN_APP_QUOTA_MIB,
+        MIN_APP_TASKS_MAX, Sha256Digest, SiteId, app_routable_port, routable_port,
+        valid_entrypoint, valid_env_keys, valid_frontend_dir, valid_health_path, valid_prefix,
+        valid_release_id,
     },
 };
 
@@ -25,6 +29,342 @@ use crate::{
 
 /// Maximum age of a capture bound to a migrating `app_deploy` (24 hours).
 pub const APP_MIGRATION_CAPTURE_MAX_AGE_SECONDS: u64 = 24 * 3600;
+
+/// Active blue/green runtime slot for a D-102 app (`a` or `b`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AppSlot {
+    /// Primary slot (`port` / `frontend_port`).
+    A,
+    /// Standby slot (`standby_port` / `frontend_standby_port`).
+    B,
+}
+
+impl AppSlot {
+    /// Closed wire/column identifier (`"a"` or `"b"`).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::A => "a",
+            Self::B => "b",
+        }
+    }
+
+    /// The opposite slot for blue/green cutover.
+    pub const fn opposite(self) -> Self {
+        match self {
+            Self::A => Self::B,
+            Self::B => Self::A,
+        }
+    }
+
+    fn from_name(name: &str) -> Result<Self, JournalError> {
+        match name {
+            "a" => Ok(Self::A),
+            "b" => Ok(Self::B),
+            _ => Err(JournalError::Unavailable),
+        }
+    }
+}
+
+/// D-102 full-stack metadata stored alongside an `apps` row (journal v45).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AppFullstackSpec {
+    /// Edge ingress engine (`ols` or `caddy`).
+    pub ingress: IngressEngine,
+    /// Deployment topology (`static_spa`, `backend_api`, `fullstack_split`, `fullstack_dual_ssr`).
+    pub topology: AppTopology,
+    /// Selected per-app database engine (`none`, `sqlite`, `mariadb`, `postgresql_18`).
+    pub database: AppDatabase,
+    /// Whether zero-downtime blue/green slot cutover is enabled.
+    pub blue_green: bool,
+    /// Currently active blue/green slot (`a` by default).
+    pub active_slot: AppSlot,
+    /// Standby loopback port for blue/green cutover.
+    pub standby_port: Option<u16>,
+    /// Whether Caddy enables SPA `try_files {path} /index.html`.
+    pub spa_fallback: bool,
+    /// Relative static frontend directory (`static_spa` / `fullstack_split`).
+    pub frontend_dir: Option<String>,
+    /// SSR frontend runtime (`fullstack_dual_ssr`).
+    pub frontend_runtime: Option<AppRuntime>,
+    /// SSR frontend entrypoint (`fullstack_dual_ssr`).
+    pub frontend_entrypoint: Option<String>,
+    /// SSR frontend loopback port (`fullstack_dual_ssr`).
+    pub frontend_port: Option<u16>,
+    /// SSR frontend standby loopback port (`fullstack_dual_ssr` + `blue_green`).
+    pub frontend_standby_port: Option<u16>,
+    /// Sorted unique unbuffered SSE prefixes (Caddy only).
+    pub sse_prefixes: Vec<String>,
+    /// Sorted unique API prefixes stripped before upstream forwarding (Caddy only).
+    pub strip_api_prefixes: Vec<String>,
+}
+
+impl AppFullstackSpec {
+    /// Returns every non-zero loopback port reserved by `(facts, self)`.
+    pub fn all_ports(&self, facts: &AppFacts) -> Vec<u16> {
+        let mut ports = Vec::new();
+        if facts.port != 0 {
+            ports.push(facts.port);
+        }
+        if let Some(p) = self.standby_port {
+            ports.push(p);
+        }
+        if let Some(p) = self.frontend_port {
+            ports.push(p);
+        }
+        if let Some(p) = self.frontend_standby_port {
+            ports.push(p);
+        }
+        ports
+    }
+
+    /// Validates `(facts, self)` against the closed D-102 full-stack contract.
+    pub fn is_valid_with(&self, facts: &AppFacts) -> bool {
+        let common_ok = facts
+            .worker_entrypoint
+            .as_deref()
+            .is_none_or(valid_entrypoint)
+            && valid_health_path(&facts.health_path)
+            && valid_env_keys(&facts.env_keys)
+            && (MIN_APP_MEMORY_MIB..=MAX_APP_MEMORY_MIB).contains(&facts.memory_max_mib)
+            && (MIN_APP_TASKS_MAX..=MAX_APP_TASKS_MAX).contains(&facts.tasks_max)
+            && (MIN_APP_QUOTA_MIB..=MAX_APP_QUOTA_MIB).contains(&facts.quota_mib);
+        if !common_ok {
+            return false;
+        }
+        let prefixes_ok = |list: &[String], allow_root: bool| -> bool {
+            list.len() <= MAX_PROXY_ROUTES
+                && list
+                    .iter()
+                    .all(|p| valid_prefix(p) && (allow_root || p != "/"))
+                && list.windows(2).all(|w| w[0] < w[1])
+        };
+        if !self.sse_prefixes.is_empty()
+            && (self.ingress != IngressEngine::Caddy
+                || self.topology == AppTopology::StaticSpa
+                || !prefixes_ok(&self.sse_prefixes, true))
+        {
+            return false;
+        }
+        if !self.strip_api_prefixes.is_empty() {
+            let route_set: BTreeSet<&str> = facts
+                .routes
+                .routes
+                .iter()
+                .map(|r| r.prefix.as_str())
+                .collect();
+            if self.ingress != IngressEngine::Caddy
+                || !prefixes_ok(&self.strip_api_prefixes, false)
+                || !self
+                    .strip_api_prefixes
+                    .iter()
+                    .all(|p| route_set.contains(p.as_str()))
+            {
+                return false;
+            }
+        }
+        match self.topology {
+            AppTopology::StaticSpa => {
+                self.ingress == IngressEngine::Caddy
+                    && facts.runtime == AppRuntime::StaticV1
+                    && facts.port == 0
+                    && !self.blue_green
+                    && self.active_slot == AppSlot::A
+                    && self.standby_port.is_none()
+                    && facts.routes.routes.is_empty()
+                    && facts.routes.websockets.is_empty()
+                    && facts.entrypoint.is_empty()
+                    && facts.worker_entrypoint.is_none()
+                    && self.frontend_dir.as_deref().is_some_and(valid_frontend_dir)
+                    && self.frontend_runtime.is_none()
+                    && self.frontend_entrypoint.is_none()
+                    && self.frontend_port.is_none()
+                    && self.frontend_standby_port.is_none()
+                    && self.database == AppDatabase::None
+                    && facts.health_path == "/"
+            }
+            AppTopology::BackendApi => {
+                let single_ports_ok = if self.blue_green {
+                    self.standby_port
+                        .is_some_and(|sp| app_routable_port(sp) && sp != facts.port)
+                } else {
+                    self.standby_port.is_none() && self.active_slot == AppSlot::A
+                };
+                facts.runtime.is_process_runtime()
+                    && app_routable_port(facts.port)
+                    && facts.is_valid()
+                    && !self.spa_fallback
+                    && self.frontend_dir.is_none()
+                    && self.frontend_runtime.is_none()
+                    && self.frontend_entrypoint.is_none()
+                    && self.frontend_port.is_none()
+                    && self.frontend_standby_port.is_none()
+                    && single_ports_ok
+            }
+            AppTopology::FullstackSplit => {
+                let single_ports_ok = if self.blue_green {
+                    self.standby_port
+                        .is_some_and(|sp| app_routable_port(sp) && sp != facts.port)
+                } else {
+                    self.standby_port.is_none() && self.active_slot == AppSlot::A
+                };
+                self.ingress == IngressEngine::Caddy
+                    && facts.runtime.is_process_runtime()
+                    && app_routable_port(facts.port)
+                    && valid_entrypoint(&facts.entrypoint)
+                    && self.frontend_dir.as_deref().is_some_and(valid_frontend_dir)
+                    && facts.routes.is_valid_app_split()
+                    && facts
+                        .routes
+                        .routes
+                        .iter()
+                        .chain(&facts.routes.websockets)
+                        .all(|r| r.port == facts.port)
+                    && self.frontend_runtime.is_none()
+                    && self.frontend_entrypoint.is_none()
+                    && self.frontend_port.is_none()
+                    && self.frontend_standby_port.is_none()
+                    && single_ports_ok
+            }
+            AppTopology::FullstackDualSsr => {
+                let (Some(fr), Some(fe), Some(fp)) = (
+                    self.frontend_runtime,
+                    self.frontend_entrypoint.as_deref(),
+                    self.frontend_port,
+                ) else {
+                    return false;
+                };
+                if self.ingress != IngressEngine::Caddy
+                    || !facts.runtime.is_process_runtime()
+                    || !fr.is_process_runtime()
+                    || !app_routable_port(facts.port)
+                    || !app_routable_port(fp)
+                    || !valid_entrypoint(&facts.entrypoint)
+                    || !valid_entrypoint(fe)
+                    || self.frontend_dir.is_some()
+                    || self.spa_fallback
+                    || !facts.routes.is_valid()
+                    || !facts
+                        .routes
+                        .routes
+                        .iter()
+                        .chain(&facts.routes.websockets)
+                        .all(|r| r.port == facts.port || r.port == fp)
+                    || !facts
+                        .routes
+                        .routes
+                        .iter()
+                        .any(|r| r.prefix == "/" && r.port == fp)
+                    || !facts
+                        .routes
+                        .routes
+                        .iter()
+                        .any(|r| r.prefix != "/" && r.port == facts.port)
+                {
+                    return false;
+                }
+                let mut ports = BTreeSet::from([facts.port, fp]);
+                if self.blue_green {
+                    let (Some(sp), Some(fsp)) = (self.standby_port, self.frontend_standby_port)
+                    else {
+                        return false;
+                    };
+                    if !app_routable_port(sp) || !app_routable_port(fsp) {
+                        return false;
+                    }
+                    ports.insert(sp);
+                    ports.insert(fsp);
+                    ports.len() == 4
+                } else {
+                    self.standby_port.is_none()
+                        && self.frontend_standby_port.is_none()
+                        && self.active_slot == AppSlot::A
+                        && ports.len() == 2
+                }
+            }
+        }
+    }
+}
+
+/// Host-level Caddy ingress mode (D-102 owner choice A1).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CaddyIngressMode {
+    /// Dedicated app host where Caddy directly owns TCP 80/443 and UDP 443.
+    CaddyOnly,
+    /// Multi-IP mixed host where Caddy binds its own enrolled IP.
+    CaddyMultiIp,
+    /// Single-IP mixed host where Caddy owns `:80/:443` and proxies WordPress to OLS on `127.0.0.1:8080`.
+    CaddyEdgeOverOls,
+}
+
+impl CaddyIngressMode {
+    /// Closed wire/column identifier.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CaddyOnly => "caddy_only",
+            Self::CaddyMultiIp => "caddy_multi_ip",
+            Self::CaddyEdgeOverOls => "caddy_edge_over_ols",
+        }
+    }
+
+    fn from_name(name: &str) -> Result<Self, JournalError> {
+        match name {
+            "caddy_only" => Ok(Self::CaddyOnly),
+            "caddy_multi_ip" => Ok(Self::CaddyMultiIp),
+            "caddy_edge_over_ols" => Ok(Self::CaddyEdgeOverOls),
+            _ => Err(JournalError::Unavailable),
+        }
+    }
+}
+
+/// Lifecycle state of a journaled Caddy generation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CaddyGenerationState {
+    /// Validated candidate written before reload.
+    Staged,
+    /// Live active Caddy generation.
+    Active,
+    /// Superseded or reverted after failed reload.
+    RolledBack,
+}
+
+impl CaddyGenerationState {
+    /// Closed wire/column identifier (`"staged"`, `"active"`, or `"rolled_back"`).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Staged => "staged",
+            Self::Active => "active",
+            Self::RolledBack => "rolled_back",
+        }
+    }
+
+    fn from_name(name: &str) -> Result<Self, JournalError> {
+        match name {
+            "staged" => Ok(Self::Staged),
+            "active" => Ok(Self::Active),
+            "rolled_back" => Ok(Self::RolledBack),
+            _ => Err(JournalError::Unavailable),
+        }
+    }
+}
+
+/// One journaled Caddy configuration generation (journal v45, D-102).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CaddyGeneration {
+    /// Unique generation identifier.
+    pub generation_id: Id,
+    /// Associated operation ID (`config_activate` or blue/green `app_deploy`).
+    pub operation_id: Id,
+    /// Enrolled host Caddy ingress mode.
+    pub ingress_mode: CaddyIngressMode,
+    /// SHA-256 of the rendered canonical `Caddyfile` bundle.
+    pub config_sha256: Sha256Digest,
+    /// Number of rendered sites in this generation.
+    pub site_count: u64,
+    /// Creation timestamp (Unix seconds).
+    pub created_at: Timestamp,
+    /// Current state (`staged`, `active`, or `rolled_back`).
+    pub state: CaddyGenerationState,
+}
 
 /// Signed runtime, port, entrypoint, resource, and proxy-route facts of one app site.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -309,6 +649,35 @@ fn runtime_from_str(text: &str) -> Result<AppRuntime, JournalError> {
     match text {
         "node_22_v1" => Ok(AppRuntime::Node22V1),
         "bun_1_v1" => Ok(AppRuntime::Bun1V1),
+        "static_v1" => Ok(AppRuntime::StaticV1),
+        _ => Err(JournalError::Unavailable),
+    }
+}
+
+fn ingress_from_str(text: &str) -> Result<IngressEngine, JournalError> {
+    match text {
+        "ols" => Ok(IngressEngine::Ols),
+        "caddy" => Ok(IngressEngine::Caddy),
+        _ => Err(JournalError::Unavailable),
+    }
+}
+
+fn topology_from_str(text: &str) -> Result<AppTopology, JournalError> {
+    match text {
+        "static_spa" => Ok(AppTopology::StaticSpa),
+        "backend_api" => Ok(AppTopology::BackendApi),
+        "fullstack_split" => Ok(AppTopology::FullstackSplit),
+        "fullstack_dual_ssr" => Ok(AppTopology::FullstackDualSsr),
+        _ => Err(JournalError::Unavailable),
+    }
+}
+
+fn database_from_str(text: &str) -> Result<AppDatabase, JournalError> {
+    match text {
+        "none" => Ok(AppDatabase::None),
+        "sqlite" => Ok(AppDatabase::Sqlite),
+        "mariadb" => Ok(AppDatabase::Mariadb),
+        "postgresql_18" => Ok(AppDatabase::Postgresql18),
         _ => Err(JournalError::Unavailable),
     }
 }
@@ -343,7 +712,296 @@ impl FixtureJournal {
         if !facts.is_valid() {
             return Err(JournalError::Conflict);
         }
-        self.admit_provision(intent, Origin::App(facts), now)
+        self.admit_provision(intent, Origin::App(facts, None), now)
+    }
+
+    /// W656 (D-102): records a schema v2 full-stack app provision (`static_spa`,
+    /// `backend_api`, `fullstack_split`, or `fullstack_dual_ssr`) with Caddy/OLS
+    /// ingress, optional blue/green slots, and selectable DB engine in one transaction.
+    pub fn record_fullstack_app_provision(
+        &mut self,
+        intent: &ProvisionIntent,
+        facts: &AppFacts,
+        spec: &AppFullstackSpec,
+        now: Timestamp,
+    ) -> Result<ProvisionResult, JournalError> {
+        if !spec.is_valid_with(facts) {
+            return Err(JournalError::Conflict);
+        }
+        self.admit_provision(intent, Origin::App(facts, Some(spec)), now)
+    }
+
+    /// Reads the D-102 full-stack spec of a provision operation, if present.
+    pub fn app_fullstack_spec(
+        &self,
+        operation_id: &Id,
+    ) -> Result<Option<AppFullstackSpec>, JournalError> {
+        fullstack_spec(&self.connection, operation_id)
+    }
+
+    /// Reads the D-102 full-stack spec for a site ID, if present.
+    pub fn app_fullstack_spec_by_site(
+        &self,
+        site_id: &SiteId,
+    ) -> Result<Option<AppFullstackSpec>, JournalError> {
+        let op: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT operation_id FROM provisions WHERE site_id=?1",
+                [site_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage::unavailable)?;
+        let Some(op) = op else {
+            return Ok(None);
+        };
+        let id = Id::try_from(op).map_err(|_| JournalError::Unavailable)?;
+        fullstack_spec(&self.connection, &id)
+    }
+
+    /// Switches the recorded active blue/green slot (`a` <-> `b`) of an app.
+    pub fn set_app_active_slot(
+        &mut self,
+        operation_id: &Id,
+        slot: AppSlot,
+    ) -> Result<AppFullstackSpec, JournalError> {
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(storage::unavailable)?;
+        let Some(current) = fullstack_spec(&transaction, operation_id)? else {
+            return Err(JournalError::Conflict);
+        };
+        if !current.blue_green {
+            return Err(JournalError::Conflict);
+        }
+        transaction
+            .execute(
+                "UPDATE app_fullstack_specs SET active_slot=?1 WHERE operation_id=?2",
+                params![slot.as_str(), operation_id.as_str()],
+            )
+            .map_err(storage::unavailable)?;
+        let updated =
+            fullstack_spec(&transaction, operation_id)?.ok_or(JournalError::Unavailable)?;
+        transaction.commit().map_err(storage::unavailable)?;
+        Ok(updated)
+    }
+
+    /// Stages a validated Caddy configuration generation (journal v45, D-102).
+    pub fn record_caddy_generation(
+        &mut self,
+        generation: &CaddyGeneration,
+    ) -> Result<(), JournalError> {
+        if generation.state != CaddyGenerationState::Staged {
+            return Err(JournalError::Conflict);
+        }
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(storage::unavailable)?;
+        let exists: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM caddy_generations WHERE generation_id=?1)",
+                [generation.generation_id.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(storage::unavailable)?;
+        if exists {
+            return Err(JournalError::Conflict);
+        }
+        transaction
+            .execute(
+                "INSERT INTO caddy_generations VALUES(?1,?2,?3,?4,?5,?6,'staged')",
+                params![
+                    generation.generation_id.as_str(),
+                    generation.operation_id.as_str(),
+                    generation.ingress_mode.as_str(),
+                    generation.config_sha256.as_str(),
+                    generation.site_count as i64,
+                    generation.created_at.get() as i64,
+                ],
+            )
+            .map_err(storage::unavailable)?;
+        transaction.commit().map_err(storage::unavailable)?;
+        Ok(())
+    }
+
+    /// Atomically promotes a staged Caddy generation to `active` (retiring any prior active row).
+    pub fn activate_caddy_generation(
+        &mut self,
+        generation_id: &Id,
+    ) -> Result<CaddyGeneration, JournalError> {
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(storage::unavailable)?;
+        let current =
+            load_caddy_generation(&transaction, generation_id)?.ok_or(JournalError::Conflict)?;
+        if current.state != CaddyGenerationState::Staged {
+            return Err(JournalError::Conflict);
+        }
+        transaction
+            .execute(
+                "UPDATE caddy_generations SET state='rolled_back' WHERE state='active'",
+                [],
+            )
+            .map_err(storage::unavailable)?;
+        transaction
+            .execute(
+                "UPDATE caddy_generations SET state='active' WHERE generation_id=?1",
+                [generation_id.as_str()],
+            )
+            .map_err(storage::unavailable)?;
+        let updated =
+            load_caddy_generation(&transaction, generation_id)?.ok_or(JournalError::Unavailable)?;
+        transaction.commit().map_err(storage::unavailable)?;
+        Ok(updated)
+    }
+
+    /// W659 (D-102): records or reactivates a validated Caddy generation as the
+    /// single `active` generation, supporting repeated blue/green `A <-> B`
+    /// transitions that reuse an identical content-addressed `generation_id`.
+    /// Refuses with `Conflict` if an existing `generation_id` has a different
+    /// `config_sha256`.
+    pub fn record_active_caddy_generation(
+        &mut self,
+        generation: &CaddyGeneration,
+    ) -> Result<CaddyGeneration, JournalError> {
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(storage::unavailable)?;
+        transaction
+            .execute(
+                "UPDATE caddy_generations SET state='rolled_back' WHERE state='active'",
+                [],
+            )
+            .map_err(storage::unavailable)?;
+        if let Some(existing) = load_caddy_generation(&transaction, &generation.generation_id)? {
+            if existing.config_sha256 != generation.config_sha256 {
+                return Err(JournalError::Conflict);
+            }
+            transaction
+                .execute(
+                    "UPDATE caddy_generations \
+                     SET operation_id=?1, ingress_mode=?2, site_count=?3, created_at=?4, state='active' \
+                     WHERE generation_id=?5",
+                    params![
+                        generation.operation_id.as_str(),
+                        generation.ingress_mode.as_str(),
+                        generation.site_count as i64,
+                        generation.created_at.get() as i64,
+                        generation.generation_id.as_str(),
+                    ],
+                )
+                .map_err(storage::unavailable)?;
+        } else {
+            transaction
+                .execute(
+                    "INSERT INTO caddy_generations VALUES(?1,?2,?3,?4,?5,?6,'active')",
+                    params![
+                        generation.generation_id.as_str(),
+                        generation.operation_id.as_str(),
+                        generation.ingress_mode.as_str(),
+                        generation.config_sha256.as_str(),
+                        generation.site_count as i64,
+                        generation.created_at.get() as i64,
+                    ],
+                )
+                .map_err(storage::unavailable)?;
+        }
+        let updated = load_caddy_generation(&transaction, &generation.generation_id)?
+            .ok_or(JournalError::Unavailable)?;
+        transaction.commit().map_err(storage::unavailable)?;
+        Ok(updated)
+    }
+
+    /// Marks a staged or active Caddy generation `rolled_back` (and optionally restores `restore_id` to `active`).
+    pub fn rollback_caddy_generation(
+        &mut self,
+        generation_id: &Id,
+        restore_id: Option<&Id>,
+    ) -> Result<CaddyGeneration, JournalError> {
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(storage::unavailable)?;
+        let current =
+            load_caddy_generation(&transaction, generation_id)?.ok_or(JournalError::Conflict)?;
+        if current.state == CaddyGenerationState::RolledBack {
+            return Err(JournalError::Conflict);
+        }
+        transaction
+            .execute(
+                "UPDATE caddy_generations SET state='rolled_back' WHERE generation_id=?1",
+                [generation_id.as_str()],
+            )
+            .map_err(storage::unavailable)?;
+        if let Some(prev) = restore_id {
+            let prev_row =
+                load_caddy_generation(&transaction, prev)?.ok_or(JournalError::Conflict)?;
+            if prev_row.generation_id == current.generation_id {
+                return Err(JournalError::Conflict);
+            }
+            transaction
+                .execute(
+                    "UPDATE caddy_generations SET state='rolled_back' WHERE state='active'",
+                    [],
+                )
+                .map_err(storage::unavailable)?;
+            transaction
+                .execute(
+                    "UPDATE caddy_generations SET state='active' WHERE generation_id=?1",
+                    [prev.as_str()],
+                )
+                .map_err(storage::unavailable)?;
+        }
+        let updated =
+            load_caddy_generation(&transaction, generation_id)?.ok_or(JournalError::Unavailable)?;
+        transaction.commit().map_err(storage::unavailable)?;
+        Ok(updated)
+    }
+
+    /// Returns the currently active Caddy generation, if any.
+    pub fn active_caddy_generation(&self) -> Result<Option<CaddyGeneration>, JournalError> {
+        let id: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT generation_id FROM caddy_generations WHERE state='active'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage::unavailable)?;
+        let Some(id) = id else {
+            return Ok(None);
+        };
+        let gen_id = Id::try_from(id).map_err(|_| JournalError::Unavailable)?;
+        load_caddy_generation(&self.connection, &gen_id)
+    }
+
+    /// Lists all recorded Caddy generations ordered by creation time.
+    pub fn caddy_generations(&self) -> Result<Vec<CaddyGeneration>, JournalError> {
+        let mut stmt = self
+            .connection
+            .prepare(
+                "SELECT generation_id FROM caddy_generations ORDER BY created_at, generation_id",
+            )
+            .map_err(storage::unavailable)?;
+        let ids = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(storage::unavailable)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage::unavailable)?;
+        let mut out = Vec::with_capacity(ids.len());
+        for raw in ids {
+            let id = Id::try_from(raw).map_err(|_| JournalError::Unavailable)?;
+            if let Some(row) = load_caddy_generation(&self.connection, &id)? {
+                out.push(row);
+            }
+        }
+        Ok(out)
     }
 
     /// Reads the app facts of a provision operation, if it is an app site.
@@ -674,21 +1332,39 @@ fn step_is_done(steps: &[AppReleaseStepRecord], target: AppReleaseStep) -> bool 
         .any(|s| s.step == target && s.state == StepState::Done)
 }
 
-/// Whether `port` is already reserved by any active (non-deleted, non-quarantined) app.
-pub(crate) fn port_taken(c: &Connection, port: u16) -> Result<bool, JournalError> {
-    c.query_row(
-        "SELECT EXISTS(SELECT 1 FROM apps a JOIN provisions p ON p.operation_id=a.operation_id \
-         WHERE a.port=?1 AND p.state IN ('running','succeeded','adopted'))",
-        [i64::from(port)],
-        |row| row.get(0),
-    )
-    .map_err(storage::unavailable)
+/// Whether any non-zero port in `ports` is already reserved by an active
+/// (non-deleted, non-quarantined) app across primary, standby, and frontend slots.
+pub(crate) fn ports_taken(c: &Connection, ports: &[u16]) -> Result<bool, JournalError> {
+    for &port in ports {
+        if port == 0 {
+            continue;
+        }
+        let taken: bool = c
+            .query_row(
+                "SELECT EXISTS( \
+                    SELECT 1 FROM apps a JOIN provisions p ON p.operation_id=a.operation_id \
+                    WHERE p.state IN ('running','succeeded','adopted') AND a.port=?1 \
+                 ) OR EXISTS( \
+                    SELECT 1 FROM app_fullstack_specs s JOIN provisions p ON p.operation_id=s.operation_id \
+                    WHERE p.state IN ('running','succeeded','adopted') \
+                    AND (s.standby_port=?1 OR s.frontend_port=?1 OR s.frontend_standby_port=?1) \
+                 )",
+                [i64::from(port)],
+                |row| row.get(0),
+            )
+            .map_err(storage::unavailable)?;
+        if taken {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub(crate) fn insert(
     c: &Connection,
     operation_id: &Id,
     facts: &AppFacts,
+    spec: Option<&AppFullstackSpec>,
 ) -> Result<(), JournalError> {
     let env_keys = facts.env_keys.join(",");
     c.execute(
@@ -707,8 +1383,178 @@ pub(crate) fn insert(
         ],
     )
     .map_err(storage::unavailable)?;
-    crate::proxy::insert(c, operation_id, &facts.routes)?;
+    if let Some(fs) = spec {
+        let sse = fs.sse_prefixes.join(",");
+        let strip = fs.strip_api_prefixes.join(",");
+        c.execute(
+            "INSERT INTO app_fullstack_specs VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+            params![
+                operation_id.as_str(),
+                fs.ingress.as_str(),
+                fs.topology.as_str(),
+                fs.database.as_str(),
+                i64::from(fs.blue_green),
+                fs.active_slot.as_str(),
+                fs.standby_port.map(i64::from),
+                i64::from(fs.spa_fallback),
+                fs.frontend_dir.as_deref(),
+                fs.frontend_runtime.map(AppRuntime::as_str),
+                fs.frontend_entrypoint.as_deref(),
+                fs.frontend_port.map(i64::from),
+                fs.frontend_standby_port.map(i64::from),
+                sse,
+                strip,
+            ],
+        )
+        .map_err(storage::unavailable)?;
+    }
+    if !facts.routes.routes.is_empty() || !facts.routes.websockets.is_empty() {
+        crate::proxy::insert(c, operation_id, &facts.routes)?;
+    }
     Ok(())
+}
+
+pub(crate) fn fullstack_spec_by_site(
+    c: &Connection,
+    site_id: &SiteId,
+) -> Result<Option<AppFullstackSpec>, JournalError> {
+    let op_id: Option<String> = c
+        .query_row(
+            "SELECT a.operation_id FROM apps a JOIN provisions p ON p.operation_id=a.operation_id \
+             WHERE p.site_id=?1 ORDER BY p.rowid DESC LIMIT 1",
+            [site_id.as_str()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(storage::unavailable)?;
+    let Some(op_id) = op_id else {
+        return Ok(None);
+    };
+    let id = Id::try_from(op_id).map_err(storage::unavailable)?;
+    fullstack_spec(c, &id)
+}
+
+pub(crate) fn fullstack_spec(
+    c: &Connection,
+    operation_id: &Id,
+) -> Result<Option<AppFullstackSpec>, JournalError> {
+    let row = c
+        .query_row(
+            "SELECT ingress, topology, database_engine, blue_green, active_slot, standby_port, \
+             spa_fallback, frontend_dir, frontend_runtime, frontend_entrypoint, frontend_port, \
+             frontend_standby_port, sse_prefixes, strip_api_prefixes \
+             FROM app_fullstack_specs WHERE operation_id=?1",
+            [operation_id.as_str()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<i64>>(10)?,
+                    row.get::<_, Option<i64>>(11)?,
+                    row.get::<_, String>(12)?,
+                    row.get::<_, String>(13)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(storage::unavailable)?;
+    let Some((
+        ingress,
+        topology,
+        database,
+        blue_green,
+        active_slot,
+        standby_port,
+        spa_fallback,
+        frontend_dir,
+        frontend_runtime,
+        frontend_entrypoint,
+        frontend_port,
+        frontend_standby_port,
+        sse_raw,
+        strip_raw,
+    )) = row
+    else {
+        return Ok(None);
+    };
+    let split_csv = |s: String| -> Vec<String> {
+        if s.is_empty() {
+            Vec::new()
+        } else {
+            s.split(',').map(str::to_owned).collect()
+        }
+    };
+    let to_u16 = |opt: Option<i64>| -> Result<Option<u16>, JournalError> {
+        opt.map(|n| u16::try_from(n).map_err(|_| JournalError::Unavailable))
+            .transpose()
+    };
+    Ok(Some(AppFullstackSpec {
+        ingress: ingress_from_str(&ingress)?,
+        topology: topology_from_str(&topology)?,
+        database: database_from_str(&database)?,
+        blue_green: blue_green != 0,
+        active_slot: AppSlot::from_name(&active_slot)?,
+        standby_port: to_u16(standby_port)?,
+        spa_fallback: spa_fallback != 0,
+        frontend_dir,
+        frontend_runtime: frontend_runtime
+            .as_deref()
+            .map(runtime_from_str)
+            .transpose()?,
+        frontend_entrypoint,
+        frontend_port: to_u16(frontend_port)?,
+        frontend_standby_port: to_u16(frontend_standby_port)?,
+        sse_prefixes: split_csv(sse_raw),
+        strip_api_prefixes: split_csv(strip_raw),
+    }))
+}
+
+fn load_caddy_generation(
+    c: &Connection,
+    generation_id: &Id,
+) -> Result<Option<CaddyGeneration>, JournalError> {
+    let row = c
+        .query_row(
+            "SELECT generation_id, operation_id, ingress_mode, config_sha256, site_count, created_at, state \
+             FROM caddy_generations WHERE generation_id=?1",
+            [generation_id.as_str()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(storage::unavailable)?;
+    let Some((gen_id, op_id, mode, sha, site_count, created_at, state)) = row else {
+        return Ok(None);
+    };
+    Ok(Some(CaddyGeneration {
+        generation_id: Id::try_from(gen_id).map_err(|_| JournalError::Unavailable)?,
+        operation_id: Id::try_from(op_id).map_err(|_| JournalError::Unavailable)?,
+        ingress_mode: CaddyIngressMode::from_name(&mode)?,
+        config_sha256: Sha256Digest::try_from(sha).map_err(|_| JournalError::Unavailable)?,
+        site_count: u64::try_from(site_count).map_err(|_| JournalError::Unavailable)?,
+        created_at: Timestamp::try_from(
+            u64::try_from(created_at).map_err(|_| JournalError::Unavailable)?,
+        )
+        .map_err(|_| JournalError::Unavailable)?,
+        state: CaddyGenerationState::from_name(&state)?,
+    }))
 }
 
 pub(crate) fn facts(c: &Connection, operation_id: &Id) -> Result<Option<AppFacts>, JournalError> {
@@ -747,7 +1593,20 @@ pub(crate) fn facts(c: &Connection, operation_id: &Id) -> Result<Option<AppFacts
     else {
         return Ok(None);
     };
-    let routes = crate::proxy::facts(c, operation_id)?.ok_or(JournalError::Unavailable)?;
+    let spec = fullstack_spec(c, operation_id)?;
+    let routes = match crate::proxy::facts(c, operation_id)? {
+        Some(r) => r,
+        None if spec
+            .as_ref()
+            .is_some_and(|s| s.topology == AppTopology::StaticSpa) =>
+        {
+            ProxyFacts {
+                routes: Vec::new(),
+                websockets: Vec::new(),
+            }
+        }
+        None => return Err(JournalError::Unavailable),
+    };
     let env_keys: Vec<String> = if env_keys.is_empty() {
         Vec::new()
     } else {
@@ -765,7 +1624,11 @@ pub(crate) fn facts(c: &Connection, operation_id: &Id) -> Result<Option<AppFacts
         quota_mib: u64::try_from(quota_mib).map_err(|_| JournalError::Unavailable)?,
         routes,
     };
-    if !app.is_valid() {
+    let valid = match spec.as_ref() {
+        Some(fs) => fs.is_valid_with(&app),
+        None => app.is_valid(),
+    };
+    if !valid {
         return Err(JournalError::Unavailable);
     }
     Ok(Some(app))
@@ -1136,8 +1999,8 @@ fn lifecycle_basis_holds(c: &Connection, site_id: &SiteId) -> Result<bool, Journ
     Ok(eligible)
 }
 
-/// Validates every `apps`, `app_releases`, `app_release_steps`, and
-/// `app_lifecycles` invariant on journal open.
+/// Validates every `apps`, `app_fullstack_specs`, `caddy_generations`,
+/// `app_releases`, `app_release_steps`, and `app_lifecycles` invariant on open.
 pub(crate) fn validate(c: &Connection) -> Result<(), JournalError> {
     let invalid_apps: bool = c
         .query_row(
@@ -1146,7 +2009,7 @@ pub(crate) fn validate(c: &Connection) -> Result<(), JournalError> {
                 OR EXISTS(SELECT 1 FROM imports i WHERE i.operation_id=a.operation_id) \
                 OR EXISTS(SELECT 1 FROM clones l WHERE l.operation_id=a.operation_id)) \
              OR EXISTS(SELECT a.port FROM apps a JOIN provisions p ON p.operation_id=a.operation_id \
-                WHERE p.state IN ('running','succeeded','adopted') \
+                WHERE a.port>0 AND p.state IN ('running','succeeded','adopted') \
                 GROUP BY a.port HAVING count(*)>1)",
             [],
             |row| row.get(0),
@@ -1156,18 +2019,46 @@ pub(crate) fn validate(c: &Connection) -> Result<(), JournalError> {
         return Err(JournalError::Unavailable);
     }
     let mut stmt = c
-        .prepare("SELECT operation_id FROM apps")
+        .prepare("SELECT a.operation_id, p.state FROM apps a JOIN provisions p ON p.operation_id=a.operation_id")
         .map_err(storage::unavailable)?;
     let app_ops = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(storage::unavailable)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage::unavailable)?;
+    let mut active_ports = BTreeSet::new();
+    for (op, state) in app_ops {
+        let id = Id::try_from(op).map_err(|_| JournalError::Unavailable)?;
+        let Some(app_facts) = facts(c, &id)? else {
+            return Err(JournalError::Unavailable);
+        };
+        let active = matches!(state.as_str(), "running" | "succeeded" | "adopted");
+        if active {
+            let ports = match fullstack_spec(c, &id)? {
+                Some(spec) => spec.all_ports(&app_facts),
+                None if app_facts.port > 0 => vec![app_facts.port],
+                None => Vec::new(),
+            };
+            for port in ports {
+                if !active_ports.insert(port) {
+                    return Err(JournalError::Unavailable);
+                }
+            }
+        }
+    }
+    let mut caddy_stmt = c
+        .prepare("SELECT generation_id FROM caddy_generations")
+        .map_err(storage::unavailable)?;
+    let caddy_ids = caddy_stmt
         .query_map([], |row| row.get::<_, String>(0))
         .map_err(storage::unavailable)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(storage::unavailable)?;
-    for op in app_ops {
-        let id = Id::try_from(op).map_err(|_| JournalError::Unavailable)?;
-        if facts(c, &id)?.is_none() {
-            return Err(JournalError::Unavailable);
-        }
+    for raw in caddy_ids {
+        let id = Id::try_from(raw).map_err(|_| JournalError::Unavailable)?;
+        load_caddy_generation(c, &id)?.ok_or(JournalError::Unavailable)?;
     }
 
     let invalid_rel: bool = c

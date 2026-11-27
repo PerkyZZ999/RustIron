@@ -41,14 +41,14 @@ mod types;
 mod zone;
 
 pub use app::{
-    AppBindingContext, AppDeployGrant, AppDeployPlan, AppLifecycleAction, AppLifecycleGrant,
-    AppLifecyclePlan, AppProvisionGrant, AppProvisionPlan, AppRuntime, MAX_APP_ENTRYPOINT_BYTES,
-    MAX_APP_ENV_KEY_BYTES, MAX_APP_ENV_KEYS, MAX_APP_HEALTH_PATH_BYTES, MAX_APP_MEMORY_MIB,
-    MAX_APP_QUOTA_MIB, MAX_APP_RELEASE_BYTES, MAX_APP_RELEASE_FILES, MAX_APP_RELEASE_ID_BYTES,
-    MAX_APP_TASKS_MAX, MIN_APP_MEMORY_MIB, MIN_APP_QUOTA_MIB, MIN_APP_TASKS_MAX,
-    check_app_deploy_binding, check_app_lifecycle_binding, check_app_provision_binding,
-    valid_entrypoint, valid_env_key, valid_env_keys, valid_health_path, valid_manifest_path,
-    valid_release_id,
+    AppBindingContext, AppDatabase, AppDeployGrant, AppDeployPlan, AppLifecycleAction,
+    AppLifecycleGrant, AppLifecyclePlan, AppProvisionGrant, AppProvisionPlan, AppRuntime,
+    AppTopology, IngressEngine, MAX_APP_ENTRYPOINT_BYTES, MAX_APP_ENV_KEY_BYTES, MAX_APP_ENV_KEYS,
+    MAX_APP_HEALTH_PATH_BYTES, MAX_APP_MEMORY_MIB, MAX_APP_QUOTA_MIB, MAX_APP_RELEASE_BYTES,
+    MAX_APP_RELEASE_FILES, MAX_APP_RELEASE_ID_BYTES, MAX_APP_TASKS_MAX, MIN_APP_MEMORY_MIB,
+    MIN_APP_QUOTA_MIB, MIN_APP_TASKS_MAX, app_routable_port, check_app_deploy_binding,
+    check_app_lifecycle_binding, check_app_provision_binding, valid_entrypoint, valid_env_key,
+    valid_env_keys, valid_frontend_dir, valid_health_path, valid_manifest_path, valid_release_id,
 };
 pub use capture::{
     CaptureBindingContext, CaptureDestination, CaptureGrant, CapturePlan, CaptureRecipe,

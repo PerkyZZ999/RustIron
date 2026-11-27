@@ -89,6 +89,8 @@ const routes = [
   "/settings",
   "/help",
   "/help/how-rustiron-works",
+  "/help/fullstack-caddy",
+  "/help/postgresql-18",
   "/help/updates-and-releases",
   "/states",
 ];

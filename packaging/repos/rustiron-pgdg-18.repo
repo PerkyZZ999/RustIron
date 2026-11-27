@@ -1,0 +1,15 @@
+# D-102 (W658, Decision C2): PostgreSQL 18 (18.7+) from the official PGDG EL-10
+# repository, for hosts serving modern apps with database_engine=postgresql_18.
+# Only postgresql18, postgresql18-libs, and postgresql18-server may come from it;
+# priority 90 keeps AppStream's older PostgreSQL from colliding. Package
+# signatures are required; the key is the pinned file of pgdg-keys.sha256
+# (fingerprint D4BF 08AE 67A0 B4C7 A1DB CCD2 40BC A2B4 08B4 0D20).
+[rustiron-pgdg-18]
+name=PostgreSQL 18 (PGDG), three packages only - EL$releasever $basearch
+baseurl=https://download.postgresql.org/pub/repos/yum/18/redhat/rhel-$releasever-$basearch
+enabled=1
+gpgcheck=1
+repo_gpgcheck=0
+gpgkey=file:///etc/pki/rpm-gpg/PGDG-RPM-GPG-KEY-RHEL
+priority=90
+includepkgs=postgresql18 postgresql18-libs postgresql18-server

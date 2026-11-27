@@ -41,6 +41,8 @@ STATE_DIRS = {
     "var/lib/rustiron/dns-intake": 0o700,
     "etc/rustiron-ols": 0o755,
     "etc/rustiron-ols/generations": 0o755,
+    "etc/rustiron-caddy": 0o755,
+    "etc/rustiron-caddy/generations": 0o755,
     "etc/rustiron-ejected": 0o755,
     "srv/sites": 0o755,
     "srv/restore-probes": 0o755,

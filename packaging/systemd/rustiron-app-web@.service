@@ -1,0 +1,60 @@
+[Unit]
+Description=Rustiron modern app frontend SSR server for site %i
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+Group=%i
+# W659 (D-102): confined frontend SSR unit for fullstack_dual_ssr sites
+# (Next.js standalone, Astro SSR, TanStack Start, etc.) under the same
+# rs_<site> UID and MCS category as the site's backend unit.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rustiron-app-web-%i
+UMask=0027
+KillMode=control-group
+Restart=on-failure
+RestartSec=3s
+
+MemoryMax=512M
+MemorySwapMax=0
+TasksMax=64
+CPUQuota=100%
+IOReadBandwidthMax=/srv/sites 64M
+IOWriteBandwidthMax=/srv/sites 32M
+IOReadIOPSMax=/srv/sites 2000
+IOWriteIOPSMax=/srv/sites 1000
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/sites/%i/data /srv/sites/%i/tmp
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+InaccessiblePaths=-/etc/rustiron -/var/lib/rustiron -/run/rustiron -/run/rustiron-admin -/run/rustiron-coordinator -/var/lib/rustiron-coordinator -/run/rustiron-sites
+TemporaryFileSystem=/dev/shm:mode=1777,nosuid,nodev,noexec
+
+[Install]
+WantedBy=multi-user.target

@@ -447,6 +447,64 @@ class EnrollmentPolicyTests(unittest.TestCase):
                 self.assertIn("REFUSED", err)
                 self.assertFalse(bad_out.exists())
 
+    def test_caddy_section_supports_dual_mode_and_refuses_bad_bindings(self):
+        # W657 (D-102, Decision A1): Caddy dual-mode enrollment.
+        ols_edge = [
+            "--ols-listener", "Edge", "--ols-address", "127.0.0.1:8080",
+            "--ols-parent-sha256", "d" * 64, "--ols-webadmin-port", "7080",
+        ]
+        caddy_edge = [
+            "--caddy-mode", "caddy_edge_over_ols",
+            "--caddy-http-address", "203.0.113.10:80",
+            "--caddy-https-address", "203.0.113.10:443",
+            "--caddy-ols-upstream", "127.0.0.1:8080",
+            "--caddy-binary-sha256", "f" * 64,
+        ]
+        code, _, err = self.policy(*ols_edge, *caddy_edge)
+        self.assertEqual(code, 0, err)
+        doc = json.loads(self.out.read_bytes())
+        self.assertEqual(doc["caddy"], {
+            "mode": "caddy_edge_over_ols",
+            "http_address": "203.0.113.10:80",
+            "https_address": "203.0.113.10:443",
+            "ols_upstream": "127.0.0.1:8080",
+            "binary_sha256": "f" * 64,
+        })
+        # Separate `caddy` subcommand sets the section on an existing policy copy.
+        base_policy = self.folder / "base.json"
+        self.out.unlink()
+        self.assertEqual(self.run_tool(["policy", "--out", str(base_policy), *BASE, *ols_edge])[0], 0)
+        code, _, err = self.run_tool(["caddy", "--policy", str(base_policy), "--out", str(self.out), *caddy_edge])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(self.out.read_bytes())["caddy"]["mode"], "caddy_edge_over_ols")
+
+        # Refusals: missing upstream in edge mode, non-loopback upstream, admin port 2019, upstream in caddy_only.
+        for bad in (
+            [*ols_edge, "--caddy-mode", "caddy_edge_over_ols",
+             "--caddy-http-address", "203.0.113.10:80",
+             "--caddy-https-address", "203.0.113.10:443",
+             "--caddy-binary-sha256", "f" * 64],
+            [*ols_edge, "--caddy-mode", "caddy_edge_over_ols",
+             "--caddy-http-address", "203.0.113.10:80",
+             "--caddy-https-address", "203.0.113.10:443",
+             "--caddy-ols-upstream", "203.0.113.10:8080",
+             "--caddy-binary-sha256", "f" * 64],
+            ["--caddy-mode", "caddy_only",
+             "--caddy-http-address", "203.0.113.10:2019",
+             "--caddy-https-address", "203.0.113.10:443",
+             "--caddy-binary-sha256", "f" * 64],
+            ["--caddy-mode", "caddy_only",
+             "--caddy-http-address", "203.0.113.10:80",
+             "--caddy-https-address", "203.0.113.10:443",
+             "--caddy-ols-upstream", "127.0.0.1:8080",
+             "--caddy-binary-sha256", "f" * 64],
+        ):
+            self.out.unlink(missing_ok=True)
+            code, _, err = self.policy(*bad)
+            self.assertEqual(code, 1, bad)
+            self.assertIn("REFUSED", err)
+            self.assertFalse(self.out.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

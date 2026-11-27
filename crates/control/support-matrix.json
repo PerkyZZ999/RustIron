@@ -71,6 +71,26 @@
       "end_of_life_unix": null,
       "when_installed": true,
       "source": "Bun 1.4 pinned runtime (D-099); no published upstream EOL date, reviewed with the matrix"
+    },
+    {
+      "name": "caddy",
+      "label": "Caddy",
+      "series": "2",
+      "minimum": "2.10.0",
+      "end_of_life": null,
+      "end_of_life_unix": null,
+      "when_installed": true,
+      "source": "Pinned Caddy 2 edge ingress binary verified by SHA-256 (D-102); checked where rustiron-caddy is installed"
+    },
+    {
+      "name": "postgresql",
+      "label": "PostgreSQL",
+      "series": "18",
+      "minimum": "18.7",
+      "end_of_life": "2030-11-14",
+      "end_of_life_unix": 1920844800,
+      "when_installed": true,
+      "source": "PostgreSQL 18 PGDG EL-10 upstream security support through November 2030 (D-102); checked where postgresql-18 is installed"
     }
   ]
 }

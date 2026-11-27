@@ -472,6 +472,9 @@ test("W632 Server Operations: Firewall rule builder, Cron jobs, Logs viewer & re
   expect(redactLogLine("auth token=secret123 Bearer abc.def\u001b[31m")).toBe(
     "auth token=[REDACTED] Bearer [REDACTED]",
   );
+  expect(redactLogLine("STATEMENT:  ALTER ROLE rs_app1 WITH PASSWORD 'abc123def456';")).toBe(
+    "STATEMENT:  ALTER ROLE rs_app1 WITH PASSWORD '[REDACTED]';",
+  );
   expect(allowedLogUnits().length).toBeGreaterThanOrEqual(10);
   expect(
     allowedLogUnits().some(

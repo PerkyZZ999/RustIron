@@ -54,6 +54,10 @@ pub const MAX_APP_RELEASE_FILES: u64 = 50_000;
 pub const MAX_APP_RELEASE_BYTES: u64 = 512 * 1024 * 1024;
 /// Maximum byte length of a release identifier.
 pub const MAX_APP_RELEASE_ID_BYTES: usize = 64;
+/// PostgreSQL default port, forbidden for tenant app loopback listeners.
+const POSTGRESQL_PORT: u16 = 5432;
+/// Caddy default admin API port, forbidden for tenant app loopback listeners.
+const CADDY_ADMIN_PORT: u16 = 2019;
 
 /// Environment keys reserved by the host/systemd runtime that an app plan
 /// may never declare in `env_keys`.
@@ -71,7 +75,7 @@ const FORBIDDEN_ENV_KEYS: &[&str] = &[
     "RUSTIRON_APP_DATA",
 ];
 
-/// Closed pinned runtime profile for a P27 app site.
+/// Closed pinned runtime profile for a P27 / D-102 app site.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub enum AppRuntime {
     /// Node.js 22 LTS (`>= 22.23.4`, SQLite FTS5; required by D-096 EmDash).
@@ -80,6 +84,9 @@ pub enum AppRuntime {
     /// Bun 1.x pinned release binary.
     #[serde(rename = "bun_1_v1")]
     Bun1V1,
+    /// Static frontend bundle served directly by Caddy with zero daemon process (D-102).
+    #[serde(rename = "static_v1")]
+    StaticV1,
 }
 
 impl AppRuntime {
@@ -88,7 +95,92 @@ impl AppRuntime {
         match self {
             Self::Node22V1 => "node_22_v1",
             Self::Bun1V1 => "bun_1_v1",
+            Self::StaticV1 => "static_v1",
         }
+    }
+
+    /// Whether this runtime executes a long-running Node.js or Bun daemon.
+    pub const fn is_process_runtime(self) -> bool {
+        matches!(self, Self::Node22V1 | Self::Bun1V1)
+    }
+}
+
+/// Closed edge ingress engine for an app site (D-102).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IngressEngine {
+    /// OpenLiteSpeed CP08 loopback reverse proxy (v0.1.0 baseline).
+    Ols,
+    /// Confined `rustiron-caddy` ingress with HTTP/3, SPA serving, and trusted proxy headers.
+    Caddy,
+}
+
+impl IngressEngine {
+    /// Closed wire identifier for this ingress engine.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ols => "ols",
+            Self::Caddy => "caddy",
+        }
+    }
+}
+
+/// Closed full-stack deployment topology for an app site (D-102).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppTopology {
+    /// Pure static SPA / frontend assets served directly by Caddy (`static_v1`).
+    StaticSpa,
+    /// Single Node.js or Bun HTTP/WebSocket/SSE/SSR runtime (+ optional worker).
+    BackendApi,
+    /// Static frontend assets on `/` paired with a Bun/Node backend on non-root API prefixes.
+    FullstackSplit,
+    /// SSR frontend runtime on `/` paired with a separate Bun/Node backend API runtime.
+    FullstackDualSsr,
+}
+
+impl AppTopology {
+    /// Closed wire identifier for this app topology.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::StaticSpa => "static_spa",
+            Self::BackendApi => "backend_api",
+            Self::FullstackSplit => "fullstack_split",
+            Self::FullstackDualSsr => "fullstack_dual_ssr",
+        }
+    }
+}
+
+/// Closed selectable per-app database engine (D-102, owner decision C2).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppDatabase {
+    /// No managed database (stateless API or static frontend).
+    None,
+    /// Local SQLite WAL/FTS5 file inside `/srv/sites/rs_<site>/data/`.
+    Sqlite,
+    /// Dedicated per-site MariaDB 10.11 database and user (`rustiron_app_mariadb_t`).
+    Mariadb,
+    /// Dedicated per-site PostgreSQL 18 (`>= 18.7`) database and `scram-sha-256` role (`rustiron_app_pg_t`).
+    #[serde(rename = "postgresql_18")]
+    Postgresql18,
+}
+
+impl AppDatabase {
+    /// Closed wire identifier for this database engine.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Sqlite => "sqlite",
+            Self::Mariadb => "mariadb",
+            Self::Postgresql18 => "postgresql_18",
+        }
+    }
+
+    /// Whether provisioning this app creates a host-level database & credentials
+    /// on MariaDB or PostgreSQL 18.
+    pub const fn provisions_server_db(self) -> bool {
+        matches!(self, Self::Mariadb | Self::Postgresql18)
     }
 }
 
@@ -213,6 +305,19 @@ pub fn valid_release_id(id: &str) -> bool {
         })
 }
 
+/// Whether `port` may be bound by a modern app site on `127.0.0.1`:
+/// `>= 1024` and never MariaDB (3306), PostgreSQL (5432), or Caddy admin (2019).
+pub fn app_routable_port(port: u16) -> bool {
+    routable_port(port) && port != POSTGRESQL_PORT && port != CADDY_ADMIN_PORT
+}
+
+/// Whether `path` is a safe relative frontend asset directory inside a release
+/// bundle (e.g. `frontend` or `web/dist`): same strict grammar as
+/// [`valid_entrypoint`].
+pub fn valid_frontend_dir(path: &str) -> bool {
+    valid_entrypoint(path)
+}
+
 fn valid_app_routes(routes: &[ProxyRoute], low: usize, expected_port: u16) -> bool {
     let prefixes: BTreeSet<&str> = routes.iter().map(|route| route.prefix.as_str()).collect();
     (low..=MAX_PROXY_ROUTES).contains(&routes.len())
@@ -220,6 +325,25 @@ fn valid_app_routes(routes: &[ProxyRoute], low: usize, expected_port: u16) -> bo
         && routes.iter().all(|route| {
             valid_prefix(&route.prefix) && routable_port(route.port) && route.port == expected_port
         })
+}
+
+fn valid_dual_app_routes(routes: &[ProxyRoute], low: usize, port_a: u16, port_b: u16) -> bool {
+    let prefixes: BTreeSet<&str> = routes.iter().map(|route| route.prefix.as_str()).collect();
+    (low..=MAX_PROXY_ROUTES).contains(&routes.len())
+        && prefixes.len() == routes.len()
+        && routes.iter().all(|route| {
+            valid_prefix(&route.prefix)
+                && app_routable_port(route.port)
+                && (route.port == port_a || route.port == port_b)
+        })
+}
+
+fn valid_sorted_unique_prefixes(prefixes: &[String], allow_root: bool) -> bool {
+    (1..=MAX_PROXY_ROUTES).contains(&prefixes.len())
+        && prefixes
+            .iter()
+            .all(|p| valid_prefix(p) && (allow_root || p != "/"))
+        && prefixes.windows(2).all(|pair| pair[0] < pair[1])
 }
 
 /// Independently enrolled facts for P27 app binding checks; never taken from
@@ -257,17 +381,32 @@ struct AppProvisionEffects {
     creates_account: bool,
     forwards_to_loopback: bool,
     installs_app_unit: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    creates_database: Option<bool>,
     traffic_activation: bool,
     runs_package_scripts: bool,
 }
 
-const PROVISION_EFFECTS: AppProvisionEffects = AppProvisionEffects {
+const PROVISION_EFFECTS_V1: AppProvisionEffects = AppProvisionEffects {
     creates_account: true,
     forwards_to_loopback: true,
     installs_app_unit: true,
+    creates_database: None,
     traffic_activation: false,
     runs_package_scripts: false,
 };
+
+const fn provision_effects_v2(topology: AppTopology, database: AppDatabase) -> AppProvisionEffects {
+    let has_runtime = !matches!(topology, AppTopology::StaticSpa);
+    AppProvisionEffects {
+        creates_account: true,
+        forwards_to_loopback: has_runtime,
+        installs_app_unit: has_runtime,
+        creates_database: Some(database.provisions_server_db()),
+        traffic_activation: false,
+        runs_package_scripts: false,
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -295,6 +434,32 @@ struct AppProvisionPlanRecord {
     memory_max_mib: u64,
     tasks_max: u64,
     quota_mib: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ingress: Option<IngressEngine>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    topology: Option<AppTopology>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    database: Option<AppDatabase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    blue_green: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    standby_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    spa_fallback: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    frontend_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    frontend_runtime: Option<AppRuntime>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    frontend_entrypoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    frontend_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    frontend_standby_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sse_prefixes: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    strip_api_prefixes: Option<Vec<String>>,
     #[serde(deserialize_with = "crate::codec::object")]
     expected_effects: AppProvisionEffects,
     risk_class: Risk,
@@ -305,28 +470,209 @@ struct AppProvisionPlanRecord {
 
 impl AppProvisionPlanRecord {
     fn validate(&self) -> Result<(), ApprovalError> {
-        if self.schema_version != 1 {
-            return Err(ApprovalError::UnsupportedVersion);
+        match self.schema_version {
+            1 => self.validate_v1(),
+            2 => self.validate_v2(),
+            _ => Err(ApprovalError::UnsupportedVersion),
         }
+    }
+
+    fn validate_common_bounds(&self) -> bool {
         let worker_ok = self
             .worker_entrypoint
             .as_deref()
             .is_none_or(valid_entrypoint);
-        if self.expected_effects != PROVISION_EFFECTS
+        worker_ok
+            && valid_health_path(&self.health_path)
+            && valid_env_keys(&self.env_keys)
+            && (MIN_APP_MEMORY_MIB..=MAX_APP_MEMORY_MIB).contains(&self.memory_max_mib)
+            && (MIN_APP_TASKS_MAX..=MAX_APP_TASKS_MAX).contains(&self.tasks_max)
+            && (MIN_APP_QUOTA_MIB..=MAX_APP_QUOTA_MIB).contains(&self.quota_mib)
+            && self.limitations.len() <= 8
+            && valid_window(self.valid_from, self.expires_at)
+    }
+
+    fn validate_v1(&self) -> Result<(), ApprovalError> {
+        let has_v2_fields = self.ingress.is_some()
+            || self.topology.is_some()
+            || self.database.is_some()
+            || self.blue_green.is_some()
+            || self.standby_port.is_some()
+            || self.spa_fallback.is_some()
+            || self.frontend_dir.is_some()
+            || self.frontend_runtime.is_some()
+            || self.frontend_entrypoint.is_some()
+            || self.frontend_port.is_some()
+            || self.frontend_standby_port.is_some()
+            || self.sse_prefixes.is_some()
+            || self.strip_api_prefixes.is_some();
+        if has_v2_fields
+            || !self.runtime.is_process_runtime()
+            || self.expected_effects != PROVISION_EFFECTS_V1
             || !routable_port(self.port)
             || !valid_app_routes(&self.routes, 1, self.port)
             || !self.routes.iter().any(|route| route.prefix == "/")
             || !valid_app_routes(&self.websockets, 0, self.port)
             || !valid_entrypoint(&self.entrypoint)
-            || !worker_ok
-            || !valid_health_path(&self.health_path)
-            || !valid_env_keys(&self.env_keys)
-            || !(MIN_APP_MEMORY_MIB..=MAX_APP_MEMORY_MIB).contains(&self.memory_max_mib)
-            || !(MIN_APP_TASKS_MAX..=MAX_APP_TASKS_MAX).contains(&self.tasks_max)
-            || !(MIN_APP_QUOTA_MIB..=MAX_APP_QUOTA_MIB).contains(&self.quota_mib)
-            || self.limitations.len() > 8
-            || !valid_window(self.valid_from, self.expires_at)
+            || !self.validate_common_bounds()
         {
+            return Err(ApprovalError::InvalidPlan);
+        }
+        Ok(())
+    }
+
+    fn validate_v2(&self) -> Result<(), ApprovalError> {
+        let (Some(ingress), Some(topology), Some(database), Some(blue_green), Some(spa_fallback)) = (
+            self.ingress,
+            self.topology,
+            self.database,
+            self.blue_green,
+            self.spa_fallback,
+        ) else {
+            return Err(ApprovalError::InvalidPlan);
+        };
+        if self.expected_effects != provision_effects_v2(topology, database)
+            || !self.validate_common_bounds()
+        {
+            return Err(ApprovalError::InvalidPlan);
+        }
+        if let Some(sse) = self.sse_prefixes.as_deref()
+            && (ingress != IngressEngine::Caddy
+                || topology == AppTopology::StaticSpa
+                || !valid_sorted_unique_prefixes(sse, true))
+        {
+            return Err(ApprovalError::InvalidPlan);
+        }
+        if let Some(strip) = self.strip_api_prefixes.as_deref() {
+            let route_set: BTreeSet<&str> = self.routes.iter().map(|r| r.prefix.as_str()).collect();
+            if ingress != IngressEngine::Caddy
+                || !valid_sorted_unique_prefixes(strip, false)
+                || !strip.iter().all(|p| route_set.contains(p.as_str()))
+            {
+                return Err(ApprovalError::InvalidPlan);
+            }
+        }
+        match topology {
+            AppTopology::StaticSpa => {
+                let dir_ok = self.frontend_dir.as_deref().is_some_and(valid_frontend_dir);
+                if ingress != IngressEngine::Caddy
+                    || self.runtime != AppRuntime::StaticV1
+                    || self.port != 0
+                    || blue_green
+                    || self.standby_port.is_some()
+                    || !self.routes.is_empty()
+                    || !self.websockets.is_empty()
+                    || !self.entrypoint.is_empty()
+                    || self.worker_entrypoint.is_some()
+                    || !dir_ok
+                    || self.frontend_runtime.is_some()
+                    || self.frontend_entrypoint.is_some()
+                    || self.frontend_port.is_some()
+                    || self.frontend_standby_port.is_some()
+                    || database != AppDatabase::None
+                    || self.health_path != "/"
+                {
+                    return Err(ApprovalError::InvalidPlan);
+                }
+            }
+            AppTopology::BackendApi => {
+                if !self.runtime.is_process_runtime()
+                    || !app_routable_port(self.port)
+                    || !valid_app_routes(&self.routes, 1, self.port)
+                    || !self.routes.iter().any(|route| route.prefix == "/")
+                    || !valid_app_routes(&self.websockets, 0, self.port)
+                    || !valid_entrypoint(&self.entrypoint)
+                    || spa_fallback
+                    || self.frontend_dir.is_some()
+                    || self.frontend_runtime.is_some()
+                    || self.frontend_entrypoint.is_some()
+                    || self.frontend_port.is_some()
+                    || self.frontend_standby_port.is_some()
+                {
+                    return Err(ApprovalError::InvalidPlan);
+                }
+                self.validate_single_slot_ports(blue_green)?;
+            }
+            AppTopology::FullstackSplit => {
+                let dir_ok = self.frontend_dir.as_deref().is_some_and(valid_frontend_dir);
+                if ingress != IngressEngine::Caddy
+                    || !self.runtime.is_process_runtime()
+                    || !app_routable_port(self.port)
+                    || !dir_ok
+                    || !valid_app_routes(&self.routes, 1, self.port)
+                    || self.routes.iter().any(|route| route.prefix == "/")
+                    || !valid_app_routes(&self.websockets, 0, self.port)
+                    || !valid_entrypoint(&self.entrypoint)
+                    || self.frontend_runtime.is_some()
+                    || self.frontend_entrypoint.is_some()
+                    || self.frontend_port.is_some()
+                    || self.frontend_standby_port.is_some()
+                {
+                    return Err(ApprovalError::InvalidPlan);
+                }
+                self.validate_single_slot_ports(blue_green)?;
+            }
+            AppTopology::FullstackDualSsr => {
+                let (Some(fr), Some(fe), Some(fp)) = (
+                    self.frontend_runtime,
+                    self.frontend_entrypoint.as_deref(),
+                    self.frontend_port,
+                ) else {
+                    return Err(ApprovalError::InvalidPlan);
+                };
+                if ingress != IngressEngine::Caddy
+                    || !self.runtime.is_process_runtime()
+                    || !fr.is_process_runtime()
+                    || !app_routable_port(self.port)
+                    || !app_routable_port(fp)
+                    || !valid_entrypoint(&self.entrypoint)
+                    || !valid_entrypoint(fe)
+                    || self.frontend_dir.is_some()
+                    || spa_fallback
+                    || !valid_dual_app_routes(&self.routes, 2, self.port, fp)
+                    || !self.routes.iter().any(|r| r.prefix == "/" && r.port == fp)
+                    || !self
+                        .routes
+                        .iter()
+                        .any(|r| r.prefix != "/" && r.port == self.port)
+                    || !valid_dual_app_routes(&self.websockets, 0, self.port, fp)
+                {
+                    return Err(ApprovalError::InvalidPlan);
+                }
+                let mut ports = BTreeSet::from([self.port, fp]);
+                if blue_green {
+                    let (Some(sp), Some(fsp)) = (self.standby_port, self.frontend_standby_port)
+                    else {
+                        return Err(ApprovalError::InvalidPlan);
+                    };
+                    if !app_routable_port(sp) || !app_routable_port(fsp) {
+                        return Err(ApprovalError::InvalidPlan);
+                    }
+                    ports.insert(sp);
+                    ports.insert(fsp);
+                    if ports.len() != 4 {
+                        return Err(ApprovalError::InvalidPlan);
+                    }
+                } else if self.standby_port.is_some()
+                    || self.frontend_standby_port.is_some()
+                    || ports.len() != 2
+                {
+                    return Err(ApprovalError::InvalidPlan);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_single_slot_ports(&self, blue_green: bool) -> Result<(), ApprovalError> {
+        if blue_green {
+            let Some(sp) = self.standby_port else {
+                return Err(ApprovalError::InvalidPlan);
+            };
+            if !app_routable_port(sp) || sp == self.port {
+                return Err(ApprovalError::InvalidPlan);
+            }
+        } else if self.standby_port.is_some() {
             return Err(ApprovalError::InvalidPlan);
         }
         Ok(())
@@ -341,10 +687,15 @@ pub struct AppProvisionPlan {
 }
 
 impl AppProvisionPlan {
-    /// Decodes schema v1 and its intrinsic constraints only.
+    /// Decodes schema v1 or schema v2 (D-102) and its intrinsic constraints only.
     pub fn decode(input: &[u8]) -> Result<Self, ApprovalError> {
         let (record, canonical) = super::decode(input, AppProvisionPlanRecord::validate)?;
         Ok(Self { record, canonical })
+    }
+
+    /// Schema version (`1` for legacy OLS single-process, `2` for D-102 full-stack/Caddy/multi-DB).
+    pub const fn schema_version(&self) -> u16 {
+        self.record.schema_version
     }
 
     /// Complete immutable semantic bytes.
@@ -362,7 +713,7 @@ impl AppProvisionPlan {
         &self.record.site_id
     }
 
-    /// Hostname served by the app's proxy vhost.
+    /// Hostname served by the app's ingress vhost.
     pub fn hostname(&self) -> &Hostname {
         &self.record.hostname
     }
@@ -372,22 +723,22 @@ impl AppProvisionPlan {
         self.record.runtime
     }
 
-    /// Reserved loopback port on `127.0.0.1`.
+    /// Reserved primary loopback port on `127.0.0.1` (`0` for `static_spa`).
     pub fn port(&self) -> u16 {
         self.record.port
     }
 
-    /// Path routes forwarded to `127.0.0.1:<port>`.
+    /// Path routes forwarded to loopback backend port(s).
     pub fn routes(&self) -> &[ProxyRoute] {
         &self.record.routes
     }
 
-    /// WebSocket paths forwarded to `127.0.0.1:<port>`.
+    /// WebSocket paths forwarded to loopback backend port(s).
     pub fn websockets(&self) -> &[ProxyRoute] {
         &self.record.websockets
     }
 
-    /// Relative release entrypoint for the HTTP app service.
+    /// Relative release entrypoint for the HTTP app service (empty for `static_spa`).
     pub fn entrypoint(&self) -> &str {
         &self.record.entrypoint
     }
@@ -420,6 +771,89 @@ impl AppProvisionPlan {
     /// Site filesystem quota in MiB.
     pub fn quota_mib(&self) -> u64 {
         self.record.quota_mib
+    }
+
+    /// Edge ingress engine (`Ols` for schema v1).
+    pub fn ingress(&self) -> IngressEngine {
+        self.record.ingress.unwrap_or(IngressEngine::Ols)
+    }
+
+    /// App deployment topology (`BackendApi` for schema v1).
+    pub fn topology(&self) -> AppTopology {
+        self.record.topology.unwrap_or(AppTopology::BackendApi)
+    }
+
+    /// Selected per-app database engine (`Sqlite` for schema v1).
+    pub fn database(&self) -> AppDatabase {
+        self.record.database.unwrap_or(AppDatabase::Sqlite)
+    }
+
+    /// Whether zero-downtime blue/green slot cutover is enabled.
+    pub fn blue_green(&self) -> bool {
+        self.record.blue_green.unwrap_or(false)
+    }
+
+    /// Standby loopback port for blue/green cutover, when enabled.
+    pub fn standby_port(&self) -> Option<u16> {
+        self.record.standby_port
+    }
+
+    /// Whether Caddy serves `index.html` fallback for unmatched frontend paths.
+    pub fn spa_fallback(&self) -> bool {
+        self.record.spa_fallback.unwrap_or(false)
+    }
+
+    /// Relative directory inside the release holding static frontend assets.
+    pub fn frontend_dir(&self) -> Option<&str> {
+        self.record.frontend_dir.as_deref()
+    }
+
+    /// SSR frontend runtime profile for `fullstack_dual_ssr`.
+    pub fn frontend_runtime(&self) -> Option<AppRuntime> {
+        self.record.frontend_runtime
+    }
+
+    /// SSR frontend entrypoint for `fullstack_dual_ssr`.
+    pub fn frontend_entrypoint(&self) -> Option<&str> {
+        self.record.frontend_entrypoint.as_deref()
+    }
+
+    /// SSR frontend loopback port for `fullstack_dual_ssr`.
+    pub fn frontend_port(&self) -> Option<u16> {
+        self.record.frontend_port
+    }
+
+    /// SSR frontend standby loopback port for blue/green `fullstack_dual_ssr`.
+    pub fn frontend_standby_port(&self) -> Option<u16> {
+        self.record.frontend_standby_port
+    }
+
+    /// Sorted unbuffered SSE path prefixes (Caddy only).
+    pub fn sse_prefixes(&self) -> &[String] {
+        self.record.sse_prefixes.as_deref().unwrap_or(&[])
+    }
+
+    /// Sorted API path prefixes stripped before forwarding upstream (Caddy only).
+    pub fn strip_api_prefixes(&self) -> &[String] {
+        self.record.strip_api_prefixes.as_deref().unwrap_or(&[])
+    }
+
+    /// All non-zero loopback ports reserved by this app plan.
+    pub fn all_ports(&self) -> Vec<u16> {
+        let mut ports = Vec::new();
+        if self.record.port != 0 {
+            ports.push(self.record.port);
+        }
+        if let Some(p) = self.record.standby_port {
+            ports.push(p);
+        }
+        if let Some(p) = self.record.frontend_port {
+            ports.push(p);
+        }
+        if let Some(p) = self.record.frontend_standby_port {
+            ports.push(p);
+        }
+        ports
     }
 }
 
@@ -550,16 +984,32 @@ struct AppDeployEffects {
     rolls_back_on_failed_health: bool,
     runs_package_scripts: bool,
     traffic_activation: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reloads_caddy: Option<bool>,
 }
 
-const DEPLOY_EFFECTS: AppDeployEffects = AppDeployEffects {
+const DEPLOY_EFFECTS_V1: AppDeployEffects = AppDeployEffects {
     unpacks_as_site: true,
     switches_release: true,
     restarts_app_unit: true,
     rolls_back_on_failed_health: true,
     runs_package_scripts: false,
     traffic_activation: false,
+    reloads_caddy: None,
 };
+
+const fn deploy_effects_v2(runtime: AppRuntime, blue_green_cutover: bool) -> AppDeployEffects {
+    let has_runtime = runtime.is_process_runtime();
+    AppDeployEffects {
+        unpacks_as_site: true,
+        switches_release: true,
+        restarts_app_unit: has_runtime,
+        rolls_back_on_failed_health: true,
+        runs_package_scripts: false,
+        traffic_activation: false,
+        reloads_caddy: Some(has_runtime && blue_green_cutover),
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -583,6 +1033,8 @@ struct AppDeployPlanRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     capture_operation_id: Option<Id>,
     health_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    blue_green_cutover: Option<bool>,
     #[serde(deserialize_with = "crate::codec::object")]
     expected_effects: AppDeployEffects,
     risk_class: Risk,
@@ -593,25 +1045,47 @@ struct AppDeployPlanRecord {
 
 impl AppDeployPlanRecord {
     fn validate(&self) -> Result<(), ApprovalError> {
-        if self.schema_version != 1 {
-            return Err(ApprovalError::UnsupportedVersion);
-        }
         let migration_ok = match (&self.migration_entrypoint, &self.capture_operation_id) {
             (Some(entry), Some(_)) => valid_entrypoint(entry),
             // A migration MUST bind a recent capture for atomic rollback.
             (Some(_), None) => false,
             (None, _) => true,
         };
-        if self.expected_effects != DEPLOY_EFFECTS
-            || !valid_release_id(&self.release_id)
-            || !(1..=MAX_APP_RELEASE_FILES).contains(&self.file_count)
-            || !(1..=MAX_APP_RELEASE_BYTES).contains(&self.total_bytes)
-            || !migration_ok
-            || !valid_health_path(&self.health_path)
-            || self.limitations.len() > 8
-            || !valid_window(self.valid_from, self.expires_at)
-        {
-            return Err(ApprovalError::InvalidPlan);
+        let common_ok = valid_release_id(&self.release_id)
+            && (1..=MAX_APP_RELEASE_FILES).contains(&self.file_count)
+            && (1..=MAX_APP_RELEASE_BYTES).contains(&self.total_bytes)
+            && migration_ok
+            && valid_health_path(&self.health_path)
+            && self.limitations.len() <= 8
+            && valid_window(self.valid_from, self.expires_at);
+        match self.schema_version {
+            1 => {
+                if !common_ok
+                    || !self.runtime.is_process_runtime()
+                    || self.blue_green_cutover.is_some()
+                    || self.expected_effects != DEPLOY_EFFECTS_V1
+                {
+                    return Err(ApprovalError::InvalidPlan);
+                }
+            }
+            2 => {
+                let Some(blue_green_cutover) = self.blue_green_cutover else {
+                    return Err(ApprovalError::InvalidPlan);
+                };
+                if !common_ok
+                    || self.expected_effects != deploy_effects_v2(self.runtime, blue_green_cutover)
+                {
+                    return Err(ApprovalError::InvalidPlan);
+                }
+                if self.runtime == AppRuntime::StaticV1
+                    && (blue_green_cutover
+                        || self.migration_entrypoint.is_some()
+                        || self.health_path != "/")
+                {
+                    return Err(ApprovalError::InvalidPlan);
+                }
+            }
+            _ => return Err(ApprovalError::UnsupportedVersion),
         }
         Ok(())
     }
@@ -625,10 +1099,20 @@ pub struct AppDeployPlan {
 }
 
 impl AppDeployPlan {
-    /// Decodes schema v1 and its intrinsic constraints only.
+    /// Decodes schema v1 or schema v2 (D-102) and its intrinsic constraints only.
     pub fn decode(input: &[u8]) -> Result<Self, ApprovalError> {
         let (record, canonical) = super::decode(input, AppDeployPlanRecord::validate)?;
         Ok(Self { record, canonical })
+    }
+
+    /// Schema version (`1` or `2`).
+    pub const fn schema_version(&self) -> u16 {
+        self.record.schema_version
+    }
+
+    /// Whether this deploy performs a zero-downtime blue/green slot cutover via Caddy.
+    pub fn blue_green_cutover(&self) -> bool {
+        self.record.blue_green_cutover.unwrap_or(false)
     }
 
     /// Complete immutable semantic bytes.

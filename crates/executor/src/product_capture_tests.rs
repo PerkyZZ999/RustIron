@@ -582,3 +582,57 @@ fn a_frozen_capture_thaws_once_right_after_the_second_marker() {
     assert!(matches!(outcome, CaptureOutcome::Uncertain { .. }));
     assert_eq!(*freeze_log.borrow(), ["arm", "stop", "thaw"]);
 }
+
+#[test]
+fn external_app_db_capture_verifies_pg_and_mariadb_dumps_and_cleans_up() {
+    use rustiron_contracts::approval::AppDatabase;
+
+    for (db, dump_file) in [
+        (AppDatabase::Postgresql18, crate::layout::APP_PG_DUMP_FILE),
+        (AppDatabase::Mariadb, crate::layout::APP_MARIADB_DUMP_FILE),
+    ] {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut store = Recording::new(log.clone());
+        let d1 = "1".repeat(64);
+        let d2 = "2".repeat(64);
+        let manifest = format!(
+            "{{\"path\":\"srv/sites/rs_blog/data/uploads/a.png\",\"kind\":\"file\",\"size\":10,\"sha256\":\"{d1}\",\"mode\":420}}\n\
+             {{\"path\":\"srv/sites/rs_blog/tmp/{dump_file}\",\"kind\":\"file\",\"size\":42,\"sha256\":\"{d2}\",\"mode\":384}}\n\
+             {{\"end\":{{\"entries\":2,\"regular_bytes\":52,\"truncated\":false}}}}\n"
+        );
+        store.manifest = Ok(manifest.into_bytes());
+        let dump_log = log.clone();
+        let remove_log = log.clone();
+        let freeze_log = Rc::new(RefCell::new(Vec::new()));
+        let mut freeze = FakeFreeze {
+            log: freeze_log.clone(),
+            held: true,
+        };
+        let outcome = capture_app_external_db_steps(
+            "/srv/sites/rs_blog",
+            db,
+            &operation(),
+            &mut store,
+            || {
+                dump_log.borrow_mut().push("dump".into());
+                Ok(())
+            },
+            || {
+                remove_log.borrow_mut().push("remove".into());
+                Ok(())
+            },
+            Some(&mut freeze),
+        );
+        let CaptureOutcome::Succeeded(snapshot) = outcome else {
+            panic!("external app db capture must succeed for {db:?}: {outcome:?}");
+        };
+        assert_eq!(snapshot.consistency, CaptureConsistency::Matched);
+        assert!(snapshot.manifest.is_some(), "manifest missing for {db:?}");
+        assert_eq!(*freeze_log.borrow(), ["arm", "stop", "held", "thaw"]);
+        assert_eq!(
+            log.borrow().last().map(String::as_str),
+            Some("remove"),
+            "dump must be removed for {db:?}"
+        );
+    }
+}
