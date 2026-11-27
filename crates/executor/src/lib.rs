@@ -699,6 +699,13 @@ pub(crate) fn verified_app_provision(
     if !plan_ports.is_empty() && !proxy_site::ports_free(&reserved, &plan_ports) {
         return Err(ExecutorError::BindingDenied);
     }
+    // W664 (W662-F5): an app domain binds only unreserved_port_t; refuse before intent.
+    if plan_ports
+        .iter()
+        .any(|port| rustiron_contracts::approval::app_port_selinux_conflict(*port).is_some())
+    {
+        return Err(ExecutorError::BindingDenied);
+    }
     let scratch = files::open_trusted_directory(&anchor.scratch_dir, owner)?;
     signature::verify(
         grant.as_bytes(),

@@ -134,6 +134,8 @@ async function backendStatusRoute(req: Request): Promise<Response> {
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port,
+  // W665: refuse bodies before buffering them; the largest route body (P15 apply) is 256 KiB.
+  maxRequestBodySize: 1_048_576,
   routes: {
     "/api/auth/*": authApi.handleAuth,
     "/api/accounts/status": authApi.status,

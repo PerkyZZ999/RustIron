@@ -791,6 +791,22 @@ pub(crate) struct AppProvisionArgs {
 }
 
 pub(crate) fn app_provision(request: AppProvisionArgs) -> ExitCode {
+    // W664 (W662-F5): the app domain binds only unreserved_port_t ports.
+    let ports = [
+        Some(request.port),
+        request.standby_port,
+        request.frontend_port,
+        request.frontend_standby_port,
+    ];
+    for port in ports.into_iter().flatten().filter(|port| *port != 0) {
+        if let Some(kind) = rustiron_contracts::approval::app_port_selinux_conflict(port) {
+            let _ = writeln!(
+                io::stderr(),
+                "{{\"scope\":\"plan_create\",\"error\":\"APP_PORT_NOT_UNRESERVED\",\"port\":{port},\"selinux_type\":\"{kind}\",\"authority\":\"none\"}}"
+            );
+            return ExitCode::from(ErrorCode::InvalidRequest.exit_code());
+        }
+    }
     let limitations = if request.common.limitation.is_empty() {
         vec!["operator-supplied app provision inputs; Rustiron did not observe the host".to_owned()]
     } else {

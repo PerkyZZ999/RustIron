@@ -519,7 +519,7 @@ fn p27_app_plans_build_inspect_and_report_envelopes_offline() {
             "--runtime",
             "bun_1_v1",
             "--port",
-            "43187",
+            "23187",
             "--websocket-prefix",
             "/ws/",
             "--entrypoint",
@@ -551,7 +551,7 @@ fn p27_app_plans_build_inspect_and_report_envelopes_offline() {
     for expected in [
         "verb: app_provision",
         "runtime: bun_1_v1",
-        "loopback port: 127.0.0.1:43187",
+        "loopback port: 127.0.0.1:23187",
         "worker entrypoint: src/worker.ts",
         "env keys: A_SECRET, Z_TOKEN (names only;",
         "blast radius: scope SingleSite;",
@@ -682,7 +682,7 @@ fn p27_app_plans_build_inspect_and_report_envelopes_offline() {
             "--runtime",
             "bun_1_v1",
             "--port",
-            "4101",
+            "4111",
             "--ingress",
             "caddy",
             "--topology",
@@ -780,4 +780,50 @@ fn p27_app_plans_build_inspect_and_report_envelopes_offline() {
     );
 
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// W664 (W662-F5): app ports a confined app cannot bind are refused at creation.
+#[test]
+fn app_provision_refuses_ports_with_their_own_selinux_type() {
+    for (port, kind) in [("3000", "ntop_port_t"), ("43187", "ephemeral_port_t")] {
+        let out = Command::new(env!("CARGO_BIN_EXE_rustiron"))
+            .args([
+                "plan",
+                "create",
+                "app-provision",
+                "--plan-id",
+                "plan_ap_port",
+                "--host-id",
+                "host_lab",
+                "--host-epoch",
+                "epoch_1",
+                "--profile-digest",
+                &"a".repeat(64),
+                "--requester",
+                "agent_1",
+                "--site-id",
+                "portapp",
+                "--hostname",
+                "port.example.test",
+                "--runtime",
+                "node_22_v1",
+                "--port",
+                port,
+                "--entrypoint",
+                "server.js",
+                "--health-path",
+                "/health",
+                "--valid-from",
+                "1000",
+                "--expires-at",
+                "2000",
+            ])
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(out.stdout.is_empty());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("APP_PORT_NOT_UNRESERVED"), "{stderr}");
+        assert!(stderr.contains(kind), "{stderr}");
+    }
 }

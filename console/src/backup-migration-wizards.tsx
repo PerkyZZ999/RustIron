@@ -344,7 +344,7 @@ type MigrationForm = {
 function buildMigrationCmd(f: MigrationForm): string {
   const siteId = f.targetSiteId || (f.mode === "cyberpanel" ? "site01" : "emdashsite");
   const host = f.targetHost || f.sourceHost;
-  const port = Number.parseInt(f.emdashPort, 10) || 3401;
+  const port = Number.parseInt(f.emdashPort, 10) || 3402;
   if (f.mode === "cyberpanel") {
     return `# 1. Offline dry-run & compatibility check (Runbook 37)\n${buildMigrateDryRunCmd()}\n# 2. Signed site_import for ${shellQuote(siteId)} (${shellQuote(host)}) from ${shellQuote(f.archivePath)} follows Runbook 37`;
   }
@@ -430,7 +430,7 @@ export function MigrationWizardsPanel() {
     archivePath: "./cyberpanel-export.tar.gz",
     wxrPath: "./wordpress-export.xml",
     mediaDir: "./wp-content/uploads",
-    emdashPort: "3401",
+    emdashPort: "3402",
   });
   const patch = (p: Partial<MigrationForm>) => setForm((prev) => ({ ...prev, ...p }));
   const cmd = buildMigrationCmd(form);

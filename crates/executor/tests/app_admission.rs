@@ -228,8 +228,8 @@ fn app_provision_refuses_reserved_ols_port_and_over_cap_quota_before_intent() {
         "site_id": "emdash1",
         "hostname": "emdash.example.test",
         "runtime": "node_22_v1",
-        "port": 43187,
-        "routes": [{"prefix": "/", "port": 43187}],
+        "port": 23187,
+        "routes": [{"prefix": "/", "port": 23187}],
         "websockets": [],
         "entrypoint": "dist/server.js",
         "health_path": "/health",
@@ -267,6 +267,61 @@ fn app_provision_refuses_reserved_ols_port_and_over_cap_quota_before_intent() {
     };
     assert_eq!(
         exec.provision_app(&req_q),
+        Err(ExecutorError::BindingDenied)
+    );
+
+    // 2b. W664 (W662-F5): a within-cap plan on port 3000 (ntop_port_t), which an
+    // app domain cannot bind, is refused before intent.
+    let porttype_plan = canonical(&json!({
+        "schema_version": 1,
+        "plan_id": "plan_ap_porttype",
+        "host_id": "host_lab",
+        "host_epoch": "epoch_1",
+        "profile_digest": "a".repeat(64),
+        "requester": "agent_1",
+        "verb": "app_provision",
+        "site_id": "emdash1",
+        "hostname": "emdash.example.test",
+        "runtime": "node_22_v1",
+        "port": 3000,
+        "routes": [{"prefix": "/", "port": 3000}],
+        "websockets": [],
+        "entrypoint": "dist/server.js",
+        "health_path": "/health",
+        "env_keys": [],
+        "memory_max_mib": 512,
+        "tasks_max": 64,
+        "quota_mib": 1024,
+        "expected_effects": {
+            "creates_account": true,
+            "forwards_to_loopback": true,
+            "installs_app_unit": true,
+            "traffic_activation": false,
+            "runs_package_scripts": false
+        },
+        "risk_class": "lab_only",
+        "valid_from": 1000,
+        "expires_at": 2000,
+        "limitations": ["test"]
+    }));
+    let decoded_t = AppProvisionPlan::decode(&porttype_plan).unwrap();
+    let (grant_t, sig_t) = lab.sign_grant(&grant_for(
+        "plan_ap_porttype",
+        decoded_t.digest().as_str(),
+        "app_provision",
+        3,
+    ));
+    let req_t = AdmissionRequest {
+        peer_uid: uid,
+        plan: &porttype_plan,
+        grant: &grant_t,
+        signature: &sig_t,
+        operation_id: id("op_ap_2b"),
+        idempotency_key: id("key_ap_2b"),
+        now: Some(Timestamp::try_from(1500).unwrap()),
+    };
+    assert_eq!(
+        exec.provision_app(&req_t),
         Err(ExecutorError::BindingDenied)
     );
 
@@ -389,12 +444,12 @@ fn w659_schema_v2_fullstack_caddy_enrollment_and_blue_green_admission_guards() {
         "topology": "fullstack_split",
         "database": "postgresql_18",
         "runtime": "bun_1_v1",
-        "port": 43210,
+        "port": 23210,
         "blue_green": true,
-        "standby_port": 43211,
+        "standby_port": 23211,
         "spa_fallback": true,
         "frontend_dir": "frontend",
-        "routes": [{"prefix": "/api/", "port": 43210}],
+        "routes": [{"prefix": "/api/", "port": 23210}],
         "websockets": [],
         "sse_prefixes": ["/api/events/"],
         "entrypoint": "backend/server.ts",
@@ -468,12 +523,12 @@ fn w659_schema_v2_fullstack_caddy_enrollment_and_blue_green_admission_guards() {
         "topology": "fullstack_split",
         "database": "postgresql_18",
         "runtime": "bun_1_v1",
-        "port": 43210,
+        "port": 23210,
         "blue_green": true,
         "standby_port": 8443,
         "spa_fallback": true,
         "frontend_dir": "frontend",
-        "routes": [{"prefix": "/api/", "port": 43210}],
+        "routes": [{"prefix": "/api/", "port": 23210}],
         "websockets": [],
         "entrypoint": "backend/server.ts",
         "health_path": "/api/health",

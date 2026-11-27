@@ -55,6 +55,11 @@ const websiteKinds: [WebsiteKind, string, string][] = [
 ];
 
 const RESERVED_INFRA_PORTS = new Set([2019, 3306, 4319, 5432, 7080]);
+// W664: common framework defaults that SELinux gives their own port type.
+// shortcut: a partial list for early feedback; `rustiron plan create` checks the full AlmaLinux 10 table.
+const SELINUX_NAMED_APP_PORTS = new Set([
+  3000, 3001, 3401, 4101, 4200, 4321, 5000, 8000, 8080, 9000,
+]);
 
 const HOSTNAME_RE =
   /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i;
@@ -371,7 +376,7 @@ const websiteCmdMap: Record<WebsiteKind, (f: WebsiteFormState, s: string, h: str
       siteId: s,
       hostname: h,
       runtime: "node_22_v1",
-      port: f.port || "3401",
+      port: f.port || "3402",
       healthPath: f.healthPath || "/_emdash/api/health",
       entrypoint: "dist/server/entry.mjs",
     }),
@@ -436,6 +441,9 @@ function validateAppPort(raw: string, label: string): string | null {
   const n = Number(raw);
   if (RESERVED_INFRA_PORTS.has(n)) {
     return `${label} ${n} is reserved for host infrastructure (2019/3306/4319/5432/7080).`;
+  }
+  if (SELINUX_NAMED_APP_PORTS.has(n) || (n >= 32768 && n <= 60999)) {
+    return `${label} ${n} has its own SELinux port type, so a confined app cannot bind it. Choose another port (for example 3402 or 5173).`;
   }
   return null;
 }

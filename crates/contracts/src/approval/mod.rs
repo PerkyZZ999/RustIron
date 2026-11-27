@@ -33,6 +33,7 @@ mod readopt;
 mod restore;
 mod retire;
 mod scrub;
+mod selinux_ports;
 mod site;
 mod site_clone;
 mod site_update;
@@ -110,6 +111,7 @@ pub use readopt::{
 pub use restore::{RestoreGrant, RestorePlan, RestoreScope, RestoreSource, check_restore_binding};
 pub use retire::{RetireBindingContext, RetireGrant, RetirePlan, check_retire_binding};
 pub use scrub::{ScrubBindingContext, ScrubGrant, ScrubPlan, check_scrub_binding};
+pub use selinux_ports::app_port_selinux_conflict;
 pub use site::{
     Hostname, SiteBindingContext, SiteGrant, SiteId, SitePlan, SiteQuotaLimits, SiteRecipe,
     check_site_binding,

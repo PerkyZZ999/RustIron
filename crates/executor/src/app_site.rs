@@ -1269,11 +1269,7 @@ pub(crate) fn run_deploy_step(
                     fs::create_dir_all(&snap_dir).map_err(|_| ExecutorError::StepFailed)?;
                     fs::set_permissions(&snap_dir, fs::Permissions::from_mode(0o700))
                         .map_err(|_| ExecutorError::StepFailed)?;
-                    postgres::dump_database(
-                        &layout.account,
-                        &snap_dir.join("pre-migrate.dump"),
-                        None,
-                    )?;
+                    postgres::dump_database(layout, &snap_dir.join("pre-migrate.dump"), None)?;
                 }
                 AppDatabase::None => {}
             }
@@ -1616,7 +1612,7 @@ pub(crate) fn dump_app_external_db(
                 .root
                 .join("tmp")
                 .join(crate::layout::APP_PG_DUMP_FILE);
-            postgres::dump_database(&layout.account, &p, Some(uid))?;
+            postgres::dump_database(layout, &p, Some(uid))?;
             p
         }
         AppDatabase::Mariadb => {

@@ -19,11 +19,7 @@ No package manager (`npm`, `pnpm`, `bun install`) or user install script ever ru
 
 1. **Caddy.** Install `caddy` (`>= 2.10.0`) as root-owned `/usr/local/bin/caddy` (mode `0755`, one link). Enroll its SHA-256 with `--caddy-binary-sha256` and pick the ingress mode with the installation wizard. Caddy runs as `rustiron-caddy` in `rustiron_caddy_t`. Its admin API listens only on `/run/rustiron-caddy/admin.sock`; port `2019` never listens. `rustiron-acme` stays the only certificate issuer.
 2. **PostgreSQL 18.** For `postgresql_18` apps, run the wizard step `postgresql_18_setup`. It verifies the pinned PGDG key, installs `postgresql18-server` `>= 18.7`, relabels `/usr/pgsql-18/bin` so the server runs as `postgresql_t`, and installs the loopback and SCRAM-SHA-256 templates. Check with `ps -eZ | grep postgres` (expect `postgresql_t`) and `ss -ltn 'sport = :5432'` (expect `127.0.0.1` only).
-3. **Ports.** Choose app ports in the SELinux `unreserved_port_t` ranges. Some ports above 1024 have their own type (for example `4101`, `4200`, `4321`, `5000`); an app cannot bind them and Caddy cannot proxy to them. Check a port first:
-   ```sh
-   semanage port -l | grep -w <port>
-   ```
-   No output means the port is `unreserved_port_t`.
+3. **Ports.** A confined app can bind only `unreserved_port_t` ports: TCP 1024–32767 and 61000–65535, except the ports the policy gives their own type. Common framework defaults are among them: `3000`/`3001` (Express, Next.js), `4200` (Angular), `4321` (Astro), `5000`, `8000`, `8080`, and `9000`. The 32768–60999 range is `ephemeral_port_t`. `rustiron plan create app-provision` and the executor refuse such ports (`APP_PORT_NOT_UNRESERVED`, naming the type), and the Console warns about the common ones. Ports such as `3402`, `4000`, `5173`, or `20000`–`29999` are free on AlmaLinux 10.3 unless something else listens there ([W664](../validation/S10-W664/README.md)).
 4. **Package off-host.** Build the app on a build host, then pack the build output deterministically:
    ```sh
    python3 packaging/rustiron-app-pack.py presets

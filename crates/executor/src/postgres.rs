@@ -8,7 +8,8 @@
 //! - Passwords NEVER enter plans, grants, journal rows, argv, logs, or
 //!   `/proc/*/environ`. Administrative SQL flows over stdin to PGDG
 //!   `/usr/pgsql-18/bin/psql` over the local Unix socket `/run/postgresql` via
-//!   `runuser -u postgres` peer authentication.
+//!   `runuser -u postgres` peer authentication. Dumps and restores connect as
+//!   the site role instead (W662-F3, W666).
 //! - Login and rejection verification write an RAII `0600` `.pgpass` file
 //!   inside [`crate::layout::ADMIN_SOCKET`]'s parent directory and pass ONLY
 //!   the file path in `PGPASSFILE` (never the password), unlinking it on drop.
@@ -528,16 +529,29 @@ pub(crate) fn verify_password_rejected(
     Ok(())
 }
 
+/// The site role's SCRAM password from its verified `private/app.env`.
+fn site_role_password(layout: &SiteLayout) -> Result<String, ExecutorError> {
+    let account = layout.account.as_str();
+    let passwd = provision::read_etc("passwd")?;
+    let uid = provision::account_uid(&passwd, account).ok_or(ExecutorError::StepFailed)?;
+    let private_dir = files::open_traversable_directory(&layout.root.join("private"), uid)?;
+    let env_bytes = read_app_env_verified(&private_dir, uid, false)?;
+    parse_app_env_database_url(&env_bytes, account, AppDatabase::Postgresql18)
+}
+
 /// Consistent PostgreSQL 18 custom-format dump (`pg_dump --format=custom`)
 /// written safely without following symlinks at `out_path`.
 ///
-/// `owner` (W663-E2) is set with `fchown` on the new file's descriptor, never by
+/// W666: `pg_dump` connects as the site role, not `postgres`, so no
+/// superuser session reads tenant-controlled catalog content. `owner`
+/// (W663-E2) is set with `fchown` on the new file's descriptor, never by
 /// path, because `out_path` may sit in a site-writable folder.
 pub(crate) fn dump_database(
-    account: &str,
+    layout: &SiteLayout,
     out_path: &Path,
     owner: Option<u32>,
 ) -> Result<(), ExecutorError> {
+    let account = layout.account.as_str();
     if !valid_site_identifier(account) {
         return Err(ExecutorError::StepFailed);
     }
@@ -552,20 +566,23 @@ pub(crate) fn dump_database(
         fs::remove_file(out_path).map_err(|_| ExecutorError::StepFailed)?;
     }
     let out_str = provision::path_str(out_path)?;
-    // Run pg_dump as postgres outputting to stdout, and write directly from
-    // root into an O_CREAT|O_EXCL|O_NOFOLLOW 0600 file so `postgres` never
-    // needs write access inside a root-only or site-owned directory.
-    let output = Command::new(RUNUSER)
+    let password = site_role_password(layout)?;
+    let guard = write_temp_pgpass(account, &password, &format!("dump-{account}"))?;
+    // The dump goes to stdout; root writes it into an O_CREAT|O_EXCL|O_NOFOLLOW
+    // 0600 file below.
+    let output = Command::new(PG_DUMP)
+        .env("PGPASSFILE", &guard.0)
+        .env("PGSSLMODE", "disable")
         .args([
-            "-u",
-            "postgres",
-            "--",
-            PG_DUMP,
+            "-w",
             "--format=custom",
             "--no-owner",
             "--no-acl",
             "-h",
             PG_SOCKET_DIR,
+            "-U",
+            account,
+            "-d",
             account,
         ])
         .stdin(Stdio::null())
@@ -611,11 +628,7 @@ pub(crate) fn restore_database(layout: &SiteLayout, dump_path: &Path) -> Result<
     if !Path::new(PG_RESTORE).is_file() {
         return Err(ExecutorError::Unavailable);
     }
-    let passwd = provision::read_etc("passwd")?;
-    let uid = provision::account_uid(&passwd, account).ok_or(ExecutorError::StepFailed)?;
-    let private_dir = files::open_traversable_directory(&layout.root.join("private"), uid)?;
-    let env_bytes = read_app_env_verified(&private_dir, uid, false)?;
-    let password = parse_app_env_database_url(&env_bytes, account, AppDatabase::Postgresql18)?;
+    let password = site_role_password(layout)?;
     let fd = rustix::fs::open(
         dump_path,
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
