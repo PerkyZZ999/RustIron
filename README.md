@@ -52,17 +52,7 @@ Orchestrate **WordPress**, full-stack **Node.js 22** / **Bun 1.4** / static SPA 
 | **Console polish** | Confirmations before deleting accounts and forwarders, mail rules against forwarding loops and hidden mailboxes, field-level form messages, deep links that survive sign-in, and commands shown only for valid wizard input. |
 | **Quality** | Whole-project architecture and code-review passes, plus a two-stage QA run (exploratory testing and Bombadil property-based fuzzing) whose 25 findings are all fixed. |
 
-## What Was New in v0.1.1
-
-| Area | What changed |
-| :--- | :--- |
-| **Full-stack app topologies** | Four signed app shapes: `static_spa`, `backend_api`, `fullstack_split` (static frontend + `/api` backend), and `fullstack_dual_ssr` (SSR frontend + API backend), on Node.js 22 or Bun 1.4. |
-| **Confined Caddy edge** | Optional Caddy `2.10` ingress with HTTP/3, WebSockets, and unbuffered SSE, confined in `rustiron_caddy_t`. Modes: `caddy_only`, `caddy_multi_ip`, and `caddy_edge_over_ols`, which bridges WordPress sites to OpenLiteSpeed over loopback. The admin API listens only on a `0700` Unix socket, and `rustiron-acme` stays the only certificate issuer. |
-| **Blue/green cutover** | Deploys start and health-check a standby slot, then reload Caddy onto it without a restart. |
-| **Database per app** | `none`, `sqlite`, `mariadb`, or `postgresql_18` (PGDG `18.7+`, loopback and SCRAM-SHA-256 only), each with its own SELinux app domain. Restores replay a dump as the site role, never as a superuser. |
-| **Deterministic packager** | `packaging/rustiron-app-pack.py` turns a build output into a byte-reproducible bundle and manifest with 6 framework presets, and refuses symlinks, special files, and `.env` files. |
-
-See [Modern Apps](docs/technical/MODERN-APPS.md) and [Runbook 32: Modern Apps](docs/operator/32-MODERN-APPS.md).
+Earlier versions and the full notes for each release are in the [Changelog](CHANGELOG.md).
 
 ---
 
@@ -264,6 +254,7 @@ See [Packaging & Installer Guide](packaging/README.md), [Release Bundler Guide](
 | [Console Admin Panel Guide](console/README.md) & [Backend Boundary](docs/technical/CONSOLE-BACKEND.md) | Console architecture, auth/RBAC, CSP/HSTS headers, and live IPC |
 | [Operator Runbooks](docs/operator/README.md) | Step-by-step guides for enrollment, updates, backups, DNS, TLS, and recovery |
 | [Design Tokens](docs/DESIGN.md) | Approved Matte Charcoal & Royal Blue visual design system |
+| [Changelog](CHANGELOG.md) | Notes for each released version |
 | [Contributing](CONTRIBUTING.md) | Coding standards, local verification gates, and pull request workflow |
 
 ---
