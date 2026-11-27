@@ -1,7 +1,7 @@
 # Rust-Toolchain integration contract
 
 2026-10-24.
-**Integrated and verified on S01's real contracts workspace.** Source of instructions: [owner's local integration guide](/mnt/data-z/MyProjects/Rust-Toolchain/RUST-TOOLCHAIN.md).
+**Integrated and verified on S01's real contracts workspace.** Source of instructions: the owner's local Rust-Toolchain integration guide (`RUST-TOOLCHAIN.md`, kept outside this repository).
 Read it at execution time.
 This page records the project-specific sequence and status, not a fork of its entire procedure.
 

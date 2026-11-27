@@ -287,9 +287,9 @@ def render_console_unit(working_dir: str = "/opt/rustiron/console") -> str:
 
     W733 (QA-02): the coordinator accepts only peers with its own UID (a 0700
     folder, a 0600 socket, and a kernel peer check on both ends), as its other
-    clients do. So the Console runs as rustiron-coordinator. User= also loads
-    that user's rustiron-requesters membership, so the Console can reach the
-    executor socket too (W758); the executor still verifies a signed grant.
+    clients do. So the Console runs as rustiron-coordinator. The user is not a
+    member of rustiron-requesters (W764); only the coordinator unit adds that
+    group, so the Console cannot reach the executor socket.
     StateDirectory keeps its databases and moves an older rustiron-build
     folder to the new owner.
     """

@@ -145,6 +145,10 @@ allow = ["MIT", "Apache-2.0", "NCSA"]
         result.update(status='PASS', targets=outcomes, root_lock_unchanged=True, fuzz_lock_unchanged=True,
                       retained_corpus={target: {path.name: digest(path) for path in sorted((seed_directory / target).iterdir())}
                                        for target in targets})
+        # W762: a passing run keeps the corpus digests above, not its ~25 MiB runtime copy;
+        # a failing run keeps the runtime folder for its crash artifacts.
+        shutil.rmtree(runtime)
+        result['runtime_directory_removed'] = True
     except (GateFailure, OSError) as error:
         result.update(status='FAIL', reason=str(error))
         print('FAIL: ' + str(error), flush=True)

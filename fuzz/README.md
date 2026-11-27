@@ -129,7 +129,8 @@ It checks all 536 expected acceptance/rejection paths before writing them.
 
 The checker discovers every declared Cargo binary and requires both positive and refusal controls for each, so adding a target cannot silently omit its run.
 One fixture table supplies plans, paired cases and raw wire envelopes.
-Generated corpora and crash artifacts remain under a separate ignored runtime directory recorded in `result.json`.
+Generated corpora and crash artifacts go to a separate ignored runtime directory recorded in `result.json`.
+A passing run records the corpus digests in `result.json` and removes that directory ([W762](../docs/validation/S10-W762/README.md)); a failing run keeps it for its crash artifacts.
 
 Never stage an entire generated corpus.
 Promote a real minimal reproducer with its regression test after reviewing it.

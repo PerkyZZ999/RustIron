@@ -113,7 +113,7 @@ The lab commands use [`w344_tls_store.sh`](../../lab/s10/w344_tls_store.sh). For
    5. It reads the repository ID with the fetch principal (`restic cat config --no-lock`).
 
    The expected output has `init identity removed` and `repository_id=<64 hex digits>`.
-   The lab script requires the pinned restic 0.19.1 at `/mnt/data-z/VMs/rustiron-lab/bin/restic`. It refuses a file with another SHA-256.
+   The lab script requires the pinned restic 0.19.1 in the lab's tool folder (`bin/restic`). It refuses a file with another SHA-256.
 6. **Projection.** Write the projection JSON. Use the [projection fields](../technical/PRODUCT-S3-TRANSPORT.md#destination-policy-projection) and the values above.
    Include the repository ID of step 5 and the SHA-256 of each principal policy. W371 used [make_projection.py](../validation/S10-W371/make_projection.py) to write [projection-9443.json](../validation/S10-W371/projection-9443.json).
 7. **Digest.** Run `rustiron --output json plan destination-digest PROJECTION.json`.

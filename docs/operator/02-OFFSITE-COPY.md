@@ -58,7 +58,7 @@ It is shown only once.
 
 ## B. Create the bucket and scoped keys (terminal, about 10 min, an estimate)
 
-Run these in a terminal on the PC, from the repository root `/mnt/data-z/MyProjects/Rustiron`.
+Run these in a terminal on the PC, from the repository root.
 
 1. Install the official B2 CLI (tested syntax: v5.0.2):
 

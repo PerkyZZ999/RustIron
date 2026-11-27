@@ -87,7 +87,7 @@ Serde does not by itself prove duplicate-key rejection, canonicalization or auth
 
 Cryptographic library and exact SQLite linkage choices are reviewed in their relevant slices.
 
-Follow [RUST-TOOLCHAIN-INTEGRATION](RUST-TOOLCHAIN-INTEGRATION.md) and the [owner's integration guide](/mnt/data-z/MyProjects/Rust-Toolchain/RUST-TOOLCHAIN.md).
+Follow [RUST-TOOLCHAIN-INTEGRATION](RUST-TOOLCHAIN-INTEGRATION.md) and the owner's local Rust-Toolchain integration guide (kept outside this repository).
 `rust-tc quick` is day-to-day feedback; `rust-tc doctor` is the full local gate before each completed Rust task/commit.
 The public interface is `rust-tc`, not `just` or the unrelated `rust-doctor` binary. cargo-deny owns advisories/licenses; do not add cargo-audit.
 

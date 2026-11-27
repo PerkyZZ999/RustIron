@@ -49,7 +49,8 @@ fn product_identity_is_dedicated_and_unprivileged() {
     assert!(exec.starts_with("/usr/libexec/rustiron/rustiron-control "));
     assert!(!exec.contains("lab") && !PRODUCT.contains("rustiron-build"));
     assert!(SYSUSERS.contains("u rustiron-coordinator - "));
-    assert!(SYSUSERS.contains("m rustiron-coordinator rustiron-requesters"));
+    // W764: only the unit joins the executor group; the user is not a member.
+    assert!(!SYSUSERS.contains("m rustiron-coordinator rustiron-requesters"));
     assert!(SYSUSERS.contains("/usr/sbin/nologin"));
 }
 

@@ -5,6 +5,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 RustIron is experimental pre-release software. No version below is a supported production release.
 
+## [Unreleased]
+
+### Security
+
+- The Console can no longer connect to the executor socket. The coordinator's user is no longer a member of `rustiron-requesters`; only the coordinator service gets that group. The product update removes the membership on existing hosts; restart the Console after the update ([Runbook 38](docs/operator/38-CONSOLE-PRODUCTION-DEPLOYMENT.md)).
+
 ## [0.2.0] — 2026-11-27
 
 ### Added

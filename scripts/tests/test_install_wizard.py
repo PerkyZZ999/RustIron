@@ -129,7 +129,7 @@ class InstallWizardTests(unittest.TestCase):
         self.assertIn("User=rustiron-coordinator\n", unit_text)
         self.assertIn("StateDirectory=rustiron-console\n", unit_text)
         self.assertNotIn("rustiron-build", unit_text)
-        # The unit adds no group; W758 records that User= still loads rustiron-requesters.
+        # W764: neither the unit nor the user's memberships give the executor group.
         self.assertNotIn("rustiron-requesters", unit_text)
         script = self.root / "usr/local/libexec/rustiron-console/rustiron-console-observe"
         self.assertEqual(stat.S_IMODE(script.stat().st_mode), 0o755)

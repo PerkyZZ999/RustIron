@@ -297,6 +297,17 @@ class UpdateProductTests(unittest.TestCase):
         updater.finish_host(self.target, [installer.SYSUSERS], runner)
         self.assertIn(mock.call("/usr/bin/systemd-sysusers", f"/{installer.SYSUSERS}"), runner.call_args_list)
 
+    def test_a_changed_sysusers_file_drops_the_old_executor_membership(self):
+        # W764: the coordinator user leaves rustiron-requesters; only its unit adds the group.
+        for members, expected in ((["rustiron-coordinator"], True), ([], False)):
+            runner = mock.Mock()
+            group = mock.Mock(gr_mem=members)
+            with mock.patch.object(updater.grp, "getgrnam", return_value=group), \
+                    mock.patch.object(installer, "prepare_acme_state"):
+                updater.finish_host(Path("/"), [installer.SYSUSERS], runner)
+            call = mock.call("/usr/bin/gpasswd", "-d", "rustiron-coordinator", "rustiron-requesters")
+            self.assertEqual(call in runner.call_args_list, expected)
+
     def test_a_changed_parent_template_is_refused(self):
         changed = {**self.new, installer.PARENT_TEMPLATE: digest(b"another parent")}
         self.assertIn("shipped OLS parent template", updater.compatibility(self.record, changed)[0])

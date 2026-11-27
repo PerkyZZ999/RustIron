@@ -26,6 +26,7 @@ and is not reported as success.
 
 import argparse
 import datetime
+import grp
 import hashlib
 import importlib.util
 import json
@@ -77,6 +78,8 @@ BUSY_PATTERNS = (
     "rustiron-alert-checkin.service",
 )
 MODULE_PREFIX = installer.MODULE_DIR + "/"
+COORDINATOR = "rustiron-coordinator"
+REQUESTERS = "rustiron-requesters"
 
 
 class Refused(Exception):
@@ -344,6 +347,10 @@ def finish_host(target, names, runner=None, read=None):
         runner("/usr/sbin/restorecon", "-v", *(f"/{name}" for name in names))
     if installer.SYSUSERS in names:
         runner("/usr/bin/systemd-sysusers", f"/{installer.SYSUSERS}")
+        # W764: systemd-sysusers never removes a membership, so drop the
+        # coordinator user's executor-group membership of older installs.
+        if target == Path("/") and COORDINATOR in grp.getgrnam(REQUESTERS).gr_mem:
+            runner("/usr/bin/gpasswd", "-d", COORDINATOR, REQUESTERS)
         if target == Path("/") and not (target / installer.ACME_STATE).exists():
             installer.prepare_acme_state(target)
             runner("/usr/sbin/restorecon", "-R", "-v", f"/{installer.ACME_STATE}")

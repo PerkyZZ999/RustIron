@@ -39,9 +39,9 @@ It covers Better Auth accounts, the full-screen sign-in gate, the coordinator Un
 - **Read-only by default (D-090).** Separate-custody signed plan submission (`RUSTIRON_CONSOLE_WRITE_WORKFLOWS`) and Console-local mailbox catalog changes (`RUSTIRON_CONSOLE_MAIL_WRITES`) are disabled (`405`) until you opt in.
 - **Systemd service hardening and Server Logs.** The generated `rustiron-console.service` unit (`packaging/rustiron-install-wizard.py`) runs unprivileged as `rustiron-coordinator` with these settings ([W733](../validation/S10-W733/README.md)):
   - `User=rustiron-coordinator`: the coordinator socket accepts only its own UID, as for its other clients.
-    The unit does not add `rustiron-requesters`, but `User=` loads the coordinator user's membership in that group.
-    So the Console has the coordinator's access, and it can also reach the executor socket ([W758](../validation/S10-W758/README.md)).
-    The executor admits only the enrolled `requester_uid` and verifies the offline-signed grant, scope, and replay of each change itself;
+    The unit does not add `rustiron-requesters`, and the coordinator user is not a member of that group: only the coordinator unit adds it with `SupplementaryGroups=`.
+    So the Console cannot reach the executor socket ([W764](../validation/S10-W764/README.md), which corrects [W758](../validation/S10-W758/README.md)).
+    On a host installed before W764, the product update removes the membership (`gpasswd -d rustiron-coordinator rustiron-requesters`); restart the Console after the update;
   - `SupplementaryGroups=systemd-journal`, for read-only allowlisted `/api/host/logs` journald inspection;
   - `NoNewPrivileges=yes`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=read-only`;
   - `LockPersonality=yes`, `RestrictRealtime=yes`, `RestrictSUIDSGID=yes`;
