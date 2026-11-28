@@ -1,6 +1,17 @@
 // W630 (P29 Slice 10): Dedicated Databases Manager (/databases) and CyberPanel-grade
 // interactive Site Lifecycle Controls (PHP/Cache, WP Updates, Disk Quota, Staging Clone,
 // Password Rotation, Restore, and Eject/Delete).
+import { AnswerLine, QuietDetails, SimpleHeader } from "@/components/console/simple";
+import {
+  FilterChips,
+  ListArea,
+  ListControls,
+  ListToolbar,
+  matches,
+  rowClass,
+  SMALL_LIST,
+  usePaged,
+} from "@/components/console/list";
 import { Link } from "@tanstack/react-router";
 import {
   ChevronDown,
@@ -27,7 +38,7 @@ import {
 import { isRealHost, useData } from "./data";
 import { type AppRecord, fixtureApps, liveApps } from "./platform-data";
 import { InspectorPanel, useDrawerSelection } from "./inspector";
-import { CopyButton, Crumbs, EmptyState, Glyph, Page, TableScroll } from "./ui";
+import { CopyButton, Crumbs, EmptyState, Glyph, Page } from "./ui";
 import { SeparateCustodyApplyPanel } from "./write-panel";
 
 type DatabaseEngineLabel = "MariaDB" | "PostgreSQL 18" | "SQLite";
@@ -274,16 +285,129 @@ function dbExposureLabel(
   return { value: "Not observed", detail: "Verify MariaDB / PostgreSQL 18 listeners on host" };
 }
 
+/** W789 (v0.3 item 59): "Which databases do I have?" and can outsiders reach them. */
+function DatabasesAnswer({
+  loading,
+  count,
+  exposure,
+}: {
+  loading: boolean;
+  count: number;
+  exposure: string;
+}) {
+  if (loading) return <AnswerLine tone="unknown">Checking this server…</AnswerLine>;
+  const total = `${count} ${count === 1 ? "database" : "databases"}.`;
+  if (exposure === "Local only") {
+    return <AnswerLine tone="ok">{total} None can be reached from outside this server.</AnswerLine>;
+  }
+  if (exposure === "Not observed") {
+    return (
+      <AnswerLine tone="unknown">
+        {total} Whether they are reachable from outside was not observed.
+      </AnswerLine>
+    );
+  }
+  return (
+    <AnswerLine tone="warn">
+      {total} {exposure} listener: check that the firewall blocks it.
+    </AnswerLine>
+  );
+}
+
+function DatabasesList({
+  entries,
+  selectedId,
+  onManage,
+}: {
+  entries: DatabaseEntry[];
+  selectedId: string | null;
+  onManage: (id: string) => void;
+}) {
+  const [engineFilter, setEngineFilter] = useState<"all" | DatabaseEngineLabel>("all");
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<"website" | "name">("website");
+  const count = (engine: DatabaseEngineLabel) => entries.filter((e) => e.engine === engine).length;
+  const visible = entries
+    .filter((e) => engineFilter === "all" || e.engine === engineFilter)
+    .filter((e) => matches(query, e.dbName, e.domain))
+    .sort((a, b) =>
+      sort === "name" ? a.dbName.localeCompare(b.dbName) : a.domain.localeCompare(b.domain),
+    );
+  const paged = usePaged(visible, `${query}|${engineFilter}|${sort}|${entries.length}`);
+  return (
+    <>
+      <ListToolbar
+        hidden={entries.length <= SMALL_LIST}
+        filters={
+          <FilterChips
+            label="Engine"
+            value={engineFilter}
+            onChange={setEngineFilter}
+            options={[
+              { value: "all", label: "All", count: entries.length },
+              { value: "MariaDB", label: "MariaDB", count: count("MariaDB") },
+              { value: "PostgreSQL 18", label: "PostgreSQL 18", count: count("PostgreSQL 18") },
+              { value: "SQLite", label: "SQLite", count: count("SQLite") },
+            ]}
+          />
+        }
+      >
+        <ListControls
+          count={entries.length}
+          searchLabel="Find a database or website"
+          query={query}
+          onQuery={setQuery}
+          sort={sort}
+          onSort={setSort}
+          sorts={[
+            { value: "website", label: "Website A–Z" },
+            { value: "name", label: "Database A–Z" },
+          ]}
+        />
+      </ListToolbar>
+      <ListArea
+        label="Databases"
+        noun="databases"
+        total={entries.length}
+        paged={paged}
+        onReset={() => {
+          setQuery("");
+          setEngineFilter("all");
+        }}
+      >
+        {paged.rows.map((entry) => (
+          <li key={entry.id} className={rowClass}>
+            <div className="min-w-0 flex-1">
+              <p className="truncate font-mono text-sm font-medium text-foreground">
+                {entry.dbName}
+              </p>
+              <p className="truncate text-sm text-muted-foreground">
+                Used by {entry.domain} · {entry.engine}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="btn quiet sm"
+              aria-pressed={selectedId === entry.id}
+              aria-label={`Manage ${entry.dbName}`}
+              onClick={() => onManage(entry.id)}
+            >
+              {selectedId === entry.id ? "Close" : "Manage"}
+            </button>
+          </li>
+        ))}
+      </ListArea>
+    </>
+  );
+}
+
 export function DatabasesPage() {
   const data = useData();
   const isLive = isRealHost(data.source);
   const apps = isLive ? (data.observation ? liveApps(data.observation) : []) : fixtureApps;
   const entries = buildDatabaseEntries(data.sites, apps);
   const [selectedId, setSelectedId] = useDrawerSelection<string>();
-  const [engineFilter, setEngineFilter] = useState<"all" | DatabaseEngineLabel>("all");
-  const visible =
-    engineFilter === "all" ? entries : entries.filter((e) => e.engine === engineFilter);
-  const selected = visible.find((e) => e.id === selectedId) ?? null;
+  const selected = entries.find((e) => e.id === selectedId) ?? null;
 
   const mariaCount = entries.filter((e) => e.engine === "MariaDB").length;
   const pgCount = entries.filter((e) => e.engine === "PostgreSQL 18").length;
@@ -300,43 +424,20 @@ export function DatabasesPage() {
     <Page live>
       <Crumbs items={[{ href: "/", label: "Overview" }, { label: "Databases" }]} />
       <div className="page-head">
-        <div>
-          <h1>Databases</h1>
-          <p className="sub">
-            Per-site MariaDB, PostgreSQL 18 (18.7+), and SQLite databases on this server. Every
-            database runs with its own least-privilege role and local-only loopback or socket
-            access.
-          </p>
-        </div>
+        <SimpleHeader
+          title="Databases"
+          answer={
+            <DatabasesAnswer
+              loading={data.source.kind === "loading"}
+              count={entries.length}
+              exposure={exposure.value}
+            />
+          }
+        />
         <Link className="btn primary sm" to="/sites/new">
           Add website &amp; database
         </Link>
       </div>
-
-      <section className="grid g4" aria-label="Database summary">
-        <article className="panel metric">
-          <div className="m-head">Total databases</div>
-          <div className="m-val">{entries.length}</div>
-          <div className="m-detail">Managed across sites &amp; modern apps</div>
-        </article>
-        <article className="panel metric">
-          <div className="m-head">MariaDB 10.11</div>
-          <div className="m-val">{mariaCount}</div>
-          <div className="m-detail">WordPress &amp; opt-in app accounts</div>
-        </article>
-        <article className="panel metric">
-          <div className="m-head">PostgreSQL 18</div>
-          <div className="m-val">{pgCount}</div>
-          <div className="m-detail">SCRAM-SHA-256 · {sqliteCount} SQLite WAL</div>
-        </article>
-        <article className="panel metric">
-          <div className="m-head">Network exposure</div>
-          <div className="m-val" style={{ fontSize: 20 }}>
-            {exposure.value}
-          </div>
-          <div className="m-detail">{exposure.detail}</div>
-        </article>
-      </section>
 
       {entries.length === 0 ? (
         <EmptyState
@@ -350,68 +451,18 @@ export function DatabasesPage() {
           }
         />
       ) : (
-        <div className="stack">
-          <section className="panel flush" aria-label="Databases table">
-            <div className="panel-head" style={{ padding: "14px 16px 10px" }}>
-              <div className="row" style={{ gap: 8 }}>
-                <Glyph icon={Database} />
-                <h2>Registered databases</h2>
-              </div>
-              <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-                {(["all", "MariaDB", "PostgreSQL 18", "SQLite"] as const).map((f) => (
-                  <button
-                    key={f}
-                    type="button"
-                    className={engineFilter === f ? "btn primary sm" : "btn quiet sm"}
-                    onClick={() => setEngineFilter(f)}
-                  >
-                    {f === "all" ? "All" : f}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <TableScroll label="Databases table">
-              <table className="data">
-                <thead>
-                  <tr>
-                    <th>Website</th>
-                    <th>Engine</th>
-                    <th>Database</th>
-                    <th>User</th>
-                    <th>Access</th>
-                    <th>Manage</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visible.map((entry) => (
-                    <tr
-                      key={entry.id}
-                      className={selected?.id === entry.id ? "selected" : undefined}
-                    >
-                      <td className="mono">{entry.domain}</td>
-                      <td>
-                        <span className="pill">{entry.engine}</span>
-                      </td>
-                      <td className="mono">{entry.dbName}</td>
-                      <td className="mono">{entry.dbUser}</td>
-                      <td className="muted">{entry.socketOrPath}</td>
-                      <td>
-                        <button
-                          type="button"
-                          className="btn quiet sm"
-                          onClick={() =>
-                            setSelectedId((cur) => (cur === entry.id ? null : entry.id))
-                          }
-                        >
-                          {selected?.id === entry.id ? "Close" : "Manage"}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </TableScroll>
-          </section>
+        <div className="flex flex-col gap-4">
+          <DatabasesList
+            entries={entries}
+            selectedId={selected?.id ?? null}
+            onManage={(id) => setSelectedId((cur) => (cur === id ? null : id))}
+          />
+          <QuietDetails title="Technical details">
+            <p className="muted">
+              {mariaCount} MariaDB 10.11, {pgCount} PostgreSQL 18 (SCRAM-SHA-256), and {sqliteCount}{" "}
+              SQLite (WAL). Network exposure: {exposure.value} ({exposure.detail}).
+            </p>
+          </QuietDetails>
 
           {selected ? (
             <DatabaseActionDrawer selected={selected} onClose={() => setSelectedId(null)} />

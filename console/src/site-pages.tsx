@@ -1,4 +1,5 @@
 // W714 (pass 33, fix 7): Site list and per-site pages. Split from `pages.tsx`.
+import { AnswerLine, SimpleHeader, type Tone } from "@/components/console/simple";
 import { Link } from "@tanstack/react-router";
 import {
   BookOpen,
@@ -12,13 +13,31 @@ import {
   Clock,
   ClockAlert,
   KeyRound,
-  Search,
   TriangleAlert,
 } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { useData } from "./data";
 import { LiveSiteCoordinatorPanel } from "./live-coordinator";
 import { useDrawerSelection } from "./inspector";
+import {
+  type BulkAction,
+  BulkBar,
+  PageCheck,
+  RowCheck,
+  type Selection,
+  useSelection,
+} from "@/components/console/bulk";
+import {
+  FilterChips,
+  ListArea,
+  ListControls,
+  ListToolbar,
+  matches,
+  rowClass,
+  rowLinkClass,
+  usePaged,
+} from "@/components/console/list";
+import { buildProductBackupCaptureCmd, buildProductRestoreProbeCmd } from "./cli-commands";
 import { SiteInspector } from "./platform-subviews";
 import {
   type OperationRow,
@@ -37,116 +56,187 @@ import {
   observedText,
 } from "./page-parts";
 
-function matchesSiteFilter(site: Site, needle: string, stateFilter: string): boolean {
-  if (stateFilter !== "all" && site.servingKind !== stateFilter) return false;
-  if (!needle) return true;
-  return `${site.domain} ${site.id} ${site.runtime}`.toLowerCase().includes(needle);
+/**
+ * W789 / item 64: "Which websites do I have, and are they fine?" It counts the
+ * same websites as the "Needs a look" filter, and names the blocked ones.
+ */
+function SitesAnswer({ data }: { data: ReturnType<typeof useData> }) {
+  if (data.source.kind === "loading") {
+    return <AnswerLine tone="unknown">Checking this server…</AnswerLine>;
+  }
+  const all = data.sites;
+  if (all.length === 0) return <AnswerLine tone="unknown">No websites registered yet.</AnswerLine>;
+  const look = all.filter(siteNeedsLook).length;
+  const blocked = all.filter((site) => site.servingKind === "err").map((site) => site.domain);
+  const count = `${all.length} ${all.length === 1 ? "website" : "websites"}`;
+  if (look === 0) return <AnswerLine tone="ok">{count}, all serving.</AnswerLine>;
+  const needs = `${look} ${look === 1 ? "needs" : "need"} a look`;
+  if (blocked.length === 0)
+    return (
+      <AnswerLine tone="warn">
+        {count}. {needs}.
+      </AnswerLine>
+    );
+  return (
+    <AnswerLine tone="err">
+      {count}. {needs}; blocked: {blocked.join(", ")}.
+    </AnswerLine>
+  );
+}
+
+type SiteFilter = "all" | "attention" | "serving";
+type SiteSort = "attention" | "name";
+
+/** A website needs a look when it is not serving, or answers slowly or unobserved. */
+function siteNeedsLook(site: Site): boolean {
+  return site.servingKind !== "ok" || site.httpKind !== "ok";
+}
+
+const siteRank = (site: Site) => (site.servingKind === "err" ? 0 : siteNeedsLook(site) ? 1 : 2);
+const siteSorters: Record<SiteSort, (a: Site, b: Site) => number> = {
+  attention: (a, b) => siteRank(a) - siteRank(b) || a.domain.localeCompare(b.domain),
+  name: (a, b) => a.domain.localeCompare(b.domain),
+};
+
+/** Signed changes for several websites: one plan per website (W796, item 64). */
+const siteBulkActions: BulkAction[] = [
+  {
+    label: "Back up now",
+    question: (n) => `Back up ${n} ${n === 1 ? "website" : "websites"} now?`,
+    command: (siteId) => buildProductBackupCaptureCmd({ siteId, consistency: "marker" }),
+  },
+  {
+    label: "Test a restore",
+    question: (n) => `Test a restore of ${n} ${n === 1 ? "website" : "websites"}?`,
+    command: (siteId) => buildProductRestoreProbeCmd({ siteId }),
+  },
+];
+
+function siteFilterMatch(site: Site, filter: SiteFilter): boolean {
+  if (filter === "all") return true;
+  return filter === "attention" ? siteNeedsLook(site) : !siteNeedsLook(site);
 }
 
 export function SitesPage() {
   const data = useData();
-  const [query, setQuery] = useState("");
-  const [stateFilter, setStateFilter] = useState("all");
   const [selectedId, setSelectedId] = useDrawerSelection<string>();
-  const needle = query.trim().toLowerCase();
-  const visible = data.sites.filter((site) => matchesSiteFilter(site, needle, stateFilter));
-  const selected = visible.find((site) => site.id === selectedId) ?? null;
-
+  const selected = data.sites.find((site) => site.id === selectedId) ?? null;
   return (
     <Page live>
       <div className="page-head">
-        <div>
-          <h1>Sites</h1>
-          <p className="sub">
-            WordPress sites registered on{" "}
-            {data.source.kind === "live"
-              ? data.source.host.host_id
-              : data.source.kind === "fixture"
-                ? "lab-01"
-                : "this host"}
-            , with serving state, ownership and recovery evidence.
-          </p>
-        </div>
+        <SimpleHeader title="Websites" answer={<SitesAnswer data={data} />} />
         <div className="row" style={{ gap: 8 }}>
           <Link className="btn primary sm" to="/sites/new">
             Add website
           </Link>
           <Link className="btn quiet sm" to="/help/$slug" params={{ slug: "wordpress-sites" }}>
             <Glyph icon={BookOpen} />
-            Site guide
+            Website guide
           </Link>
         </div>
       </div>
-      <section className="panel flush" aria-label="Sites table">
-        <div className="toolbar">
-          <label className="input search-input">
-            <Glyph icon={Search} />
-            <input
-              aria-label="Filter sites by hostname"
-              placeholder="Filter by hostname"
-              autoComplete="off"
-              spellCheck={false}
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </label>
-          <label className="field">
-            State
-            <select
-              className="input"
-              aria-label="Filter sites by state"
-              value={stateFilter}
-              onChange={(event) => setStateFilter(event.target.value)}
-            >
-              <option value="all">All states</option>
-              <option value="ok">Serving</option>
-              <option value="err">Blocked</option>
-              <option value="muted">Not serving</option>
-            </select>
-          </label>
-          <span className="muted" style={{ marginLeft: "auto", fontSize: 13 }}>
-            {visible.length} of {data.sites.length} sites · <SourceNote />
-          </span>
-        </div>
-        <TableScroll label="Sites">
-          <table className="data">
-            <thead>
-              <tr>
-                <th>Site</th>
-                <th>Serving</th>
-                <th>Runtime</th>
-                <th>Ownership</th>
-                <th>Last operation</th>
-                <th>Recovery evidence</th>
-                <th>HTTP</th>
-                <th>Details</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map((site) => (
-                <SiteRow
-                  key={site.id}
-                  site={site}
-                  selected={selected?.id === site.id}
-                  onInspect={() => setSelectedId((prev) => (prev === site.id ? null : site.id))}
-                />
-              ))}
-            </tbody>
-          </table>
-        </TableScroll>
-        <div className="pager">
-          <span>
-            {visible.length ? `1–${visible.length} of ${visible.length}` : "No matching sites"}
-          </span>
-          <span>
-            Order: artifacts · integrity · decryption · app consistency · isolated restore · health
-            checks · independent copy
-          </span>
-        </div>
-      </section>
-
+      <SitesList
+        all={data.sites}
+        selectedId={selected?.id ?? null}
+        onInspect={(id) => setSelectedId((prev) => (prev === id ? null : id))}
+      />
       {selected ? <SiteInspector site={selected} onClose={() => setSelectedId(null)} /> : null}
     </Page>
+  );
+}
+
+function SitesList({
+  all,
+  selectedId,
+  onInspect,
+}: {
+  all: Site[];
+  selectedId: string | null;
+  onInspect: (id: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<SiteFilter>("all");
+  const [sort, setSort] = useState<SiteSort>("attention");
+  const selection = useSelection();
+  const attention = all.filter(siteNeedsLook).length;
+  const visible = all
+    .filter((site) => matches(query, site.domain, site.id, site.runtime))
+    .filter((site) => siteFilterMatch(site, filter))
+    .sort(siteSorters[sort]);
+  const paged = usePaged(visible, `${query}|${filter}|${sort}|${all.length}`);
+  const bulk = all.length > 1;
+  return (
+    <div className="flex flex-col gap-4">
+      <ListToolbar
+        filters={
+          <FilterChips
+            label="Show"
+            value={filter}
+            onChange={setFilter}
+            options={[
+              { value: "all", label: "All", count: all.length },
+              { value: "attention", label: "Needs a look", count: attention },
+              { value: "serving", label: "Serving", count: all.length - attention },
+            ]}
+          />
+        }
+      >
+        <ListControls
+          count={all.length}
+          searchLabel="Find a website"
+          query={query}
+          onQuery={setQuery}
+          sort={sort}
+          onSort={setSort}
+          sorts={[
+            { value: "attention", label: "Needs a look first" },
+            { value: "name", label: "Name A–Z" },
+          ]}
+        />
+      </ListToolbar>
+      <ListArea
+        label="Websites"
+        noun="websites"
+        total={all.length}
+        paged={paged}
+        onReset={() => {
+          setQuery("");
+          setFilter("all");
+        }}
+        top={
+          <PageCheck
+            enabled={bulk}
+            selection={selection}
+            wholeList={paged.pageCount === 1}
+            pageIds={paged.rows.map((site) => site.id)}
+            noun="websites"
+          />
+        }
+        bottom={
+          <BulkBar
+            selection={selection}
+            matchingIds={visible.map((site) => site.id)}
+            nameOf={(id) => all.find((site) => site.id === id)?.domain ?? id}
+            noun="websites"
+            one="website"
+            actions={siteBulkActions}
+          />
+        }
+      >
+        {paged.rows.map((site) => (
+          <SiteRow
+            key={site.id}
+            site={site}
+            selection={bulk ? selection : undefined}
+            selected={selectedId === site.id}
+            onInspect={() => onInspect(site.id)}
+          />
+        ))}
+      </ListArea>
+      <p className="text-xs text-muted-foreground">
+        <SourceNote />
+      </p>
+    </div>
   );
 }
 
@@ -166,64 +256,64 @@ function OperationLink({ site }: { site: Site }) {
   );
 }
 
+/**
+ * The row's second line: the runtime, then only what needs a look: an HTTP
+ * answer that is not normal, an ownership RustIron did not create, and a last
+ * operation that failed or waits (W379 states stay visible in the list).
+ */
+function siteRowFacts(site: Site): string {
+  const http =
+    site.httpKind === "muted"
+      ? "HTTP not observed"
+      : site.httpKind === "ok"
+        ? ""
+        : `HTTP ${site.http}`;
+  const owner = site.ownership === "Created" ? "" : site.ownership;
+  const op = /^(Failed|Needs)/.test(site.operationDetail)
+    ? `${site.operation}: ${site.operationDetail}`
+    : "";
+  return [site.runtime, http, owner, op].filter(Boolean).join(" · ");
+}
+
 function SiteRow({
   site,
+  selection,
   selected,
   onInspect,
 }: {
   site: Site;
+  selection?: Selection;
   selected: boolean;
   onInspect: () => void;
 }) {
+  const facts = siteRowFacts(site);
   return (
-    <tr className={selected ? "selected" : undefined}>
-      <td className="primary-cell">
-        <Link to="/sites/$siteId" params={{ siteId: site.id }}>
+    <li className={rowClass} data-selected={selected || undefined}>
+      {selection ? <RowCheck selection={selection} id={site.id} label={site.domain} /> : null}
+      <div className="min-w-0 flex-1">
+        <Link
+          className={rowLinkClass}
+          to="/sites/$siteId"
+          params={{ siteId: site.id }}
+          translate="no"
+        >
           {site.domain}
         </Link>
-        <small className="mono" translate="no">
-          {site.id}
-        </small>
-      </td>
-      <td>
+        <p className="truncate text-sm text-muted-foreground">{facts}</p>
+      </div>
+      <span className="flex justify-end sm:w-36">
         <span className={`state ${site.servingKind}`}>{site.serving}</span>
-      </td>
-      <td className={site.runtime === "Not identified" ? "muted" : undefined}>{site.runtime}</td>
-      <td>{site.ownership}</td>
-      <td>
-        <OperationLink site={site} />
-        {site.operationDetail ? (
-          <small className="cap" style={{ display: "block" }}>
-            {site.operationDetail}
-          </small>
-        ) : null}
-      </td>
-      <td>
-        <EvidenceStrip marks={site.marks} />
-      </td>
-      <td className={`tnum ${site.httpKind === "muted" ? "muted" : ""}`}>
-        <span
-          className={
-            site.httpKind === "warn" || site.httpKind === "stale"
-              ? `state ${site.httpKind}`
-              : undefined
-          }
-        >
-          {site.http}
-        </span>
-      </td>
-      <td>
-        <button
-          type="button"
-          className="btn quiet sm"
-          aria-pressed={selected}
-          aria-label={`Inspect ${site.domain}`}
-          onClick={onInspect}
-        >
-          {selected ? "Close" : "Inspect"}
-        </button>
-      </td>
-    </tr>
+      </span>
+      <button
+        type="button"
+        className="btn quiet sm relative z-10"
+        aria-pressed={selected}
+        aria-label={`Inspect ${site.domain}`}
+        onClick={onInspect}
+      >
+        {selected ? "Close" : "Inspect"}
+      </button>
+    </li>
   );
 }
 
@@ -234,7 +324,7 @@ function SiteTabs({ site, current }: { site: Site; current: string }) {
     ["Configuration", `${base}/configuration`],
     ["Maintenance", `${base}/maintenance`],
     ["Operations", `${base}/operations`],
-    ["Recovery", `${base}/recovery`],
+    ["Backups", `${base}/recovery`],
   ];
   return (
     <nav className="tabs" aria-label="Site sections">
@@ -280,6 +370,22 @@ function httpObservation(site: Site, source: ReturnType<typeof useData>["source"
   };
 }
 
+/** W789: "Is this website all right?" from its serving and HTTP observations. */
+function siteAnswer(site: Site): { tone: Tone; text: string } {
+  if (site.servingKind === "err") {
+    return {
+      tone: "err",
+      text: `This website is ${site.serving.toLowerCase()}. Open its activity to see why.`,
+    };
+  }
+  if (site.httpKind === "warn")
+    return { tone: "warn", text: `This website answers HTTP ${site.http}.` };
+  if (site.servingKind === "ok" && site.httpKind === "ok") {
+    return { tone: "ok", text: "This website is serving and answers normally." };
+  }
+  return { tone: "unknown", text: "Serving for this website is not observed yet." };
+}
+
 function SiteHead({ site }: { site: Site }) {
   const { source } = useData();
   const http = httpObservation(site, source);
@@ -287,6 +393,9 @@ function SiteHead({ site }: { site: Site }) {
     <div className="page-head">
       <div>
         <h1 translate="no">{site.domain}</h1>
+        <div style={{ marginTop: 6 }}>
+          <AnswerLine tone={siteAnswer(site).tone}>{siteAnswer(site).text}</AnswerLine>
+        </div>
         <div className="row" style={{ marginTop: 6 }}>
           {site.id === detailedSiteId && site.servingKind === "err" ? (
             <span className="pill err">
@@ -331,9 +440,9 @@ function SiteSection({
   if (!site) return <Missing name={siteId} />;
   const crumbs =
     tab === "Overview"
-      ? [{ href: "/sites", label: "Sites" }, { label: site.domain }]
+      ? [{ href: "/sites", label: "Websites" }, { label: site.domain }]
       : [
-          { href: "/sites", label: "Sites" },
+          { href: "/sites", label: "Websites" },
           { href: `/sites/${site.id}`, label: site.domain },
           { label: tab },
         ];
@@ -635,19 +744,19 @@ type Comparison = { label: string; kind: "ok" | "warn" | "unknown" };
 const comparisonIcon = { ok: CircleCheck, warn: TriangleAlert, unknown: CircleDashed } as const;
 
 function shopSettings(generation: 41 | 42): [string, ReactNode, ReactNode, Comparison][] {
-  const matches: Comparison = { label: "Matches", kind: "ok" };
+  const same: Comparison = { label: "Matches", kind: "ok" };
   return [
-    ["Hostname", <code key="m">shop.lab.test</code>, <code key="o">shop.lab.test</code>, matches],
-    ["Runtime profile", "wordpress-lsphp84 · rev 3", "lsphp84 · 8.4.13", matches],
+    ["Hostname", <code key="m">shop.lab.test</code>, <code key="o">shop.lab.test</code>, same],
+    ["Runtime profile", "wordpress-lsphp84 · rev 3", "lsphp84 · 8.4.13", same],
     [
       "Rewrite recipe",
       "wordpress-pretty-permalinks · v2",
       "wordpress-pretty-permalinks · v2",
-      matches,
+      same,
     ],
     ["Cache recipe", "none", "LSCache rule block present", { label: "Drift", kind: "warn" }],
     generation === 41
-      ? ["PHP worker limit", "6", "6", matches]
+      ? ["PHP worker limit", "6", "6", same]
       : ["PHP worker limit", "8", "6 or 8", { label: "Activation uncertain", kind: "unknown" }],
     [
       "Document root",
@@ -655,7 +764,7 @@ function shopSettings(generation: 41 | 42): [string, ReactNode, ReactNode, Compa
         <code>site_8KD2QW/public</code> (derived)
       </>,
       <code key="o">/srv/sites/site_8KD2QW/public</code>,
-      matches,
+      same,
     ],
     [
       "TLS certificate",
@@ -1325,7 +1434,7 @@ function ShopRecovery() {
 export function SiteRecovery({ siteId }: { siteId: string }) {
   const data = useData();
   return (
-    <SiteSection siteId={siteId} tab="Recovery">
+    <SiteSection siteId={siteId} tab="Backups">
       {(current) => {
         if (current.id === detailedSiteId) return <ShopRecovery />;
         if (data.source.kind === "live") {

@@ -1090,6 +1090,24 @@ impl FixtureJournal {
         observe::authority_usage(&self.connection, window_start)
     }
 
+    /// D-103 (W778): the sites the journal owns (provision `succeeded` or
+    /// `adopted`), sorted by site ID, as (site ID, hostname, adopted); at
+    /// most `limit` rows.
+    pub fn owned_sites(&self, limit: usize) -> Result<Vec<(String, String, bool)>, JournalError> {
+        let limit = i64::try_from(limit).map_err(storage::unavailable)?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT site_id, hostname, state='adopted' FROM provisions \
+                 WHERE state IN ('succeeded','adopted') ORDER BY site_id LIMIT ?1",
+            )
+            .map_err(storage::unavailable)?;
+        let rows = statement
+            .query_map([limit], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(storage::unavailable)?;
+        rows.collect::<Result<_, _>>().map_err(storage::unavailable)
+    }
+
     /// Monotonic last-admission timestamp recorded in `metadata.last_time`.
     pub fn last_time(&self) -> Result<i64, JournalError> {
         self.connection

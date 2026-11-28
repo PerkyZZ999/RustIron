@@ -139,7 +139,7 @@ fn header_properties(input: &[u8]) {
     );
 }
 
-/// All five read methods, including intentional omitted/null cursor equivalence.
+/// All six read methods, including intentional omitted/null cursor equivalence.
 pub fn read_request(input: &[u8]) -> bool {
     let decoded = decode_request(input);
     if input.len() > MAX_REQUEST_BYTES {
@@ -217,6 +217,14 @@ pub fn read_request(input: &[u8]) -> bool {
             assert_eq!(query.request_id, request.request_id);
             assert_eq!(&query.operation_id, operation_id);
             "evidence_export"
+        }
+        // D-104 (W779): the read request and the executor query share one shape.
+        ReadCommand::HostSummary => {
+            fields(params, &[]);
+            let query = rustiron_contracts::summary::decode_host_summary_query(input)
+                .expect("read/host summary query disagreement");
+            assert_eq!(query.request_id, request.request_id);
+            "host_summary"
         }
     };
     assert_eq!(

@@ -37,6 +37,7 @@ enum Method {
     SiteInspect,
     OperationStatus,
     EvidenceExport,
+    HostSummary,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -131,6 +132,10 @@ pub fn decode_request(bytes: &[u8]) -> Result<Request, ProtocolError> {
                 operation_id: params.operation_id,
             }
         }
+        Method::HostSummary => {
+            parse::<DoctorParams>(wire.params.get().as_bytes())?;
+            ReadCommand::HostSummary
+        }
     };
     Ok(Request {
         request_id: wire.request_id,
@@ -184,6 +189,7 @@ pub fn encode_request(request: &Request) -> Result<Vec<u8>, ProtocolError> {
                 operation_id: operation_id.clone(),
             },
         ),
+        ReadCommand::HostSummary => encode(request, "host_summary", DoctorParams {}),
     }
 }
 

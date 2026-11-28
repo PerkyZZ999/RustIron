@@ -15,7 +15,11 @@
     reason = "W672: production code returns errors; tests may unwrap (clippy.toml)"
 )]
 
+mod file_input;
 mod mcp;
+mod mcp_content;
+mod plan_create;
+mod plan_draft;
 mod plan_summary;
 
 use clap::Parser;
@@ -51,6 +55,9 @@ struct Args {
     /// Optional Unix timestamp override for deterministic grant expiry checks.
     #[arg(long)]
     now: Option<u64>,
+    /// The `rustiron-control` that `rustiron_diagnoses` runs (tests only).
+    #[arg(long, hide = true, default_value = mcp::DIAGNOSE_PROGRAM)]
+    diagnose_program: PathBuf,
 }
 
 fn main() -> ExitCode {
@@ -80,6 +87,7 @@ fn main() -> ExitCode {
         max_changes: args.max_changes,
         max_ols_reloads: args.max_ols_reloads,
         now_override: args.now,
+        diagnose_program: args.diagnose_program,
     };
     let stdin = io::stdin();
     let stdout = io::stdout();

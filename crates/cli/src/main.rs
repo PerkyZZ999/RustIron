@@ -72,6 +72,11 @@ enum Command {
         #[command(subcommand)]
         command: OperationCommand,
     },
+    /// Read the executor's recorded host summary (D-104).
+    Host {
+        #[command(subcommand)]
+        command: HostCommand,
+    },
     /// Plan a management-only uninstall. Site data stays.
     Uninstall {
         #[command(subcommand)]
@@ -220,7 +225,7 @@ enum PlanCommand {
     /// Build a closed plan for offline review. Stdout is the canonical plan.
     Create {
         #[command(subcommand)]
-        command: CreateCommand,
+        command: plan_create::CreateCommand,
     },
     /// Review all fields of a closed plan file offline.
     ReviewFile { path: PathBuf },
@@ -286,207 +291,18 @@ enum PlanCommand {
 }
 
 #[derive(Subcommand)]
-enum CreateCommand {
-    /// A site provision that creates an account and database and does not activate traffic.
-    SiteProvision {
-        #[command(flatten)]
-        header: plan_create::PlanHeader,
-        #[arg(long)]
-        site_id: String,
-        #[arg(long)]
-        hostname: String,
-        #[arg(long)]
-        recipe: String,
-        #[arg(long)]
-        recipe_digest: String,
-        #[arg(long)]
-        observed_at: u64,
-        #[arg(long)]
-        valid_from: u64,
-        #[arg(long)]
-        expires_at: u64,
-        #[arg(long)]
-        limitation: Vec<String>,
-        /// Signed hard block limit in KiB; with `--quota-inode-hard`, makes a
-        /// schema v2 plan. Without both, the executor applies its enrolled policy.
-        #[arg(long, requires = "quota_inode_hard")]
-        quota_block_hard_kib: Option<u64>,
-        /// Signed hard inode limit; requires `--quota-block-hard-kib`.
-        #[arg(long, requires = "quota_block_hard_kib")]
-        quota_inode_hard: Option<u64>,
-    },
-    /// Hand one site's vhost outside Rustiron. Nothing is deleted.
-    SiteEject {
-        #[command(flatten)]
-        header: plan_create::PlanHeader,
-        #[arg(long)]
-        site_id: String,
-        #[arg(long)]
-        hostname: Option<String>,
-        #[arg(long, requires = "hostname")]
-        alias_hostname: Option<String>,
-        #[arg(long)]
-        expected_generation: String,
-        #[arg(long)]
-        expected_digest: String,
-        #[arg(long)]
-        observed_at: u64,
-        #[arg(long)]
-        valid_from: u64,
-        #[arg(long)]
-        expires_at: u64,
-        #[arg(long)]
-        compensation_until: u64,
-        #[arg(long)]
-        limitation: Vec<String>,
-    },
-    /// Name the sites an OLS generation should serve. This does not reload the server.
-    ConfigActivate {
-        #[command(flatten)]
-        header: plan_create::PlanHeader,
-        #[arg(long)]
-        site_id: Vec<String>,
-        #[arg(long)]
-        expected_generation: String,
-        #[arg(long)]
-        expected_digest: String,
-        #[arg(long)]
-        observed_at: u64,
-        #[arg(long)]
-        valid_from: u64,
-        #[arg(long)]
-        expires_at: u64,
-        #[arg(long)]
-        compensation_until: u64,
-        #[arg(long)]
-        limitation: Vec<String>,
-    },
-    /// Name one site for a lab capture. This does not read or copy the site.
-    BackupCapture {
-        #[command(flatten)]
-        header: plan_create::PlanHeader,
-        #[arg(long)]
-        site_id: String,
-        #[arg(long)]
-        valid_from: u64,
-        #[arg(long)]
-        expires_at: u64,
-        #[arg(long)]
-        limitation: Vec<String>,
-    },
-    /// Name one snapshot for a throwaway probe. This does not restore the source site.
-    RestoreProbe {
-        #[command(flatten)]
-        header: plan_create::PlanHeader,
-        #[arg(long)]
-        site_id: String,
-        #[arg(long)]
-        snapshot_id: String,
-        #[arg(long)]
-        valid_from: u64,
-        #[arg(long)]
-        expires_at: u64,
-        #[arg(long)]
-        limitation: Vec<String>,
-    },
-    /// W372: re-adopt one existing site after an epoch rotation. Records
-    /// ownership only after the executor verifies the host; changes nothing.
-    SiteReadopt {
-        #[command(flatten)]
-        readopt: plan_create::Readopt,
-        #[arg(long)]
-        site_id: String,
-        #[arg(long)]
-        hostname: String,
-        /// The site's live hard block limit in KiB (from the export).
-        #[arg(long)]
-        quota_block_hard_kib: u64,
-        /// The site's live hard inode limit (from the export).
-        #[arg(long)]
-        quota_inode_hard: u64,
-    },
-    /// W372: adopt the live OLS generation after an epoch rotation. Records
-    /// it only when the executor renders the same bytes; changes nothing.
-    SiteReadoptGeneration {
-        #[command(flatten)]
-        readopt: plan_create::Readopt,
-        /// Every site the live generation serves.
-        #[arg(long)]
-        site_id: Vec<String>,
-        #[arg(long)]
-        expected_generation: String,
-        #[arg(long)]
-        expected_digest: String,
-    },
-    /// Prepare a product capture plan for offline review.
-    ProductBackupCapture {
-        #[command(flatten)]
-        backup: plan_create::ProductBackup,
-        /// Fixed capture recipe ID.
-        #[arg(long)]
-        recipe_id: String,
-    },
-    /// D-035: prepare a standing capture plan (schema 3) for offline review.
-    ProductStandingCapture {
-        #[command(flatten)]
-        standing: plan_create::StandingCapture,
-    },
-    /// Prepare a product restore probe plan for offline review.
-    ProductRestoreProbe {
-        #[command(flatten)]
-        backup: plan_create::ProductBackup,
-        /// Full snapshot ID in the destination repository.
-        #[arg(long)]
-        snapshot_id: String,
-        /// Fixed restore sandbox profile ID.
-        #[arg(long)]
-        profile_id: String,
-    },
-    /// Prepare a zone import from a canonical zone file.
-    DnsZoneImport {
-        #[command(flatten)]
-        dns: plan_create::DnsPlan,
-        /// Canonical zone text whose exact bytes the plan names.
-        #[arg(long)]
-        zone_file: PathBuf,
-    },
-    /// Prepare a record change from reviewed operations and expected set digests.
-    DnsChange {
-        #[command(flatten)]
-        dns: plan_create::DnsPlan,
-        /// A JSON array of DNS operations in the order to apply them.
-        #[arg(long)]
-        operations_file: PathBuf,
-    },
-    /// D-099: prepare a Node.js or Bun app provision plan for offline review.
-    AppProvision {
-        #[command(flatten)]
-        app: Box<plan_create::AppProvisionArgs>,
-    },
-    /// D-099: prepare a signed prebuilt app release deployment plan.
-    AppDeploy {
-        #[command(flatten)]
-        app: Box<plan_create::AppDeployArgs>,
-    },
-    /// D-099: prepare a signed start, stop, or restart plan for an app unit.
-    AppLifecycle {
-        #[command(flatten)]
-        app: plan_create::AppLifecycleArgs,
-    },
-    /// D-100: prepare a signed per-site MariaDB credential rotation plan (zero secrets in plan).
-    SiteCredentialRotate {
-        #[command(flatten)]
-        rotate: plan_create::SiteCredentialRotateArgs,
-    },
-}
-
-#[derive(Subcommand)]
 enum EvidenceCommand {
     /// Read the receipt recorded for one operation.
     Export {
         #[arg(value_parser = parse_id)]
         receipt_id: Id,
     },
+}
+
+#[derive(Subcommand)]
+enum HostCommand {
+    /// Site states, certificates, and the newest backup and restore test per site.
+    Summary,
 }
 
 #[derive(Subcommand)]
@@ -555,6 +371,9 @@ fn main() -> ExitCode {
         Command::Operation {
             command: OperationCommand::Status { operation_id },
         } => ReadCommand::OperationStatus { operation_id },
+        Command::Host {
+            command: HostCommand::Summary,
+        } => ReadCommand::HostSummary,
         Command::Evidence {
             command: EvidenceCommand::Export { receipt_id },
         } => ReadCommand::EvidenceExport {
@@ -638,166 +457,7 @@ fn main() -> ExitCode {
         }
         Command::Plan { command } => {
             return match *command {
-                PlanCommand::Create { command } => match command {
-                    CreateCommand::SiteProvision {
-                        header,
-                        site_id,
-                        hostname,
-                        recipe,
-                        recipe_digest,
-                        observed_at,
-                        valid_from,
-                        expires_at,
-                        limitation,
-                        quota_block_hard_kib,
-                        quota_inode_hard,
-                    } => plan_create::site_provision(plan_create::SiteProvision {
-                        header,
-                        site_id,
-                        hostname,
-                        recipe,
-                        recipe_digest,
-                        observed_at,
-                        valid_from,
-                        expires_at,
-                        limitations: limitation,
-                        quota: quota_block_hard_kib.zip(quota_inode_hard),
-                    }),
-                    CreateCommand::SiteEject {
-                        header,
-                        site_id,
-                        hostname,
-                        alias_hostname,
-                        expected_generation,
-                        expected_digest,
-                        observed_at,
-                        valid_from,
-                        expires_at,
-                        compensation_until,
-                        limitation,
-                    } => plan_create::site_eject(plan_create::SiteEject {
-                        header,
-                        site_id,
-                        hostname,
-                        alias_hostname,
-                        expected_generation,
-                        expected_digest,
-                        observed_at,
-                        valid_from,
-                        expires_at,
-                        compensation_until,
-                        limitations: limitation,
-                    }),
-                    CreateCommand::ConfigActivate {
-                        header,
-                        site_id,
-                        expected_generation,
-                        expected_digest,
-                        observed_at,
-                        valid_from,
-                        expires_at,
-                        compensation_until,
-                        limitation,
-                    } => plan_create::config_activate(plan_create::ConfigActivate {
-                        header,
-                        site_ids: site_id,
-                        expected_generation,
-                        expected_digest,
-                        observed_at,
-                        valid_from,
-                        expires_at,
-                        compensation_until,
-                        limitations: limitation,
-                    }),
-                    CreateCommand::BackupCapture {
-                        header,
-                        site_id,
-                        valid_from,
-                        expires_at,
-                        limitation,
-                    } => plan_create::backup_capture(plan_create::BackupCapture {
-                        header,
-                        site_id,
-                        valid_from,
-                        expires_at,
-                        limitations: limitation,
-                    }),
-                    CreateCommand::RestoreProbe {
-                        header,
-                        site_id,
-                        snapshot_id,
-                        valid_from,
-                        expires_at,
-                        limitation,
-                    } => plan_create::restore_probe(plan_create::RestoreProbe {
-                        header,
-                        site_id,
-                        snapshot_id,
-                        valid_from,
-                        expires_at,
-                        limitations: limitation,
-                    }),
-                    CreateCommand::SiteReadopt {
-                        readopt,
-                        site_id,
-                        hostname,
-                        quota_block_hard_kib,
-                        quota_inode_hard,
-                    } => plan_create::site_readopt(
-                        readopt,
-                        plan_create::ReadoptTarget::Site {
-                            site_id,
-                            hostname,
-                            quota: (quota_block_hard_kib, quota_inode_hard),
-                        },
-                    ),
-                    CreateCommand::SiteReadoptGeneration {
-                        readopt,
-                        site_id,
-                        expected_generation,
-                        expected_digest,
-                    } => plan_create::site_readopt(
-                        readopt,
-                        plan_create::ReadoptTarget::Generation {
-                            site_ids: site_id,
-                            expected_generation,
-                            expected_digest,
-                        },
-                    ),
-                    CreateCommand::ProductBackupCapture { backup, recipe_id } => {
-                        plan_create::product_backup(
-                            backup,
-                            plan_create::ProductTarget::Capture { recipe_id },
-                        )
-                    }
-                    CreateCommand::ProductStandingCapture { standing } => {
-                        plan_create::standing_capture(standing)
-                    }
-                    CreateCommand::ProductRestoreProbe {
-                        backup,
-                        snapshot_id,
-                        profile_id,
-                    } => plan_create::product_backup(
-                        backup,
-                        plan_create::ProductTarget::Probe {
-                            snapshot_id,
-                            profile_id,
-                        },
-                    ),
-                    CreateCommand::DnsZoneImport { dns, zone_file } => {
-                        plan_create::dns_zone_import(dns, &zone_file)
-                    }
-                    CreateCommand::DnsChange {
-                        dns,
-                        operations_file,
-                    } => plan_create::dns_change(dns, &operations_file),
-                    CreateCommand::AppProvision { app } => plan_create::app_provision(*app),
-                    CreateCommand::AppDeploy { app } => plan_create::app_deploy(*app),
-                    CreateCommand::AppLifecycle { app } => plan_create::app_lifecycle(app),
-                    CreateCommand::SiteCredentialRotate { rotate } => {
-                        plan_create::site_credential_rotate(rotate)
-                    }
-                },
+                PlanCommand::Create { command } => plan_create::run(command),
                 PlanCommand::ReviewFile { path } => review_file::run(&path, args.output),
                 PlanCommand::DestinationDigest { path } => {
                     destination_digest::run(&path, args.output)
@@ -912,6 +572,7 @@ fn exchange(path: &std::path::Path, request: &Request) -> Result<Response, Error
                 ReadCommand::SiteInspect { .. },
                 Ok(ReadData::SiteInspect(_))
             )
+            | (ReadCommand::HostSummary, Ok(ReadData::HostSummary(_)))
             | (_, Err(_))
     ) || matches!((&request.command, &response.result),
         (ReadCommand::OperationStatus { operation_id }, Ok(ReadData::OperationStatus(status)))

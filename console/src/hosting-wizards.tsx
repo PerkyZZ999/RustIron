@@ -1061,7 +1061,7 @@ export function CreateWebsitePage() {
       <Crumbs
         items={[
           { href: "/", label: "Overview" },
-          { href: "/sites", label: "Sites" },
+          { href: "/sites", label: "Websites" },
           { label: "Add website" },
         ]}
       />

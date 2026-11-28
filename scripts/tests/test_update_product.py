@@ -346,7 +346,7 @@ class UpdateProductTests(unittest.TestCase):
                   "groups": ["rustiron-coordinator", "rustiron-requesters"]}
         written = json.loads(updater.new_record(record, {}, "var/lib/rustiron/updates/x"))
         self.assertEqual(written["users"], ["rustiron-coordinator", "rustiron-acme", "rustiron-caddy"])
-        self.assertEqual(written["groups"], ["rustiron-coordinator", "rustiron-requesters", "rustiron-acme", "rustiron-caddy"])
+        self.assertEqual(written["groups"], ["rustiron-coordinator", "rustiron-requesters", "rustiron-agents", "rustiron-acme", "rustiron-caddy"])
 
     def test_new_record_changes_only_digests_and_adds_the_history(self):
         content = updater.new_record(self.record, self.new, "var/lib/rustiron/updates/X")

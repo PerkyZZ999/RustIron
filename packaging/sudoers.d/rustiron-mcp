@@ -1,0 +1,6 @@
+# RustIron (W777): members of rustiron-agents may start the read-only MCP
+# server as rustiron-coordinator with exactly these arguments, and nothing
+# else. The group has no members until the operator adds an SSH account:
+#   usermod -aG rustiron-agents ACCOUNT
+# The exact argument list keeps --write-tier out of reach.
+%rustiron-agents ALL=(rustiron-coordinator) NOPASSWD: /usr/libexec/rustiron/rustiron-mcp --socket /run/rustiron-coordinator/control.sock

@@ -12,6 +12,8 @@ import {
   ViewTransition,
 } from "react";
 
+import { createPortal } from "react-dom";
+
 import { Glyph } from "./ui";
 
 /**
@@ -53,7 +55,9 @@ export function InspectorPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  return (
+  // The drawer goes to <body>: inside the page it would share the page's
+  // view-transition layer and sit under the sticky top bar (item 64 fix).
+  return createPortal(
     <>
       <div className="insp-backdrop" aria-hidden="true" onClick={onClose} />
       <ViewTransition enter="none" exit="drawer-out" default="none">
@@ -75,6 +79,7 @@ export function InspectorPanel({
           <div className="insp-body">{children}</div>
         </aside>
       </ViewTransition>
-    </>
+    </>,
+    document.body,
   );
 }

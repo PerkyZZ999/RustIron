@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CircleCheck, RotateCcw } from "lucide-react";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createMemoryHistory, createRouter, RouterProvider } from "@tanstack/react-router";
 
 import {
@@ -410,11 +410,12 @@ test("with a live source the sites screen shows the host and labels sample scree
     expect(await screen.findByRole("heading", { level: 1, name: "Host overview" })).toBeTruthy();
     expect(screen.queryByText(/Sample screen/)).toBeNull();
     expect(screen.queryByText(/Operation needs attention/)).toBeNull();
-    expect(screen.getAllByText("25")).toHaveLength(3);
+    expect(screen.getAllByRole("link", { name: /Normal\s*25%/ })).toHaveLength(3);
     expect(screen.getByText(/5-min load 1\.00 · 4 vCPU/)).toBeTruthy();
     expect(screen.getByText(/2\.0 GiB of 8\.0 GiB in use/)).toBeTruthy();
     expect(screen.getByText(/10\.0 GiB of 40\.0 GiB in use/)).toBeTruthy();
-    expect(screen.getByText(/OpenLiteSpeed web server/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Server details/ }));
+    expect(await screen.findByText(/OpenLiteSpeed web server/)).toBeTruthy();
     expect(screen.getAllByRole("link", { name: "Backup capture" }).length).toBeGreaterThan(0);
 
     await act(() =>

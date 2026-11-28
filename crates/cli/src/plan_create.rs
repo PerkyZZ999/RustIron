@@ -3,13 +3,14 @@
 //! The result is canonical bytes for review and signing elsewhere. These
 //! commands do not observe the host, sign, or submit.
 
+use clap::Subcommand;
 use rustiron_contracts::{
     ErrorCode, MAX_REQUEST_BYTES,
     approval::{MAX_ZONE_BYTES, PreparedPlan, SetOperation, ZoneName, parse_zone},
 };
 use std::{
     io::{self, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::ExitCode,
 };
 
@@ -748,10 +749,9 @@ pub(crate) fn app_provision(request: AppProvisionArgs) -> ExitCode {
     ];
     for port in ports.into_iter().flatten().filter(|port| *port != 0) {
         if let Some(kind) = rustiron_contracts::approval::app_port_selinux_conflict(port) {
-            let _ = writeln!(
-                io::stderr(),
+            diagnostic(format!(
                 "{{\"scope\":\"plan_create\",\"error\":\"APP_PORT_NOT_UNRESERVED\",\"port\":{port},\"selinux_type\":\"{kind}\",\"authority\":\"none\"}}"
-            );
+            ));
             return ExitCode::from(ErrorCode::InvalidRequest.exit_code());
         }
     }
@@ -1177,11 +1177,60 @@ pub(crate) fn site_credential_rotate(request: SiteCredentialRotateArgs) -> ExitC
     emit_canonical(&draft)
 }
 
+/// What one captured draft produced: the canonical plan, or one error line.
+#[derive(Default)]
+#[allow(
+    dead_code,
+    reason = "read by rustiron-mcp; this module is in both binaries"
+)]
+pub(crate) struct Captured {
+    pub plan: Option<Vec<u8>>,
+    pub diagnostic: Option<String>,
+}
+
+thread_local! {
+    // shortcut: a per-thread capture slot lets rustiron-mcp reuse every verb
+    // builder without threading a writer through each; one draft at a time.
+    static CAPTURE: std::cell::RefCell<Option<Captured>> = const { std::cell::RefCell::new(None) };
+}
+
+/// W780: runs one `plan create` subcommand and keeps its output instead of
+/// writing stdout (which rustiron-mcp uses for JSON-RPC) or stderr.
+#[allow(
+    dead_code,
+    reason = "called by rustiron-mcp; this module is in both binaries"
+)]
+pub(crate) fn capture(command: CreateCommand) -> Captured {
+    CAPTURE.with(|slot| *slot.borrow_mut() = Some(Captured::default()));
+    run(command);
+    CAPTURE
+        .with(|slot| slot.borrow_mut().take())
+        .unwrap_or_default()
+}
+
+fn diagnostic(line: String) {
+    let captured = CAPTURE.with(|slot| {
+        slot.borrow_mut()
+            .as_mut()
+            .map(|captured| captured.diagnostic = Some(line.clone()))
+            .is_some()
+    });
+    if !captured {
+        let _ = writeln!(io::stderr(), "{line}");
+    }
+}
+
 fn emit_canonical(draft: &serde_json::Value) -> ExitCode {
     let Ok(prepared) = PreparedPlan::decode(draft.to_string().as_bytes()) else {
         return fail(ErrorCode::InvalidRequest.exit_code(), "INVALID_PLAN");
     };
-    if io::stdout().lock().write_all(prepared.as_bytes()).is_ok() {
+    let captured = CAPTURE.with(|slot| {
+        slot.borrow_mut()
+            .as_mut()
+            .map(|captured| captured.plan = Some(prepared.as_bytes().to_vec()))
+            .is_some()
+    });
+    if captured || io::stdout().lock().write_all(prepared.as_bytes()).is_ok() {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(7)
@@ -1189,9 +1238,360 @@ fn emit_canonical(draft: &serde_json::Value) -> ExitCode {
 }
 
 fn fail(status: u8, name: &str) -> ExitCode {
-    let _ = writeln!(
-        io::stderr(),
+    diagnostic(format!(
         "{{\"scope\":\"plan_create\",\"error\":\"{name}\",\"authority\":\"none\"}}"
-    );
+    ));
     ExitCode::from(status)
+}
+
+/// The `plan create` subcommands, shared by `rustiron` and `rustiron-mcp` (W780).
+#[derive(Subcommand)]
+pub(crate) enum CreateCommand {
+    /// A site provision that creates an account and database and does not activate traffic.
+    SiteProvision {
+        #[command(flatten)]
+        header: PlanHeader,
+        #[arg(long)]
+        site_id: String,
+        #[arg(long)]
+        hostname: String,
+        #[arg(long)]
+        recipe: String,
+        #[arg(long)]
+        recipe_digest: String,
+        #[arg(long)]
+        observed_at: u64,
+        #[arg(long)]
+        valid_from: u64,
+        #[arg(long)]
+        expires_at: u64,
+        #[arg(long)]
+        limitation: Vec<String>,
+        /// Signed hard block limit in KiB; with `--quota-inode-hard`, makes a
+        /// schema v2 plan. Without both, the executor applies its enrolled policy.
+        #[arg(long, requires = "quota_inode_hard")]
+        quota_block_hard_kib: Option<u64>,
+        /// Signed hard inode limit; requires `--quota-block-hard-kib`.
+        #[arg(long, requires = "quota_block_hard_kib")]
+        quota_inode_hard: Option<u64>,
+    },
+    /// Hand one site's vhost outside Rustiron. Nothing is deleted.
+    SiteEject {
+        #[command(flatten)]
+        header: PlanHeader,
+        #[arg(long)]
+        site_id: String,
+        #[arg(long)]
+        hostname: Option<String>,
+        #[arg(long, requires = "hostname")]
+        alias_hostname: Option<String>,
+        #[arg(long)]
+        expected_generation: String,
+        #[arg(long)]
+        expected_digest: String,
+        #[arg(long)]
+        observed_at: u64,
+        #[arg(long)]
+        valid_from: u64,
+        #[arg(long)]
+        expires_at: u64,
+        #[arg(long)]
+        compensation_until: u64,
+        #[arg(long)]
+        limitation: Vec<String>,
+    },
+    /// Name the sites an OLS generation should serve. This does not reload the server.
+    ConfigActivate {
+        #[command(flatten)]
+        header: PlanHeader,
+        #[arg(long)]
+        site_id: Vec<String>,
+        #[arg(long)]
+        expected_generation: String,
+        #[arg(long)]
+        expected_digest: String,
+        #[arg(long)]
+        observed_at: u64,
+        #[arg(long)]
+        valid_from: u64,
+        #[arg(long)]
+        expires_at: u64,
+        #[arg(long)]
+        compensation_until: u64,
+        #[arg(long)]
+        limitation: Vec<String>,
+    },
+    /// Name one site for a lab capture. This does not read or copy the site.
+    BackupCapture {
+        #[command(flatten)]
+        header: PlanHeader,
+        #[arg(long)]
+        site_id: String,
+        #[arg(long)]
+        valid_from: u64,
+        #[arg(long)]
+        expires_at: u64,
+        #[arg(long)]
+        limitation: Vec<String>,
+    },
+    /// Name one snapshot for a throwaway probe. This does not restore the source site.
+    RestoreProbe {
+        #[command(flatten)]
+        header: PlanHeader,
+        #[arg(long)]
+        site_id: String,
+        #[arg(long)]
+        snapshot_id: String,
+        #[arg(long)]
+        valid_from: u64,
+        #[arg(long)]
+        expires_at: u64,
+        #[arg(long)]
+        limitation: Vec<String>,
+    },
+    /// W372: re-adopt one existing site after an epoch rotation. Records
+    /// ownership only after the executor verifies the host; changes nothing.
+    SiteReadopt {
+        #[command(flatten)]
+        readopt: Readopt,
+        #[arg(long)]
+        site_id: String,
+        #[arg(long)]
+        hostname: String,
+        /// The site's live hard block limit in KiB (from the export).
+        #[arg(long)]
+        quota_block_hard_kib: u64,
+        /// The site's live hard inode limit (from the export).
+        #[arg(long)]
+        quota_inode_hard: u64,
+    },
+    /// W372: adopt the live OLS generation after an epoch rotation. Records
+    /// it only when the executor renders the same bytes; changes nothing.
+    SiteReadoptGeneration {
+        #[command(flatten)]
+        readopt: Readopt,
+        /// Every site the live generation serves.
+        #[arg(long)]
+        site_id: Vec<String>,
+        #[arg(long)]
+        expected_generation: String,
+        #[arg(long)]
+        expected_digest: String,
+    },
+    /// Prepare a product capture plan for offline review.
+    ProductBackupCapture {
+        #[command(flatten)]
+        backup: ProductBackup,
+        /// Fixed capture recipe ID.
+        #[arg(long)]
+        recipe_id: String,
+    },
+    /// D-035: prepare a standing capture plan (schema 3) for offline review.
+    ProductStandingCapture {
+        #[command(flatten)]
+        standing: StandingCapture,
+    },
+    /// Prepare a product restore probe plan for offline review.
+    ProductRestoreProbe {
+        #[command(flatten)]
+        backup: ProductBackup,
+        /// Full snapshot ID in the destination repository.
+        #[arg(long)]
+        snapshot_id: String,
+        /// Fixed restore sandbox profile ID.
+        #[arg(long)]
+        profile_id: String,
+    },
+    /// Prepare a zone import from a canonical zone file.
+    DnsZoneImport {
+        #[command(flatten)]
+        dns: DnsPlan,
+        /// Canonical zone text whose exact bytes the plan names.
+        #[arg(long)]
+        zone_file: PathBuf,
+    },
+    /// Prepare a record change from reviewed operations and expected set digests.
+    DnsChange {
+        #[command(flatten)]
+        dns: DnsPlan,
+        /// A JSON array of DNS operations in the order to apply them.
+        #[arg(long)]
+        operations_file: PathBuf,
+    },
+    /// D-099: prepare a Node.js or Bun app provision plan for offline review.
+    AppProvision {
+        #[command(flatten)]
+        app: Box<AppProvisionArgs>,
+    },
+    /// D-099: prepare a signed prebuilt app release deployment plan.
+    AppDeploy {
+        #[command(flatten)]
+        app: Box<AppDeployArgs>,
+    },
+    /// D-099: prepare a signed start, stop, or restart plan for an app unit.
+    AppLifecycle {
+        #[command(flatten)]
+        app: AppLifecycleArgs,
+    },
+    /// D-100: prepare a signed per-site MariaDB credential rotation plan (zero secrets in plan).
+    SiteCredentialRotate {
+        #[command(flatten)]
+        rotate: SiteCredentialRotateArgs,
+    },
+}
+
+/// Runs one `plan create` subcommand: the canonical plan on stdout, or one
+/// JSON error line on stderr.
+pub(crate) fn run(command: CreateCommand) -> ExitCode {
+    match command {
+        CreateCommand::SiteProvision {
+            header,
+            site_id,
+            hostname,
+            recipe,
+            recipe_digest,
+            observed_at,
+            valid_from,
+            expires_at,
+            limitation,
+            quota_block_hard_kib,
+            quota_inode_hard,
+        } => site_provision(SiteProvision {
+            header,
+            site_id,
+            hostname,
+            recipe,
+            recipe_digest,
+            observed_at,
+            valid_from,
+            expires_at,
+            limitations: limitation,
+            quota: quota_block_hard_kib.zip(quota_inode_hard),
+        }),
+        CreateCommand::SiteEject {
+            header,
+            site_id,
+            hostname,
+            alias_hostname,
+            expected_generation,
+            expected_digest,
+            observed_at,
+            valid_from,
+            expires_at,
+            compensation_until,
+            limitation,
+        } => site_eject(SiteEject {
+            header,
+            site_id,
+            hostname,
+            alias_hostname,
+            expected_generation,
+            expected_digest,
+            observed_at,
+            valid_from,
+            expires_at,
+            compensation_until,
+            limitations: limitation,
+        }),
+        CreateCommand::ConfigActivate {
+            header,
+            site_id,
+            expected_generation,
+            expected_digest,
+            observed_at,
+            valid_from,
+            expires_at,
+            compensation_until,
+            limitation,
+        } => config_activate(ConfigActivate {
+            header,
+            site_ids: site_id,
+            expected_generation,
+            expected_digest,
+            observed_at,
+            valid_from,
+            expires_at,
+            compensation_until,
+            limitations: limitation,
+        }),
+        CreateCommand::BackupCapture {
+            header,
+            site_id,
+            valid_from,
+            expires_at,
+            limitation,
+        } => backup_capture(BackupCapture {
+            header,
+            site_id,
+            valid_from,
+            expires_at,
+            limitations: limitation,
+        }),
+        CreateCommand::RestoreProbe {
+            header,
+            site_id,
+            snapshot_id,
+            valid_from,
+            expires_at,
+            limitation,
+        } => restore_probe(RestoreProbe {
+            header,
+            site_id,
+            snapshot_id,
+            valid_from,
+            expires_at,
+            limitations: limitation,
+        }),
+        CreateCommand::SiteReadopt {
+            readopt,
+            site_id,
+            hostname,
+            quota_block_hard_kib,
+            quota_inode_hard,
+        } => site_readopt(
+            readopt,
+            ReadoptTarget::Site {
+                site_id,
+                hostname,
+                quota: (quota_block_hard_kib, quota_inode_hard),
+            },
+        ),
+        CreateCommand::SiteReadoptGeneration {
+            readopt,
+            site_id,
+            expected_generation,
+            expected_digest,
+        } => site_readopt(
+            readopt,
+            ReadoptTarget::Generation {
+                site_ids: site_id,
+                expected_generation,
+                expected_digest,
+            },
+        ),
+        CreateCommand::ProductBackupCapture { backup, recipe_id } => {
+            product_backup(backup, ProductTarget::Capture { recipe_id })
+        }
+        CreateCommand::ProductStandingCapture { standing } => standing_capture(standing),
+        CreateCommand::ProductRestoreProbe {
+            backup,
+            snapshot_id,
+            profile_id,
+        } => product_backup(
+            backup,
+            ProductTarget::Probe {
+                snapshot_id,
+                profile_id,
+            },
+        ),
+        CreateCommand::DnsZoneImport { dns, zone_file } => dns_zone_import(dns, &zone_file),
+        CreateCommand::DnsChange {
+            dns,
+            operations_file,
+        } => dns_change(dns, &operations_file),
+        CreateCommand::AppProvision { app } => app_provision(*app),
+        CreateCommand::AppDeploy { app } => app_deploy(*app),
+        CreateCommand::AppLifecycle { app } => app_lifecycle(app),
+        CreateCommand::SiteCredentialRotate { rotate } => site_credential_rotate(rotate),
+    }
 }

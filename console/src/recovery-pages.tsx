@@ -1,4 +1,24 @@
 // W714 (pass 33, fix 7): Recovery, artifact, and receipt pages. Split from `pages.tsx`.
+import { AnswerLine, QuietDetails, SimpleHeader } from "@/components/console/simple";
+import {
+  type BulkAction,
+  BulkBar,
+  PageCheck,
+  RowCheck,
+  type Selection,
+  useSelection,
+} from "@/components/console/bulk";
+import {
+  FilterChips,
+  ListArea,
+  ListControls,
+  ListToolbar,
+  matches,
+  rowClass,
+  rowLinkClass,
+  usePaged,
+} from "@/components/console/list";
+import { buildProductBackupCaptureCmd, buildProductRestoreProbeCmd } from "./cli-commands";
 import { Button } from "@/components/ui/button";
 import { Link } from "@tanstack/react-router";
 import {
@@ -10,7 +30,6 @@ import {
   CircleMinus,
   CircleX,
   LoaderCircle,
-  Search,
   TriangleAlert,
 } from "lucide-react";
 import { Fragment, type ReactNode, useState } from "react";
@@ -18,11 +37,9 @@ import { BackupRestoreActionsPanel } from "./backup-migration-wizards";
 import { isRealHost, useData } from "./data";
 import { RecoveryTabs } from "./platform-subviews";
 import { liveReceipt, liveSnapshot, type LiveReceipt, type LiveSnapshot } from "./live";
-import { type Mark, sites } from "./fixture";
+import { type Mark, type RecoveryRow, type Site, sites } from "./fixture";
 import { CopyId, Crumbs, EvidenceStrip, Glyph, Page, TableScroll } from "./ui";
 import { EvidenceKey, Missing, RecoveryStateLabel } from "./page-parts";
-
-const recoveryFilters = ["All sites", "Any field not passing"] as const;
 
 function ReceiptCell({ receipt, live }: { receipt: string | null; live: boolean }) {
   if (receipt && (live || receipt === "rcpt_2YB7")) {
@@ -35,65 +52,244 @@ function ReceiptCell({ receipt, live }: { receipt: string | null; live: boolean 
   return <span className="mono muted">{receipt ?? "—"}</span>;
 }
 
-export function RecoveryPage() {
-  const [query, setQuery] = useState("");
-  const [show, setShow] = useState<(typeof recoveryFilters)[number]>("All sites");
-  const needle = query.trim().toLowerCase();
+/** W790 (v0.3 item 60): "Am I protected?" counted from each site's evidence fields. */
+function RecoveryAnswer({ data }: { data: ReturnType<typeof useData> }) {
+  if (data.source.kind === "loading") {
+    return <AnswerLine tone="unknown">Checking this server…</AnswerLine>;
+  }
+  const recorded = data.recovery.flatMap((row) => data.sites.filter((s) => s.id === row.siteId));
+  if (recorded.length === 0)
+    return <AnswerLine tone="unknown">No backups recorded yet.</AnswerLine>;
+  const proven = recorded.filter((s) => s.marks.every((m) => m === "pass")).length;
+  const failing = recorded.filter((s) => s.marks.includes("fail")).length;
+  const text =
+    `${proven} of ${recorded.length} ${recorded.length === 1 ? "website passes" : "websites pass"} every recovery check` +
+    (failing > 0 ? `; ${failing} ${failing === 1 ? "has" : "have"} a failed check.` : ".");
+  return (
+    <AnswerLine tone={failing > 0 ? "err" : proven === recorded.length ? "ok" : "warn"}>
+      {text}
+    </AnswerLine>
+  );
+}
+
+type RecoveryFilter = "all" | "attention" | "proven";
+type RecoveryEntry = { row: RecoveryRow; site: Site };
+
+/** How many of the seven recovery checks are not passing. */
+const weakness = (site: Site) => site.marks.filter((mark) => mark !== "pass").length;
+
+/** Signed backup changes for several websites: one plan per website (item 64). */
+const recoveryBulkActions: BulkAction[] = [
+  {
+    label: "Back up now",
+    question: (n) => `Back up ${n} ${n === 1 ? "website" : "websites"} now?`,
+    command: (siteId) => buildProductBackupCaptureCmd({ siteId, consistency: "marker" }),
+  },
+  {
+    label: "Test a restore",
+    question: (n) => `Test a restore of ${n} ${n === 1 ? "website" : "websites"}?`,
+    command: (siteId) => buildProductRestoreProbeCmd({ siteId }),
+  },
+];
+
+function recoveryFilterMatch(site: Site, filter: RecoveryFilter): boolean {
+  if (filter === "all") return true;
+  return filter === "attention" ? weakness(site) > 0 : weakness(site) === 0;
+}
+
+function ExportRecoveryButton() {
   const data = useData();
-  const rows = data.recovery.flatMap((row) => {
+  return (
+    <button
+      type="button"
+      className="btn sm"
+      disabled={data.source.kind !== "live" || data.source.stale}
+      title={
+        data.source.kind !== "live"
+          ? "Disabled on fixture sample data"
+          : data.source.stale
+            ? "Disabled while live observation is stale"
+            : "Export live recovery rows with provenance metadata"
+      }
+      onClick={() => {
+        const hostId = data.observation?.host.host_id ?? "host";
+        const payload = {
+          schema: "rustiron-console-recovery-export/1",
+          authoritative_evidence: data.source.kind === "live" && !data.source.stale,
+          source: data.source,
+          host_id: hostId,
+          exported_at: new Date().toISOString(),
+          recovery: data.recovery,
+        };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], {
+          type: "application/json;charset=utf-8",
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `rustiron-recovery-${hostId}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      }}
+    >
+      <Glyph icon={Download} />
+      Export recovery JSON
+    </button>
+  );
+}
+
+function BackupRow({
+  row,
+  site,
+  selection,
+  live,
+}: {
+  row: RecoveryRow;
+  site: Site;
+  selection: Selection | null;
+  live: boolean;
+}) {
+  return (
+    <li className={rowClass}>
+      {selection ? <RowCheck selection={selection} id={site.id} label={site.domain} /> : null}
+      <div className="min-w-0 flex-1">
+        <Link
+          className={rowLinkClass}
+          to="/sites/$siteId/recovery"
+          params={{ siteId: site.id }}
+          translate="no"
+        >
+          {site.domain}
+        </Link>
+        <p className="truncate text-sm text-muted-foreground">
+          {row.snapshot ? `Newest backup ${row.snapshot}` : row.snapshotNote}
+          {row.snapshot && row.exposure ? ` · ${row.exposure}` : ""}
+          {row.receipt ? (
+            <>
+              {" · "}
+              <span className="relative z-10">
+                <ReceiptCell receipt={row.receipt} live={live} />
+              </span>
+            </>
+          ) : null}
+        </p>
+      </div>
+      <span className="hidden md:block">
+        <EvidenceStrip marks={site.marks} />
+      </span>
+      <span className="flex justify-end sm:w-44">
+        {row.restore ? (
+          <RecoveryStateLabel state={row.restore} />
+        ) : (
+          <span className="muted">No restore test</span>
+        )}
+      </span>
+    </li>
+  );
+}
+
+function RecoveryList() {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<RecoveryFilter>("all");
+  const [sort, setSort] = useState<"weakest" | "name">("weakest");
+  const selection = useSelection();
+  const data = useData();
+  const all: RecoveryEntry[] = data.recovery.flatMap((row) => {
     const site = data.sites.find((candidate) => candidate.id === row.siteId);
-    if (!site) return [];
-    if (show === "Any field not passing" && site.marks.every((mark) => mark === "pass")) return [];
-    const haystack = `${site.domain} ${row.snapshot ?? ""} ${row.receipt ?? ""}`.toLowerCase();
-    return needle && !haystack.includes(needle) ? [] : [{ row, site }];
+    return site ? [{ row, site }] : [];
   });
+  const attention = all.filter(({ site }) => weakness(site) > 0).length;
+  const rows = all
+    .filter(({ row, site }) => matches(query, site.domain, row.snapshot ?? "", row.receipt ?? ""))
+    .filter(({ site }) => recoveryFilterMatch(site, filter))
+    .sort((a, b) =>
+      sort === "name"
+        ? a.site.domain.localeCompare(b.site.domain)
+        : weakness(b.site) - weakness(a.site) || a.site.domain.localeCompare(b.site.domain),
+    );
+  const paged = usePaged(rows, `${query}|${filter}|${sort}|${all.length}`);
+  const bulk = all.length > 1;
+  return (
+    <>
+      <ListToolbar
+        filters={
+          <FilterChips
+            label="Show"
+            value={filter}
+            onChange={setFilter}
+            options={[
+              { value: "all", label: "All", count: all.length },
+              { value: "attention", label: "Needs a look", count: attention },
+              { value: "proven", label: "Every check passed", count: all.length - attention },
+            ]}
+          />
+        }
+      >
+        <ListControls
+          count={all.length}
+          searchLabel="Find a website, backup, or receipt"
+          query={query}
+          onQuery={setQuery}
+          sort={sort}
+          onSort={setSort}
+          sorts={[
+            { value: "weakest", label: "Weakest first" },
+            { value: "name", label: "Name A–Z" },
+          ]}
+        />
+      </ListToolbar>
+      <ListArea
+        label="Backups by website"
+        noun="websites"
+        total={all.length}
+        paged={paged}
+        onReset={() => {
+          setQuery("");
+          setFilter("all");
+        }}
+        top={
+          <PageCheck
+            enabled={bulk}
+            selection={selection}
+            wholeList={paged.pageCount === 1}
+            pageIds={paged.rows.map(({ site }) => site.id)}
+            noun="websites"
+          />
+        }
+        bottom={
+          <BulkBar
+            selection={selection}
+            matchingIds={rows.map(({ site }) => site.id)}
+            nameOf={(id) => data.sites.find((site) => site.id === id)?.domain ?? id}
+            noun="websites"
+            one="website"
+            actions={recoveryBulkActions}
+          />
+        }
+      >
+        {paged.rows.map(({ row, site }) => (
+          <BackupRow
+            key={site.id}
+            row={row}
+            site={site}
+            selection={bulk ? selection : null}
+            live={data.source.kind === "live"}
+          />
+        ))}
+      </ListArea>
+    </>
+  );
+}
+
+export function RecoveryPage() {
+  const data = useData();
   return (
     <Page live>
       <div className="page-head">
-        <div>
-          <h1>Recovery</h1>
-          <p className="sub">
-            Recovery evidence for each site, field by field. A captured backup is not counted as
-            recoverable until a restore is tested.
-          </p>
-        </div>
-        <button
-          type="button"
-          className="btn sm"
-          disabled={data.source.kind !== "live" || data.source.stale}
-          title={
-            data.source.kind !== "live"
-              ? "Disabled on fixture sample data"
-              : data.source.stale
-                ? "Disabled while live observation is stale"
-                : "Export live recovery rows with provenance metadata"
-          }
-          onClick={() => {
-            const hostId = data.observation?.host.host_id ?? "host";
-            const payload = {
-              schema: "rustiron-console-recovery-export/1",
-              authoritative_evidence: data.source.kind === "live" && !data.source.stale,
-              source: data.source,
-              host_id: hostId,
-              exported_at: new Date().toISOString(),
-              recovery: data.recovery,
-            };
-            const blob = new Blob([JSON.stringify(payload, null, 2)], {
-              type: "application/json;charset=utf-8",
-            });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `rustiron-recovery-${hostId}.json`;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            URL.revokeObjectURL(url);
-          }}
-        >
-          <Glyph icon={Download} />
-          Export recovery JSON
-        </button>
+        <SimpleHeader title="Backups" answer={<RecoveryAnswer data={data} />} />
+        <ExportRecoveryButton />
       </div>
       <RecoveryTabs current="/recovery" />
       <BackupRestoreActionsPanel />
@@ -117,133 +313,40 @@ export function RecoveryPage() {
           </div>
         </>
       )}
-      <section className="panel">
-        <div className="panel-head">
-          <h2>Seven evidence fields</h2>
-          <span className="meta">
-            Each is recorded separately; there is no combined &ldquo;backup healthy&rdquo; score
-          </span>
-        </div>
-        <ol className="grid g4 field-key">
-          {[
-            ["1 · Artifacts complete", "Every expected file and database artifact exists"],
-            ["2 · Repository integrity checked", "Repository check covered this snapshot"],
-            ["3 · Decryption tested", "Decrypted with a recovered key"],
-            ["4 · Application consistency assessed", "File and database capture skew evaluated"],
-            ["5 · Restored in isolation", "Restored into a fresh sandbox without egress"],
-            ["6 · Health checks passed", "Restored site answered application probes"],
-            ["7 · Independent copy confirmed", "A physically independent off-host copy exists"],
-          ].map(([title, detail]) => (
-            <li key={title}>
-              <strong>{title}</strong>
-              <p className="cap">{detail}</p>
-            </li>
-          ))}
-        </ol>
-      </section>
-      <section className="panel flush" aria-label="Recovery by site">
-        <div className="toolbar">
-          <label className="input search-input">
-            <Glyph icon={Search} />
-            <input
-              aria-label="Site or snapshot ID"
-              placeholder="Site or snapshot ID"
-              autoComplete="off"
-              spellCheck={false}
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </label>
-          <label className="field">
-            Show
-            <select
-              className="input"
-              value={show}
-              onChange={(event) => setShow(event.target.value as typeof show)}
-            >
-              {recoveryFilters.map((filter) => (
-                <option key={filter}>{filter}</option>
-              ))}
-            </select>
-          </label>
-          <div className="toolbar-end">
+      <div className="flex flex-col gap-4">
+        <RecoveryList />
+        <p className="text-xs text-muted-foreground">
+          {data.source.kind === "live"
+            ? `Repository: ${data.source.host.backup_destination ?? "none enrolled"} (lab store on the operator PC, not independent)`
+            : isRealHost(data.source)
+              ? "Repository: not observed"
+              : "Repositories: offsite-b2 (independent provider) · local-stage"}
+        </p>
+        <QuietDetails
+          title="The seven recovery checks"
+          summary="Each is recorded separately; there is no combined “backup healthy” score."
+        >
+          <div className="mb-3">
             <EvidenceKey />
           </div>
-        </div>
-        <TableScroll label="Recovery by site">
-          <table className="data">
-            <thead>
-              <tr>
-                <th scope="col">Site</th>
-                <th scope="col">Latest snapshot</th>
-                <th scope="col">Evidence (latest receipt)</th>
-                <th scope="col">Last restore test</th>
-                <th scope="col">Independent copy</th>
-                <th scope="col">Receipt</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(({ row, site }) => (
-                <tr key={site.id}>
-                  <td className="primary-cell">
-                    <Link to="/sites/$siteId/recovery" params={{ siteId: site.id }}>
-                      {site.domain}
-                    </Link>
-                  </td>
-                  <td className={row.snapshot ? "tnum" : "muted"}>
-                    <div>{row.snapshot ?? row.snapshotNote}</div>
-                    {row.snapshot && row.exposure ? (
-                      <div className="cap">{row.exposure}</div>
-                    ) : null}
-                  </td>
-                  <td>
-                    <EvidenceStrip marks={site.marks} />
-                  </td>
-                  <td>
-                    {row.restore ? (
-                      <RecoveryStateLabel state={row.restore} />
-                    ) : (
-                      <span className="muted">—</span>
-                    )}
-                  </td>
-                  <td>
-                    {typeof row.copy === "string" ? (
-                      row.copy
-                    ) : row.copy ? (
-                      <RecoveryStateLabel state={row.copy} />
-                    ) : (
-                      <span className="muted">—</span>
-                    )}
-                  </td>
-                  <td>
-                    <ReceiptCell receipt={row.receipt} live={data.source.kind === "live"} />
-                  </td>
-                </tr>
-              ))}
-              {rows.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="muted">
-                    No site matches this filter.
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </TableScroll>
-        <div className="pager">
-          <span>
-            {rows.length} of {data.recovery.length} sites
-            {data.source.kind === "live" ? " · in recorded order" : " · sorted by weakest evidence"}
-          </span>
-          <span>
-            {data.source.kind === "live"
-              ? `Repository: ${data.source.host.backup_destination ?? "none enrolled"} (lab store on the operator PC, not independent)`
-              : isRealHost(data.source)
-                ? "Repository: not observed"
-                : "Repositories: offsite-b2 (independent provider) · local-stage"}
-          </span>
-        </div>
-      </section>
+          <ol className="grid g4 field-key">
+            {[
+              ["1 · Artifacts complete", "Every expected file and database artifact exists"],
+              ["2 · Repository integrity checked", "Repository check covered this snapshot"],
+              ["3 · Decryption tested", "Decrypted with a recovered key"],
+              ["4 · Application consistency assessed", "File and database capture skew evaluated"],
+              ["5 · Restored in isolation", "Restored into a fresh sandbox without egress"],
+              ["6 · Health checks passed", "Restored site answered application probes"],
+              ["7 · Independent copy confirmed", "A physically independent off-host copy exists"],
+            ].map(([title, detail]) => (
+              <li key={title}>
+                <strong>{title}</strong>
+                <p className="cap">{detail}</p>
+              </li>
+            ))}
+          </ol>
+        </QuietDetails>
+      </div>
     </Page>
   );
 }
@@ -279,7 +382,7 @@ function LiveSnapshotPage({ record }: { record: LiveSnapshot }) {
     <Page live>
       <Crumbs
         items={[
-          { href: "/recovery", label: "Recovery" },
+          { href: "/recovery", label: "Backups" },
           ...(record.hostname
             ? [{ href: `/sites/${record.siteId}/recovery`, label: record.hostname }]
             : []),
@@ -369,7 +472,7 @@ function FixtureArtifactPage() {
     <Page>
       <Crumbs
         items={[
-          { href: "/recovery", label: "Recovery" },
+          { href: "/recovery", label: "Backups" },
           { href: "/sites/site_8KD2QW/recovery", label: "shop.lab.test" },
           { label: "snap_P8Q1" },
         ]}
@@ -741,7 +844,7 @@ function LiveReceiptPage({ record }: { record: LiveReceipt }) {
     <Page live>
       <Crumbs
         items={[
-          { href: "/recovery", label: "Recovery" },
+          { href: "/recovery", label: "Backups" },
           ...(record.hostname
             ? [{ href: `/sites/${record.siteId}/recovery`, label: record.hostname }]
             : []),
@@ -870,7 +973,7 @@ function FixtureReceiptPage() {
     <Page>
       <Crumbs
         items={[
-          { href: "/recovery", label: "Recovery" },
+          { href: "/recovery", label: "Backups" },
           { href: "/sites/site_2PL7VB/recovery", label: "portfolio.lab.test" },
           { label: "rcpt_2YB7" },
         ]}

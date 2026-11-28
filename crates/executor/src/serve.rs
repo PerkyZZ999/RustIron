@@ -262,7 +262,10 @@ fn reply_bytes(
                 })),
                 Err(_) => match decode_evidence_query(&frame) {
                     Ok(query) => serde_json::to_vec(&evidence_query(executor, peer_uid, query)),
-                    Err(_) => serde_json::to_vec(&process(executor, &frame, peer_uid)),
+                    Err(_) => match bare_query(executor, peer_uid, &frame) {
+                        Some(reply) => serde_json::to_vec(&reply),
+                        None => serde_json::to_vec(&process(executor, &frame, peer_uid)),
+                    },
                 },
             },
         },
@@ -644,6 +647,94 @@ fn evidence_query(
         Ok(receipt) => serde_json::json!({
             "schema_version": 1, "request_id": query.request_id, "status": "ok",
             "data": {"kind": "evidence_export", "value": {"operation_id": query.operation_id, "receipt": receipt}},
+            "error": null,
+        }),
+        Err(error) => serde_json::json!({
+            "schema_version": 1, "request_id": query.request_id, "status": "error",
+            "data": null, "error": rustiron_contracts::ApiError::new(error),
+        }),
+    }
+}
+
+/// D-103 (W778), D-104 (W779): the read queries without parameters; None
+/// when the frame is neither, so it is read as a submission.
+fn bare_query(executor: &Executor, peer_uid: u32, frame: &[u8]) -> Option<serde_json::Value> {
+    if let Ok(query) = rustiron_contracts::execution::decode_site_records_query(frame) {
+        return Some(site_records_query(executor, peer_uid, query));
+    }
+    rustiron_contracts::summary::decode_host_summary_query(frame)
+        .ok()
+        .map(|query| host_summary_query(executor, peer_uid, query))
+}
+
+/// D-104 (W779): the bounded host summary. Same peer check as status; an
+/// answer over the response limit is refused, never cut.
+fn host_summary_query(
+    executor: &Executor,
+    peer_uid: u32,
+    query: rustiron_contracts::summary::HostSummaryQuery,
+) -> serde_json::Value {
+    let result = (|| {
+        executor
+            .authorize_status_peer(peer_uid)
+            .map_err(|error| match error {
+                ExecutorError::PeerDenied => ErrorCode::UnauthorizedPeer,
+                _ => ErrorCode::DependencyUnavailable,
+            })?;
+        let summary = executor
+            .host_summary()
+            .map_err(|_| ErrorCode::DependencyUnavailable)?;
+        let value = serde_json::to_value(&summary).map_err(|_| ErrorCode::DependencyUnavailable)?;
+        // Leave room for the reply envelope around the value.
+        if value.to_string().len() > rustiron_contracts::MAX_RESPONSE_BYTES - 1024 {
+            return Err(ErrorCode::DependencyUnavailable);
+        }
+        Ok(value)
+    })();
+    match result {
+        Ok(value) => serde_json::json!({
+            "schema_version": 1, "request_id": query.request_id, "status": "ok",
+            "data": {"kind": "host_summary", "value": value},
+            "error": null,
+        }),
+        Err(error) => serde_json::json!({
+            "schema_version": 1, "request_id": query.request_id, "status": "error",
+            "data": null, "error": rustiron_contracts::ApiError::new(error),
+        }),
+    }
+}
+
+/// D-103 (W778): the owned sites, for a coordinator with no inventory
+/// report. Same peer check as status; IDs and hostnames only.
+fn site_records_query(
+    executor: &Executor,
+    peer_uid: u32,
+    query: rustiron_contracts::execution::SiteRecordsQuery,
+) -> serde_json::Value {
+    let result = (|| {
+        executor
+            .authorize_status_peer(peer_uid)
+            .map_err(|error| match error {
+                ExecutorError::PeerDenied => ErrorCode::UnauthorizedPeer,
+                _ => ErrorCode::DependencyUnavailable,
+            })?;
+        let sites = executor
+            .owned_sites()
+            .map_err(|_| ErrorCode::DependencyUnavailable)?;
+        if sites.len() > rustiron_contracts::MAX_INVENTORY_SITES {
+            return Err(ErrorCode::DependencyUnavailable);
+        }
+        Ok(sites
+            .into_iter()
+            .map(|(site_id, hostname, adopted)| {
+                serde_json::json!({"site_id": site_id, "hostname": hostname, "adopted": adopted})
+            })
+            .collect::<Vec<_>>())
+    })();
+    match result {
+        Ok(sites) => serde_json::json!({
+            "schema_version": 1, "request_id": query.request_id, "status": "ok",
+            "data": {"kind": "site_records", "value": {"sites": sites}},
             "error": null,
         }),
         Err(error) => serde_json::json!({

@@ -1982,11 +1982,14 @@
   .disc-btn:hover {
     background: var(--raised);
   }
+  /* W781: the line is an inset shadow, as in .tabs, so the active underline
+     needs no negative margin; that 1px overflow showed a vertical scrollbar. */
   .host-tabs {
     display: flex;
     gap: 4px;
-    border-bottom: 1px solid var(--border);
+    box-shadow: inset 0 -1px 0 var(--border);
     overflow-x: auto;
+    overflow-y: hidden;
   }
   .host-tabs a {
     padding: 10px 14px;
@@ -1994,7 +1997,6 @@
     text-decoration: none;
     font: 500 14px/20px var(--font);
     border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
     white-space: nowrap;
   }
   .host-tabs a:hover {

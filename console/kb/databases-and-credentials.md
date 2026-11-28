@@ -6,7 +6,7 @@ order: 17
 readMinutes: 4
 runbooks: ["Runbook 27","Runbook 35"]
 keywords: ["database","mariadb","mysql","sqlite","password","rotate","credentials","export","dump","sql"]
-consoleLinks: [{"to":"/databases","label":"Databases"},{"to":"/recovery","label":"Recovery"}]
+consoleLinks: [{"to":"/databases","label":"Databases"},{"to":"/recovery","label":"Backups"}]
 ---
 
 ## How per-site database isolation works {#db-isolation}

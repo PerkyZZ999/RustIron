@@ -7,7 +7,7 @@ export const kbArticleTitles = {
   "signing-and-plans": "Approve changes with signed plans",
   "console-tour": "Console tour",
   "console-changes": "Make changes from the Console",
-  "console-sites": "Sites & apps in the Console",
+  "console-sites": "Websites & apps in the Console",
   "console-domains-email": "Domains & email in the Console",
   "console-backups": "Backups in the Console",
   "console-server": "Server pages",

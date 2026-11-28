@@ -1,6 +1,7 @@
 // W624: Delivered v1.0 read-only views ported from docs/mockup/screens/
 // (Host Alerts P05/D-083, Host Firewall CP08/D-095, Outbound Mail Relay P07/D-071,
 // and Site Maintenance P13/D-100). Strictly read-only; mutates nothing.
+import { AnswerLine, SimpleHeader, type Tone } from "@/components/console/simple";
 import { Link } from "@tanstack/react-router";
 import {
   Bell,
@@ -24,6 +25,47 @@ function findServiceActive(
   return services?.find((s) => s.unit === unit)?.active ?? null;
 }
 
+/** W788 (v0.3 item 58): "Who is told when something breaks?" in one sentence. */
+function alertsAnswer(
+  isLive: boolean,
+  timerState: string | null | undefined,
+): { tone: Tone; text: string } {
+  if (!isLive || timerState === "active") {
+    return { tone: "ok", text: "The server checks in every 2 minutes. If it stops, you are told." };
+  }
+  if (!timerState) return { tone: "unknown", text: "The check-in timer was not observed." };
+  return {
+    tone: "warn",
+    text: `The check-in timer is ${timerState}, so a stopped server would go unnoticed.`,
+  };
+}
+
+/** W788: "What can reach my server?" without claiming rules nobody could read. */
+function firewallAnswer(
+  unverifiedLive: boolean,
+  fwState: string | null | undefined,
+  dbListeners: number | null | undefined,
+): { tone: Tone; text: string } {
+  if (fwState && fwState !== "running") {
+    return {
+      tone: "err",
+      text: `The firewall is ${fwState}, so nothing filters traffic to this server.`,
+    };
+  }
+  if (dbListeners !== null && dbListeners !== undefined && dbListeners > 0) {
+    return {
+      tone: "warn",
+      text: "A database listens beyond this server. Check that the firewall blocks it.",
+    };
+  }
+  if (unverifiedLive)
+    return { tone: "unknown", text: "The firewall rules can only be read as root." };
+  return {
+    tone: "ok",
+    text: "The managed policy opens only SSH, the website ports, and DNS when it is on. Database and admin ports stay closed.",
+  };
+}
+
 export function HostAlertsPage() {
   const data = useData();
   const isLive = isRealHost(data.source);
@@ -39,13 +81,14 @@ export function HostAlertsPage() {
         ]}
       />
       <div className="page-head">
-        <div>
-          <h1>Alerts</h1>
-          <p className="sub">
-            Automated server heartbeat monitoring and health notifications. If the server stops
-            checking in, your monitoring endpoint alerts you automatically.
-          </p>
-        </div>
+        <SimpleHeader
+          title="Alerts"
+          answer={
+            <AnswerLine tone={alertsAnswer(isLive, timerState).tone}>
+              {alertsAnswer(isLive, timerState).text}
+            </AnswerLine>
+          }
+        />
         <Link className="btn sm" to="/help/$slug" params={{ slug: "security-and-diagnoses" }}>
           Alert setup guide
         </Link>
@@ -222,13 +265,14 @@ export function HostFirewallPage() {
     <Page live>
       <Crumbs items={[{ href: "/", label: "Overview" }, { label: "Firewall" }]} />
       <div className="page-head">
-        <div>
-          <h1>Firewall</h1>
-          <p className="sub">
-            Network firewall zone and allowed server ports. Database and admin ports remain blocked
-            from public traffic.
-          </p>
-        </div>
+        <SimpleHeader
+          title="Firewall"
+          answer={
+            <AnswerLine tone={firewallAnswer(unverifiedLive, fw?.state, dbListeners).tone}>
+              {firewallAnswer(unverifiedLive, fw?.state, dbListeners).text}
+            </AnswerLine>
+          }
+        />
         <Link className="btn sm" to="/help/$slug" params={{ slug: "firewall-and-network" }}>
           Firewall guide
         </Link>
@@ -367,7 +411,7 @@ export function SiteMaintenancePage({ siteId }: { siteId: string }) {
       <Crumbs
         items={[
           { href: "/", label: "Overview" },
-          { href: "/sites", label: "Sites" },
+          { href: "/sites", label: "Websites" },
           { href: `/sites/${resolvedId}`, label: domain },
           { label: "Maintenance" },
         ]}

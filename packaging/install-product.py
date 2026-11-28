@@ -63,7 +63,7 @@ INSTALL_RECORD = "var/lib/rustiron/install-record.json"
 INSTALL_RECORD_SCHEMA = "rustiron-install-record/1"
 # The identities that the sysusers file creates.
 SYSUSERS_USERS = ("rustiron-coordinator", "rustiron-acme", "rustiron-caddy")
-SYSUSERS_GROUPS = ("rustiron-coordinator", "rustiron-requesters", "rustiron-acme", "rustiron-caddy")
+SYSUSERS_GROUPS = ("rustiron-coordinator", "rustiron-requesters", "rustiron-agents", "rustiron-acme", "rustiron-caddy")
 # W646: certbot runs as rustiron-acme with ReadWritePaths=/var/lib/rustiron-acme.
 ACME_STATE = "var/lib/rustiron-acme"
 ACME_SUBDIRS = ("config", "work", "logs")
@@ -77,6 +77,7 @@ RELABEL = (
     SYSUSERS, *(name for name in PAYLOAD_MODES if "/systemd/system/" in name),
     # W569: the MariaDB drop-in keeps mysqld_etc_t.
     preflight.MARIADB_DROPIN,
+    preflight.SUDOERS_DROPIN,
     # W358: the package's lsphp, which rustiron_php labels as the site PHP
     # entry point (rustiron_php_exec_t); it keeps bin_t without a relabel.
     LSPHP,

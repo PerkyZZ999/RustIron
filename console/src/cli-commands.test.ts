@@ -8,6 +8,7 @@ import { join, resolve } from "node:path";
 
 import {
   buildAppDeployCmd,
+  buildAppLifecycleCmd,
   buildAppPackCmd,
   buildAppProvisionCmd,
   buildConfigActivateCmd,
@@ -196,6 +197,7 @@ describe("Console CLI command builders match real CLI parsers (W643 / H-05 & H-1
             migrating: true,
           }),
         ],
+        ["app-lifecycle", buildAppLifecycleCmd({ siteId: "appw643", action: "restart" })],
         ["config-activate", buildConfigActivateCmd({ siteId: "blogw643", note: "test" })],
         ["site-eject", buildSiteEjectCmd({ siteId: "blogw643" })],
         [

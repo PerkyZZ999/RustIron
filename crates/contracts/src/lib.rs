@@ -22,6 +22,7 @@ pub mod local;
 pub mod migration;
 mod model;
 mod render;
+pub mod summary;
 
 pub use canonical::CanonicalObject;
 pub use codec::{decode_request, decode_response, encode_request, encode_response};

@@ -1,9 +1,18 @@
 // W714 (pass 33, fix 7): Host overview, metrics, and services pages. Split from `pages.tsx`.
 import { MotionBeat } from "@/components/console/motion";
+import { AnimatedNumber, FillMeter, usageTone } from "@/components/console/motion-kit";
+import {
+  AnswerLine,
+  HealthTile,
+  QuietDetails,
+  SimpleHeader,
+  type Tone,
+} from "@/components/console/simple";
+import { TrendChart, TrendLegend } from "@/components/console/trend-chart";
+import { ActivityIcon, ClockIcon, CpuIcon, DatabaseIcon } from "lucide-animated";
 import { Link } from "@tanstack/react-router";
 import {
   ListChecks,
-  ShieldCheck,
   Globe,
   ChevronDown,
   Download,
@@ -12,12 +21,8 @@ import {
   CircleDashed,
   CircleMinus,
   CircleX,
-  Clock,
   ClockAlert,
-  Cpu,
-  HardDrive,
   Info,
-  MemoryStick,
   RefreshCw,
   Search,
   Server,
@@ -27,6 +32,7 @@ import { useState } from "react";
 import { hostLabel, isRealHost, useData } from "./data";
 import { triggerCsvDownload } from "./live-coordinator";
 import { OverviewFindingsPanel } from "./findings-panel";
+import { type DiagnosisFinding, fixtureFindings, liveFindings } from "./platform-data";
 import { InspectorPanel, useDrawerSelection } from "./inspector";
 import {
   clockSyncText,
@@ -45,7 +51,7 @@ import {
   type Site,
   sites,
 } from "./fixture";
-import { Crumbs, EvidenceStrip, Glyph, Legend, Page, ResourceChart, TableScroll } from "./ui";
+import { Crumbs, EvidenceStrip, Glyph, Page, ResourceChart, TableScroll, trendRows } from "./ui";
 import { SourceNote } from "./page-parts";
 
 const ranges = ["1 hour", "6 hours", "24 hours", "7 days"] as const;
@@ -122,11 +128,6 @@ function hostStatus(source: DataSource) {
 }
 
 /** The footer of the Overview metric cards. */
-function metricFoot(source: DataSource): string {
-  if (source.kind === "live") return source.stale ? "stale" : "live";
-  return isRealHost(source) ? "not observed" : "38 s ago";
-}
-
 function HostContext() {
   const { source, machine, refresh } = useData();
   const hostId = hostLabel(source);
@@ -179,70 +180,6 @@ function OverviewAttention() {
         Inspect operation
       </Link>
     </div>
-  );
-}
-
-function OverviewMetricsRow({ metrics, foot }: { metrics: OverviewMetrics; foot: string }) {
-  return (
-    <section className="grid g4" aria-label="Current metrics">
-      <Metric
-        icon={Cpu}
-        tone="c-cpu"
-        bar="bg-cpu"
-        label="CPU"
-        value={metrics.cpu.value}
-        unit={metrics.cpu.unit}
-        detail={metrics.cpu.detail}
-        width={metrics.cpu.width}
-        href="/host/metrics#cpu"
-        foot={foot}
-      />
-      <Metric
-        icon={MemoryStick}
-        tone="c-mem"
-        bar="bg-mem"
-        label="Memory"
-        value={metrics.memory.value}
-        unit={metrics.memory.unit}
-        detail={metrics.memory.detail}
-        width={metrics.memory.width}
-        href="/host/metrics#memory"
-        foot={foot}
-      />
-      <Metric
-        icon={HardDrive}
-        tone="c-disk"
-        bar="bg-disk"
-        label="Disk"
-        extra={metrics.disk.extra}
-        value={metrics.disk.value}
-        unit={metrics.disk.unit}
-        detail={metrics.disk.detail}
-        width={metrics.disk.width}
-        href="/host/metrics#disk"
-        foot={foot}
-      />
-      <article className="panel metric">
-        <div className="m-head">
-          <span className="m-icon" style={{ color: "var(--muted)" }}>
-            <Glyph icon={Clock} />
-          </span>
-          Uptime
-        </div>
-        <div className="m-val">
-          {metrics.uptime.value}
-          {metrics.uptime.unit ? <small>{metrics.uptime.unit}</small> : null}
-        </div>
-        <div className="m-detail">{metrics.uptime.detail}</div>
-        <div className="bar" style={{ visibility: "hidden" }}>
-          <i />
-        </div>
-        <div className="m-foot">
-          <span>{metrics.uptime.kernel}</span>
-          <Link to="/host/metrics">Inspect</Link>
-        </div>
-      </article>
-    </section>
   );
 }
 
@@ -405,33 +342,127 @@ function resolveOverviewMetrics(isLive: boolean, machine: Machine | null): Overv
   return isLive ? unobservedOverviewMetrics : fixtureOverviewMetrics;
 }
 
+/** W787 (v0.3 item 58): the plain-language word and tone for a usage percentage. */
+function usageWord(value: string): { percent: number | null; word: string; tone: Tone } {
+  const percent = Number.parseFloat(value);
+  if (!Number.isFinite(percent)) return { percent: null, word: "Not observed", tone: "unknown" };
+  const tone = usageTone(percent);
+  const word = tone === "err" ? "High" : tone === "warn" ? "Busy" : "Normal";
+  return { percent, word, tone };
+}
+
+function UsageTile({
+  label,
+  icon,
+  metric,
+  hash,
+}: {
+  label: string;
+  icon: Parameters<typeof HealthTile>[0]["icon"];
+  metric: OverviewMetrics["cpu"];
+  hash: string;
+}) {
+  const usage = usageWord(metric.value);
+  return (
+    <HealthTile
+      label={label}
+      icon={icon}
+      to="/host/metrics"
+      hash={hash}
+      word={usage.word}
+      wordTone={usage.tone}
+      value={
+        usage.percent === null ? "—" : <AnimatedNumber value={usage.percent} suffix={metric.unit} />
+      }
+    >
+      {usage.percent === null ? null : (
+        <FillMeter
+          value={usage.percent}
+          label={`${label} in use`}
+          tone={usage.tone === "unknown" ? "info" : usage.tone}
+        />
+      )}
+      <span className="text-xs text-muted-foreground">{metric.detail}</span>
+    </HealthTile>
+  );
+}
+
+/** One sentence that answers "is my server fine?" before any panel. */
+function overviewAnswer(
+  isLive: boolean,
+  findings: DiagnosisFinding[] | null,
+): {
+  tone: Tone;
+  text: string;
+} {
+  if (!isLive) {
+    return { tone: "err", text: "One operation needs attention. Everything else is running." };
+  }
+  if (findings === null) return { tone: "unknown", text: "No observation of this server yet." };
+  const failed = findings.filter((f) => f.state === "fail").length;
+  const warned = findings.filter((f) => f.state === "warn").length;
+  if (failed > 0) {
+    return {
+      tone: "err",
+      text: `${failed} ${failed === 1 ? "check fails" : "checks fail"} on this server.`,
+    };
+  }
+  if (warned > 0) {
+    return {
+      tone: "warn",
+      text: `${warned} ${warned === 1 ? "check needs" : "checks need"} a look.`,
+    };
+  }
+  return { tone: "ok", text: "Everything checked on this server is healthy." };
+}
+
+function overviewFindings(
+  isLive: boolean,
+  data: ReturnType<typeof useData>,
+): DiagnosisFinding[] | null {
+  if (!isLive) return fixtureFindings;
+  return data.observation ? liveFindings(data.observation, data.machine) : null;
+}
+
+function overviewChartText(isLive: boolean, hasHistory: boolean) {
+  const chartSubtitle = !isLive
+    ? "5-minute averages · UTC · disk is /var"
+    : hasHistory
+      ? "Collected host samples · UTC"
+      : "Collecting host samples · history appears after the next observation";
+  const chartLabel = hasHistory
+    ? "Live CPU, memory and disk samples from the host"
+    : "CPU, memory and disk usage over the last 24 hours, with a 25-minute gap in samples around 08:00";
+  return { chartSubtitle, chartLabel };
+}
+
 export function Overview() {
   const data = useData();
   const isLive = isRealHost(data.source);
   const metrics = resolveOverviewMetrics(isLive, data.machine);
   const history = data.machine ? liveHostHistory(data.machine) : null;
-  const foot = metricFoot(data.source);
   const summaryServices = overviewServices(isLive, data.services);
   const siteCounts = overviewSiteCounts(isLive, data.sites);
-  const chartSubtitle = !isLive
-    ? "5-minute averages · UTC · disk is /var"
-    : history
-      ? "Collected host samples · UTC"
-      : "Collecting host samples · history appears after the next observation";
-  const chartLabel = history
-    ? "Live CPU, memory and disk samples from the host"
-    : "CPU, memory and disk usage over the last 24 hours, with a 25-minute gap in samples around 08:00";
+  const answer =
+    data.source.kind === "loading"
+      ? { tone: "unknown" as const, text: "Checking this server…" }
+      : overviewAnswer(isLive, overviewFindings(isLive, data));
+  const { chartSubtitle, chartLabel } = overviewChartText(isLive, history !== null);
 
   return (
     <Page live>
       <MotionBeat beat={0}>
         <div className="page-head">
-          <div>
-            <h1>Host overview</h1>
-            <p className="sub">
-              Server health, hosted websites, resource usage, and quick actions.
-            </p>
-          </div>
+          <SimpleHeader
+            title="Host overview"
+            answer={<AnswerLine tone={answer.tone}>{answer.text}</AnswerLine>}
+            action={
+              <Link className="btn primary" to="/sites/new">
+                <Glyph icon={Globe} />
+                Add website
+              </Link>
+            }
+          />
           <HostContext />
         </div>
       </MotionBeat>
@@ -441,49 +472,32 @@ export function Overview() {
         </MotionBeat>
       )}
       <MotionBeat beat={2}>
-        <OverviewMetricsRow metrics={metrics} foot={foot} />
+        <section className="grid g4" aria-label="Current metrics">
+          <UsageTile label="CPU" icon={CpuIcon} metric={metrics.cpu} hash="cpu" />
+          <UsageTile label="Memory" icon={ActivityIcon} metric={metrics.memory} hash="memory" />
+          <UsageTile label="Disk" icon={DatabaseIcon} metric={metrics.disk} hash="disk" />
+          <HealthTile
+            label="Uptime"
+            icon={ClockIcon}
+            to="/host/metrics"
+            word={metrics.uptime.value === "—" ? "Not observed" : "Running"}
+            wordTone={metrics.uptime.value === "—" ? "unknown" : "ok"}
+            value={
+              <>
+                {metrics.uptime.value}
+                {metrics.uptime.unit ? (
+                  <small className="text-base font-medium text-muted-foreground">
+                    {metrics.uptime.unit}
+                  </small>
+                ) : null}
+              </>
+            }
+          >
+            <span className="text-xs text-muted-foreground">{metrics.uptime.detail}</span>
+          </HealthTile>
+        </section>
       </MotionBeat>
       <MotionBeat beat={3}>
-        <nav className="quick-actions" aria-label="Quick actions">
-          <Link className="qa-card" to="/sites/new">
-            <span className="qa-icon">
-              <Glyph icon={Globe} />
-            </span>
-            <span className="qa-text">
-              <strong>Add website</strong>
-              <span>Provision a WordPress site or app</span>
-            </span>
-          </Link>
-          <Link className="qa-card" to="/domains/new">
-            <span className="qa-icon">
-              <Glyph icon={Server} />
-            </span>
-            <span className="qa-text">
-              <strong>Add domain &amp; DNS</strong>
-              <span>Create DNS zones &amp; SSL certs</span>
-            </span>
-          </Link>
-          <Link className="qa-card" to="/mail">
-            <span className="qa-icon">
-              <Glyph icon={Info} />
-            </span>
-            <span className="qa-text">
-              <strong>Email &amp; relay</strong>
-              <span>Configure outbound mail &amp; DNS</span>
-            </span>
-          </Link>
-          <Link className="qa-card" to="/recovery">
-            <span className="qa-icon">
-              <Glyph icon={ShieldCheck} />
-            </span>
-            <span className="qa-text">
-              <strong>Backups &amp; restore</strong>
-              <span>Snapshots &amp; recovery checks</span>
-            </span>
-          </Link>
-        </nav>
-      </MotionBeat>
-      <MotionBeat beat={4}>
         <div className="aside-grid">
           <section className="panel" aria-labelledby="hist-title">
             <div className="panel-head">
@@ -491,46 +505,35 @@ export function Overview() {
                 <h2 id="hist-title">Resource history</h2>
                 <p className="cap">{chartSubtitle}</p>
               </div>
-              <div className="row">
-                {isLive ? null : <Range />}
-                <Link className="btn quiet sm" to="/host/metrics">
-                  View as table
-                </Link>
-              </div>
+              <Link className="btn quiet sm" to="/host/metrics">
+                View as table
+              </Link>
             </div>
-            <ResourceChart live={isLive} history={history} label={chartLabel} />
-            {!isLive || history ? <Legend /> : null}
+            {isLive && !history ? (
+              <ResourceChart live history={null} label={chartLabel} />
+            ) : (
+              <>
+                <TrendChart rows={trendRows(history)} label={chartLabel} />
+                <TrendLegend />
+              </>
+            )}
           </section>
           <OverviewFindingsPanel />
         </div>
       </MotionBeat>
-      <MotionBeat beat={5}>
+      <MotionBeat beat={4}>
         <section className="grid g2" aria-label="Summaries">
           <article className="panel">
             <div className="panel-head">
-              <h2>Services</h2>
-              <Link to="/host/services">View all</Link>
-            </div>
-            <ul className="list">
-              {summaryServices.map((service) => (
-                <li key={service.name}>
-                  <span className={`dot ${service.kind}`} />
-                  <span className="grow t">{service.name}</span>
-                  <span className={`state ${service.kind}`}>{service.state}</span>
-                  <span className="r">{service.note}</span>
-                </li>
-              ))}
-            </ul>
-          </article>
-          <article className="panel">
-            <div className="panel-head">
-              <h2>Sites</h2>
+              <h2>Websites</h2>
               <Link to="/sites">View all</Link>
             </div>
             <ul className="list tnum">
               {siteCounts.map((item) => (
                 <li key={item.label}>
-                  <strong style={{ width: 28 }}>{item.count}</strong>
+                  <strong style={{ width: 28 }}>
+                    <AnimatedNumber value={item.count} />
+                  </strong>
                   <span className={item.dot ? "grow" : "grow muted"}>{item.label}</span>
                   {item.dot ? <span className={`dot ${item.dot}`} /> : null}
                 </li>
@@ -539,14 +542,7 @@ export function Overview() {
           </article>
           <article className="panel">
             <div className="panel-head">
-              <h2>Recent operations</h2>
-              <Link to="/operations">View all</Link>
-            </div>
-            <OverviewRecentOps isLive={isLive} operations={data.operations} />
-          </article>
-          <article className="panel">
-            <div className="panel-head">
-              <h2>Recovery evidence</h2>
+              <h2>Backups</h2>
               <Link to="/recovery">View all</Link>
             </div>
             <ul className="list">
@@ -563,56 +559,39 @@ export function Overview() {
           </article>
         </section>
       </MotionBeat>
+      <MotionBeat beat={5}>
+        <QuietDetails
+          title="Server details"
+          summary={`${summaryServices.length} services and the latest operations`}
+        >
+          <div className="grid g2">
+            <article>
+              <div className="panel-head">
+                <h2>Services</h2>
+                <Link to="/host/services">View all</Link>
+              </div>
+              <ul className="list">
+                {summaryServices.map((service) => (
+                  <li key={service.name}>
+                    <span className={`dot ${service.kind}`} />
+                    <span className="grow t">{service.name}</span>
+                    <span className={`state ${service.kind}`}>{service.state}</span>
+                    <span className="r">{service.note}</span>
+                  </li>
+                ))}
+              </ul>
+            </article>
+            <article>
+              <div className="panel-head">
+                <h2>Recent operations</h2>
+                <Link to="/operations">View all</Link>
+              </div>
+              <OverviewRecentOps isLive={isLive} operations={data.operations} />
+            </article>
+          </div>
+        </QuietDetails>
+      </MotionBeat>
     </Page>
-  );
-}
-
-function Metric({
-  icon,
-  tone,
-  bar,
-  label,
-  extra,
-  value,
-  unit,
-  detail,
-  width,
-  href,
-  foot,
-}: {
-  icon: typeof Cpu;
-  tone: string;
-  bar: string;
-  label: string;
-  extra?: string;
-  value: string;
-  unit: string;
-  detail: string;
-  width: string;
-  href: string;
-  foot: string;
-}) {
-  return (
-    <article className="panel metric">
-      <div className="m-head">
-        <span className={`m-icon ${tone}`}>
-          <Glyph icon={icon} />
-        </span>
-        {label} {extra ? <span className="cap">{extra}</span> : null}
-      </div>
-      <div className="m-val">
-        {value}
-        <small>{unit}</small>
-      </div>
-      <div className="m-detail tnum">{detail}</div>
-      <div className="bar">
-        <i className={bar} style={{ width }} />
-      </div>
-      <div className="m-foot">
-        <span>{foot}</span>
-        <Link to={href}>Inspect</Link>
-      </div>
-    </article>
   );
 }
 
@@ -635,6 +614,32 @@ function exportMetricsCsv(hostId: string, history: ReturnType<typeof liveHostHis
   triggerCsvDownload(`rustiron-metrics-${hostId}.csv`, rows);
 }
 
+/** W788 (v0.3 item 58): "How busy is the server?" with a word per resource. */
+function metricsAnswer(data: ReturnType<typeof useData>): { tone: Tone; text: string } {
+  if (data.source.kind === "loading") return { tone: "unknown", text: "Checking this server…" };
+  const metrics = resolveOverviewMetrics(isRealHost(data.source), data.machine);
+  const parts = [
+    ["CPU", usageWord(metrics.cpu.value)],
+    ["memory", usageWord(metrics.memory.value)],
+    ["disk", usageWord(metrics.disk.value)],
+  ] as const;
+  if (parts.every(([, u]) => u.percent === null)) {
+    return { tone: "unknown", text: "No resource use observed yet." };
+  }
+  const tone: Tone = parts.some(([, u]) => u.tone === "err")
+    ? "err"
+    : parts.some(([, u]) => u.tone === "warn")
+      ? "warn"
+      : "ok";
+  const text = parts
+    .map(
+      ([name, u]) =>
+        `${name} ${u.percent === null ? "not observed" : `${u.percent}% (${u.word.toLowerCase()})`}`,
+    )
+    .join(", ");
+  return { tone, text: `${text.charAt(0).toUpperCase()}${text.slice(1)}.` };
+}
+
 export function HostMetrics() {
   const data = useData();
   const isLive = isRealHost(data.source);
@@ -646,13 +651,12 @@ export function HostMetrics() {
     <Page live>
       <Crumbs items={[{ href: "/", label: "Overview" }, { label: "Host metrics" }]} />
       <div className="page-head">
-        <div>
-          <h1>Host metrics</h1>
-          <p className="sub">
-            CPU, memory, and disk history collected for {hostId}. Export raw samples as CSV at any
-            time.
-          </p>
-        </div>
+        <SimpleHeader
+          title="Host metrics"
+          answer={
+            <AnswerLine tone={metricsAnswer(data).tone}>{metricsAnswer(data).text}</AnswerLine>
+          }
+        />
         <div className="head-actions">
           {isLive ? null : <Range extra />}
           <button
@@ -822,17 +826,41 @@ function ServiceFactLines({ data }: { data: ReturnType<typeof useData> }) {
   ));
 }
 
+/** W788 (v0.3 item 58): "Is everything running?" in one sentence. */
+function servicesAnswer(services: HostService[]): { tone: Tone; text: string } {
+  if (services.length === 0) return { tone: "unknown", text: "No services observed yet." };
+  const attention = services.filter((s) => s.state !== "Running" && s.state !== "Synced");
+  if (attention.length === 0) {
+    return { tone: "ok", text: `All ${services.length} services are running.` };
+  }
+  const failed = attention.some((s) => s.state === "Failed");
+  const names = attention.map((s) => s.name).join(", ");
+  return {
+    tone: failed ? "err" : "warn",
+    text: `${attention.length} of ${services.length} services need a look: ${names}.`,
+  };
+}
+
 function ServiceHostFacts({ data }: { data: ReturnType<typeof useData> }) {
   const hostId = hostLabel(data.source);
+  const answer =
+    data.source.kind === "loading"
+      ? { tone: "unknown" as const, text: "Checking this server…" }
+      : servicesAnswer(data.services);
   return (
     <div className="page-head">
-      <div>
-        <h1>Services</h1>
-        <p className="sub">
-          Supported host profile services and their observed state. Restart and configuration
-          changes require a reviewed plan.
-        </p>
-        <ServiceFactLines data={data} />
+      <div className="flex min-w-0 flex-col gap-3">
+        <SimpleHeader
+          title="Services"
+          answer={<AnswerLine tone={answer.tone}>{answer.text}</AnswerLine>}
+        />
+        <QuietDetails summary="What this page watches and how the server was observed">
+          <p className="cap">
+            Supported host profile services and their observed state. Restart and configuration
+            changes require a reviewed plan.
+          </p>
+          <ServiceFactLines data={data} />
+        </QuietDetails>
       </div>
       <div className="host-ctx">
         <div className="hc-id">

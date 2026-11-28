@@ -397,6 +397,32 @@ fn succeeded_sites_omit_a_provision_that_has_not_finished() {
     assert_eq!(ledger.succeeded_sites().unwrap(), vec![one.site_id]);
 }
 
+/// D-103 (W778): owned sites are the succeeded and adopted provisions, sorted,
+/// with their hostname; an unfinished one is left out, and the limit holds.
+#[test]
+fn owned_sites_list_succeeded_and_adopted_provisions_in_site_order() {
+    let state = State::new();
+    let mut ledger = state.init();
+    for (at, n) in [3, 2, 1].into_iter().enumerate() {
+        let intent = site(n);
+        ledger
+            .record_provision(&intent, time(1000 + at as u64))
+            .unwrap();
+        if n != 1 {
+            run_all(&mut ledger, &intent);
+        }
+    }
+    state.sql("UPDATE provisions SET state='adopted' WHERE site_id='blog3'");
+    assert_eq!(
+        ledger.owned_sites(10).unwrap(),
+        vec![
+            ("blog2".to_owned(), "blog2.example.test".to_owned(), false),
+            ("blog3".to_owned(), "blog3.example.test".to_owned(), true),
+        ]
+    );
+    assert_eq!(ledger.owned_sites(1).unwrap().len(), 1);
+}
+
 fn eject_intent(n: u32) -> rustiron_journal::Intent {
     let mut intent = intent(n);
     intent.resource_id = id("ols_lab_listener");

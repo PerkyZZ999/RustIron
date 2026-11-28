@@ -204,6 +204,96 @@ async function checkPage(page: Page, label: string) {
     failures.push(`${label}: ${describeViolation(violation)}`);
 }
 
+/** The global reduced-motion rule uses a 1 µs duration; "none" also means still. */
+function meterIsStill(m: { width: string; value: string; property: string; duration: string }) {
+  const settled = m.width === `${m.value}%`;
+  const still =
+    m.property === "none" || m.duration.split(",").every((d) => Number.parseFloat(d) < 0.01);
+  return settled && still;
+}
+
+/** W792 (v0.3 item 62): with reduced motion on, meters sit at their value with no transition. */
+async function checkReducedMotion(page: Page) {
+  checks += 1;
+  await page.goto(`${server.url}`);
+  await page.locator("h1").waitFor();
+  await page.locator('[role="meter"]').first().waitFor();
+  await page.waitForTimeout(100);
+  const meters = await page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>('[role="meter"] [data-slot="meter-indicator"]')].map(
+      (bar) => {
+        const meter = bar.closest('[role="meter"]') as HTMLElement;
+        const style = getComputedStyle(bar);
+        return {
+          label: String(meter.getAttribute("aria-label")),
+          width: bar.style.width,
+          value: String(meter.getAttribute("aria-valuenow")),
+          property: style.transitionProperty,
+          duration: style.transitionDuration,
+        };
+      },
+    ),
+  );
+  const moving = meters.filter((m) => !meterIsStill(m)).map((m) => m.label);
+  if (moving.length > 0)
+    failures.push(`reduced motion: meters still animate (${moving.join(", ")})`);
+}
+
+/**
+ * Item 64: choosing several websites opens the bar and the plan-command dialog;
+ * both pass axe and the page does not scroll sideways, in each theme and width.
+ */
+/** Chooses the first two websites (fixture or live) and opens "Back up now"; false if fewer than two. */
+async function openBulkDialog(page: Page, label: string): Promise<boolean> {
+  await page.goto(`${server.url}sites`);
+  await page.locator("h1").waitFor();
+  const rows = page.locator('[role="checkbox"][aria-label^="Choose "]');
+  await page.waitForTimeout(300);
+  if ((await rows.count()) < 2) return false;
+  await rows.nth(0).click();
+  await rows.nth(1).click();
+  await page.getByRole("button", { name: "Back up now" }).click();
+  await page.getByRole("heading", { name: "Back up 2 websites now?" }).waitFor();
+  // Let the dialog finish fading in, so contrast is measured on its final colors.
+  await page.waitForTimeout(400);
+  const text = (await page.locator("pre").first().textContent()) ?? "";
+  if (!text.includes("> ./plan-2.json"))
+    failures.push(`${label}: the dialog does not show one plan per website`);
+  return true;
+}
+
+async function checkBulkDialogIn(
+  browser: Browser,
+  theme: (typeof themes)[number],
+  viewport: (typeof viewports)[number],
+) {
+  const label = `bulk dialog [${theme}, ${viewport.name}]`;
+  const context = await browser.newContext({
+    viewport: { width: viewport.width, height: viewport.height },
+    colorScheme: theme,
+  });
+  try {
+    const page = await context.newPage();
+    if (await openBulkDialog(page, label)) {
+      await checkPage(page, label);
+      checks += 1;
+    }
+  } catch (error) {
+    failures.push(`${label}: ${String(error).split("\n")[0]}`);
+  } finally {
+    await context.close();
+  }
+}
+
+/**
+ * Item 64: choosing several websites opens the bar and the plan-command dialog;
+ * both pass axe and the page does not scroll sideways, in each theme and width.
+ */
+async function checkBulkDialog(browser: Browser) {
+  const combos = themes.flatMap((theme) => viewports.map((viewport) => ({ theme, viewport })));
+  for (const { theme, viewport } of combos) await checkBulkDialogIn(browser, theme, viewport);
+}
+
 async function checkKeyboard(page: Page) {
   await page.goto(`${server.url}plans/new`);
   await page.locator("h1").waitFor();
@@ -335,7 +425,7 @@ function stateServer(file: string) {
 
 const statesExpect: Record<string, string[]> = {
   "/": ["Adopted (serving not observed)"],
-  "/sites": ["1–4 of 4", "Adopted", "Failed · unclaimed snapshot"],
+  "/sites": ["Adopted", "Failed · unclaimed snapshot"],
   // W382: the empty snapshot table of a settled capture names its unclaimed snapshot.
   "/sites/w379d/recovery": ["0 recorded in journal", "1 unclaimed, not a backup of record"],
   "/sites/w379a": ["Opted in", "5 GiB, 500,000 inodes", "export SITE"],
@@ -413,9 +503,16 @@ try {
       notEnrolledRoutes.map((route) => [route, ["Executor not enrolled"]]),
     ),
   });
+  await checkBulkDialog(browser);
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   await checkKeyboard(await context.newPage());
   await context.close();
+  const calm = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    reducedMotion: "reduce",
+  });
+  await checkReducedMotion(await calm.newPage());
+  await calm.close();
 
   // W612 (CP04 / D-090): verify loopback Host allowlist, zero CORS, GET/HEAD-only, and CSP live.
   const rawGet = (method: string, headers?: Record<string, string>) =>
@@ -497,6 +594,6 @@ try {
 const stateRoutes = Object.keys(statesExpect).length + notEnrolledRoutes.length;
 for (const failure of failures) console.error(`FAIL ${failure}`);
 console.log(
-  `${checks} browser checks on ${expectedSource.toLowerCase()} and W379 states, ${failures.length} failures ((${routes.length} routes + ${stateRoutes} state routes) × ${themes.length} themes × ${viewports.length} widths + keyboard)`,
+  `${checks} browser checks on ${expectedSource.toLowerCase()} and W379 states, ${failures.length} failures ((${routes.length} routes + ${stateRoutes} state routes) × ${themes.length} themes × ${viewports.length} widths + bulk dialog + keyboard + reduced motion)`,
 );
 process.exit(failures.length ? 1 : 0);

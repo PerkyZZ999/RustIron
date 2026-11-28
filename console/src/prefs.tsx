@@ -29,7 +29,7 @@ const defaultPreferences: ConsolePreferences = {
   metricsRange: "24h",
   transparency: "system",
   motion: "system",
-  rowsPerPage: 25,
+  rowsPerPage: 50,
 };
 
 const STORAGE_KEY = "ri-prefs";
@@ -41,7 +41,7 @@ function pickRange(value: unknown): MetricsRange {
 }
 
 function pickRows(value: unknown): RowsPerPage {
-  return typeof value === "number" && VALID_ROWS.has(value) ? (value as RowsPerPage) : 25;
+  return typeof value === "number" && VALID_ROWS.has(value) ? (value as RowsPerPage) : 50;
 }
 
 function loadPreferences(): ConsolePreferences {

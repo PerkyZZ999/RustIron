@@ -121,7 +121,7 @@ fn handshake_tools_list_and_no_mutating_methods() {
     assert_eq!(replies[2]["id"], 3);
 
     let tools = replies[2]["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 7);
+    assert_eq!(tools.len(), 13);
     let mut names = Vec::new();
     for tool in tools {
         let name = tool["name"].as_str().unwrap();
@@ -383,5 +383,212 @@ fn rejects_malformed_unknown_mutating_oversized_and_bad_id_requests() {
     assert_eq!(
         replies[7]["result"]["structuredContent"]["result"]["error"]["code"],
         "COORDINATOR_NOT_CONFIGURED"
+    );
+}
+
+/// W780 (v0.3 item 50): a draft is byte for byte the CLI's `plan create`
+/// output, carries no authority, and needs no coordinator.
+#[test]
+fn plan_draft_matches_cli_plan_create_and_holds_no_authority() {
+    let fixture = McpFixture::new();
+    let digest = "a".repeat(64);
+    let recipe = "d".repeat(64);
+    let cli = Command::new(env!("CARGO_BIN_EXE_rustiron"))
+        .args([
+            "plan",
+            "create",
+            "site-provision",
+            "--plan-id",
+            "plan_draft_1",
+            "--host-id",
+            "host_lab",
+            "--host-epoch",
+            "epoch_1",
+            "--profile-digest",
+            &digest,
+            "--requester",
+            "agent_1",
+            "--site-id",
+            "blog7",
+            "--hostname",
+            "blog7.example.test",
+            "--recipe",
+            "wordpress713_v1",
+            "--recipe-digest",
+            &recipe,
+            "--observed-at",
+            "990",
+            "--valid-from",
+            "1000",
+            "--expires-at",
+            "2000",
+            "--limitation",
+            "SYNTHETIC draft fixture",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli.stderr)
+    );
+    let call = json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "rustiron_plan_draft", "arguments": {
+            "verb": "site-provision",
+            "flags": {
+                "plan-id": "plan_draft_1", "host-id": "host_lab", "host-epoch": "epoch_1",
+                "profile-digest": digest, "requester": "agent_1",
+                "site-id": "blog7", "hostname": "blog7.example.test",
+                "recipe": "wordpress713_v1", "recipe-digest": recipe,
+                "observed-at": 990, "valid-from": 1000, "expires-at": 2000,
+                "limitation": ["SYNTHETIC draft fixture"]
+            }
+        }}
+    });
+    let replies = fixture.run_mcp(
+        false,
+        &[
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}).to_string(),
+            call.to_string(),
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"rustiron_plan_draft","arguments":{"verb":"dns-change","flags":{}}}}).to_string(),
+        ],
+    );
+    let result = &replies[1]["result"]["structuredContent"]["result"];
+    assert_eq!(replies[1]["result"]["isError"], false);
+    assert_eq!(
+        result["unsigned_plan"].as_str().unwrap().as_bytes(),
+        cli.stdout.as_slice()
+    );
+    assert_eq!(result["authority"], "none_unsigned_draft");
+    assert_eq!(result["verb"], "site_provision");
+    assert!(result["envelope"].is_object());
+    assert_eq!(
+        replies[2]["result"]["structuredContent"]["result"]["error"]["code"],
+        "UNKNOWN_OR_FILE_VERB"
+    );
+}
+
+/// W784 (v0.3 item 51, D-106): version negotiation, tool titles and output
+/// schemas, the guides as resources, and prompts, over the real binary.
+#[test]
+fn newer_protocol_resources_and_prompts() {
+    let fixture = McpFixture::new();
+    let init = |version: &str| {
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":version,"capabilities":{},"clientInfo":{"name":"t","version":"0"}}}).to_string()
+    };
+    let replies = fixture.run_mcp(
+        false,
+        &[
+            init("2025-06-18"),
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}).to_string(),
+            json!({"jsonrpc":"2.0","id":3,"method":"resources/list"}).to_string(),
+            json!({"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":"rustiron://guides/glossary"}}).to_string(),
+            json!({"jsonrpc":"2.0","id":5,"method":"resources/read","params":{"uri":"rustiron://guides/../../etc/passwd"}}).to_string(),
+            json!({"jsonrpc":"2.0","id":6,"method":"prompts/list"}).to_string(),
+            json!({"jsonrpc":"2.0","id":7,"method":"prompts/get","params":{"name":"follow_change","arguments":{"operation_id":"op_7Q2KX9"}}}).to_string(),
+            json!({"jsonrpc":"2.0","id":8,"method":"prompts/get","params":{"name":"follow_change","arguments":{"operation_id":"op 1; rm -rf /"}}}).to_string(),
+            init("1999-01-01"),
+        ],
+    );
+    assert_eq!(replies[0]["result"]["protocolVersion"], "2025-06-18");
+    assert!(replies[0]["result"]["capabilities"]["resources"].is_object());
+    assert!(replies[0]["result"]["capabilities"]["prompts"].is_object());
+    for tool in replies[1]["result"]["tools"].as_array().unwrap() {
+        assert!(
+            tool["title"].as_str().is_some_and(|t| !t.is_empty()),
+            "{}",
+            tool["name"]
+        );
+        assert_eq!(
+            tool["outputSchema"]["required"],
+            json!(["authority", "untrusted_data", "result"])
+        );
+    }
+    // Every guide in console/kb, or none in a crate-only build (isolated gates).
+    let guides =
+        fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../../console/kb")).map_or(0, |dir| {
+            dir.filter_map(Result::ok)
+                .filter(|e| {
+                    let name = e.file_name();
+                    let name = name.to_string_lossy();
+                    name.ends_with(".md") && name != "README.md"
+                })
+                .count()
+        });
+    assert_eq!(
+        replies[2]["result"]["resources"].as_array().unwrap().len(),
+        guides
+    );
+    if guides > 0 {
+        assert!(
+            replies[3]["result"]["contents"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("**Plan**")
+        );
+    }
+    assert_eq!(replies[4]["error"]["message"], "UNKNOWN_RESOURCE");
+    assert_eq!(replies[5]["result"]["prompts"].as_array().unwrap().len(), 5);
+    assert!(
+        replies[6]["result"]["messages"][0]["content"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("op_7Q2KX9")
+    );
+    assert_eq!(replies[7]["error"]["message"], "INVALID_PROMPT_ARGUMENT");
+    assert_eq!(replies[8]["result"]["protocolVersion"], "2025-06-18");
+}
+
+/// W786 (v0.3 item 49, D-107): `rustiron_diagnoses` runs only the configured
+/// program with `--diagnose`, lists problems, counts passed checks, and fails
+/// closed on a missing, failing, or malformed program.
+#[test]
+fn diagnoses_run_the_fixed_program_and_fail_closed() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = McpFixture::new();
+    let program = |name: &str, body: &str| {
+        let path = fixture.dir.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        path
+    };
+    let good = program(
+        "good",
+        r#"[ "$1" = "--host-status" ] && [ "$2" = "--diagnose" ] && [ "$#" = 2 ] && [ -z "$HOME" ] || exit 9
+echo '{"schema":"x","observed_at":5,"summary":"warn","repairs":"none","findings":[{"check":"clock","state":"ok","owner":"host","subject":"system clock","reason":"ok","action":"None."},{"check":"ssh","state":"warn","owner":"host","subject":"sshd\u202e","reason":"Root login allowed.","action":"Set PermitRootLogin no."}]}'"#,
+    );
+    let failing = program("failing", "exit 3");
+    let call = |path: &Path| -> Value {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_rustiron-mcp"))
+            .arg("--diagnose-program")
+            .arg(path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(
+                b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"rustiron_diagnoses\",\"arguments\":{}}}\n",
+            )
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        let line = String::from_utf8(output.stdout).unwrap();
+        serde_json::from_str::<Value>(line.lines().next().unwrap()).unwrap()["result"]["structuredContent"]["result"]
+            .clone()
+    };
+    let result = call(&good);
+    assert_eq!(result["summary"], "warn");
+    assert_eq!(result["passed_checks"], 1);
+    assert_eq!(result["problems"].as_array().unwrap().len(), 1);
+    assert_eq!(result["problems"][0]["subject"], "sshd\\u{202e}");
+    assert_eq!(call(&failing)["error"]["code"], "DIAGNOSE_FAILED");
+    assert_eq!(
+        call(&fixture.dir.join("missing"))["error"]["code"],
+        "DIAGNOSE_NOT_AVAILABLE"
     );
 }

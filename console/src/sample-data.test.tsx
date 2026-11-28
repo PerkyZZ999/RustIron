@@ -48,13 +48,13 @@ function unavailableBackend(input: string | URL | Request): Response {
 
 for (const [path, heading] of [
   ["/", "Host overview"],
-  ["/recovery", "Recovery"],
+  ["/recovery", "Backups"],
   ["/recovery/schedules", "Scheduled capture"],
   ["/host/metrics", "Host metrics"],
   ["/host/services", "Services"],
   ["/host/diagnoses", "Host diagnoses"],
   ["/host/cron", "Cron jobs & timers"],
-  ["/sites", "Sites"],
+  ["/sites", "Websites"],
   ["/domains", "Domains"],
   ["/databases", "Databases"],
   ["/apps", "Apps"],
@@ -87,8 +87,8 @@ for (const [path, heading] of [
 // so a full page load never flashes the sample sites.
 for (const [path, heading] of [
   ["/", "Host overview"],
-  ["/sites", "Sites"],
-  ["/recovery", "Recovery"],
+  ["/sites", "Websites"],
+  ["/recovery", "Backups"],
   ["/help", "Docs & Knowledge Base"],
 ] as const) {
   test(`${path} shows no sample data while the first observation loads (QA-05)`, async () => {

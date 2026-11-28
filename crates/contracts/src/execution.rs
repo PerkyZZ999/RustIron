@@ -422,6 +422,167 @@ pub fn decode_evidence_response(
     }
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct NoParams {}
+
+/// A query with no parameters: `site_records` (D-103) or `host_summary` (D-104).
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct WireBareQuery {
+    schema_version: u16,
+    request_id: Id,
+    method: String,
+    #[serde(deserialize_with = "crate::codec::object")]
+    params: NoParams,
+}
+
+/// Decodes a closed query for `method` and returns its request ID.
+pub(crate) fn decode_bare_query(bytes: &[u8], method: &str) -> Result<Id, ProtocolError> {
+    validate_json(bytes, MAX_REQUEST_BYTES, ProtocolError::RequestTooLarge)?;
+    let query: WireBareQuery =
+        serde_json::from_slice(bytes).map_err(|_| ProtocolError::InvalidMessage)?;
+    if query.method != method {
+        return Err(ProtocolError::InvalidMessage);
+    }
+    if query.schema_version != 1 {
+        return Err(ProtocolError::UnsupportedVersion);
+    }
+    Ok(query.request_id)
+}
+
+/// Encodes a closed query for `method`.
+pub(crate) fn encode_bare_query(request_id: &Id, method: &str) -> Result<Vec<u8>, ProtocolError> {
+    let wire = WireBareQuery {
+        schema_version: 1,
+        request_id: request_id.clone(),
+        method: method.to_owned(),
+        params: NoParams {},
+    };
+    let bytes = serde_json::to_vec(&wire).map_err(|_| ProtocolError::InvalidMessage)?;
+    decode_bare_query(&bytes, method)?;
+    Ok(bytes)
+}
+
+/// Decodes a bounded reply correlated to `request_id`: exactly the five reply
+/// fields, and on success exactly `kind` and `value`. Returns the value.
+pub(crate) fn decode_bare_reply(
+    bytes: &[u8],
+    request_id: &Id,
+    kind: &str,
+) -> Result<Result<serde_json::Value, ApiError>, ProtocolError> {
+    validate_json(bytes, MAX_RESPONSE_BYTES, ProtocolError::ResponseTooLarge)?;
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| ProtocolError::InvalidMessage)?;
+    let object = value.as_object().ok_or(ProtocolError::InvalidMessage)?;
+    if object.len() != 5
+        || ["schema_version", "request_id", "status", "data", "error"]
+            .iter()
+            .any(|field| !object.contains_key(*field))
+    {
+        return Err(ProtocolError::InvalidMessage);
+    }
+    if object["schema_version"].as_u64() != Some(1) {
+        return Err(ProtocolError::UnsupportedVersion);
+    }
+    let replied: Id = serde_json::from_value(object["request_id"].clone())
+        .map_err(|_| ProtocolError::InvalidMessage)?;
+    if &replied != request_id {
+        return Err(ProtocolError::InvalidMessage);
+    }
+    match object["status"].as_str() {
+        Some("ok") if object["error"].is_null() => {
+            let data = object["data"]
+                .as_object()
+                .ok_or(ProtocolError::InvalidMessage)?;
+            if data.len() != 2 || data.get("kind").and_then(|found| found.as_str()) != Some(kind) {
+                return Err(ProtocolError::InvalidMessage);
+            }
+            data.get("value")
+                .cloned()
+                .map(Ok)
+                .ok_or(ProtocolError::InvalidMessage)
+        }
+        Some("error") if object["data"].is_null() => {
+            let error_object = object["error"]
+                .as_object()
+                .ok_or(ProtocolError::InvalidMessage)?;
+            if ["code", "message", "retryable", "operation_id", "details"]
+                .iter()
+                .any(|field| !error_object.contains_key(*field))
+            {
+                return Err(ProtocolError::InvalidMessage);
+            }
+            let error: ApiError = serde_json::from_value(object["error"].clone())
+                .map_err(|_| ProtocolError::InvalidMessage)?;
+            if !error.is_bounded_read_error() {
+                return Err(ProtocolError::InvalidMessage);
+            }
+            Ok(Err(error))
+        }
+        _ => Err(ProtocolError::InvalidMessage),
+    }
+}
+
+/// D-103 (W778): a read-only request for the sites the executor journal owns.
+#[derive(Debug, Eq, PartialEq)]
+pub struct SiteRecordsQuery {
+    /// Correlation identifier for this query.
+    pub request_id: Id,
+}
+
+/// One owned site as the journal records it, not a live host probe.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SiteRecord {
+    /// Opaque site ID.
+    pub site_id: Id,
+    /// The hostname the site serves; untrusted display data.
+    pub hostname: crate::Text,
+    /// Whether the site was re-adopted (`true`) or created here (`false`).
+    pub adopted: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SiteRecordsValue {
+    #[serde(deserialize_with = "crate::codec::object_list")]
+    sites: Vec<SiteRecord>,
+}
+
+/// Decodes a closed `site_records` query.
+pub fn decode_site_records_query(bytes: &[u8]) -> Result<SiteRecordsQuery, ProtocolError> {
+    decode_bare_query(bytes, "site_records").map(|request_id| SiteRecordsQuery { request_id })
+}
+
+/// Encodes one `site_records` query.
+pub fn encode_site_records_query(query: &SiteRecordsQuery) -> Result<Vec<u8>, ProtocolError> {
+    encode_bare_query(&query.request_id, "site_records")
+}
+
+/// Decodes a correlated `site_records` response: at most
+/// [`crate::MAX_INVENTORY_SITES`] rows, in strictly increasing site ID order.
+pub fn decode_site_records_response(
+    bytes: &[u8],
+    query: &SiteRecordsQuery,
+) -> Result<Result<Vec<SiteRecord>, ApiError>, ProtocolError> {
+    let value = match decode_bare_reply(bytes, &query.request_id, "site_records")? {
+        Ok(value) => value,
+        Err(error) => return Ok(Err(error)),
+    };
+    let parsed: SiteRecordsValue =
+        serde_json::from_value(value).map_err(|_| ProtocolError::InvalidMessage)?;
+    if parsed.sites.len() > crate::MAX_INVENTORY_SITES
+        || parsed
+            .sites
+            .windows(2)
+            .any(|pair| pair[0].site_id.as_str() >= pair[1].site_id.as_str())
+    {
+        return Err(ProtocolError::InvalidMessage);
+    }
+    Ok(Ok(parsed.sites))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WireSubmission<'a> {

@@ -1,5 +1,6 @@
 // W632 / W650: Server Operations — Interactive Firewall Rule Builder,
 // Scheduled Jobs & Timers (/host/cron), and Redacted Server Logs Viewer (/host/logs).
+import { AnswerLine, SimpleHeader, type Tone } from "@/components/console/simple";
 import { consoleRequest } from "./console-request";
 import { Link } from "@tanstack/react-router";
 import {
@@ -241,6 +242,25 @@ const managedTimers = [
   },
 ];
 
+/** W788 (v0.3 item 58): "What runs on a schedule?" in one sentence. */
+function cronAnswer(isLive: boolean, states: string[]): { tone: Tone; text: string } {
+  if (!isLive) return { tone: "ok", text: `All ${states.length} server timers are scheduled.` };
+  const active = states.filter((st) => st === "active").length;
+  const unobserved = states.filter((st) => st === "Not observed").length;
+  if (active === states.length)
+    return { tone: "ok", text: `All ${states.length} server timers are on.` };
+  if (active + unobserved === states.length) {
+    return {
+      tone: "unknown",
+      text: `${active} of ${states.length} server timers are on; ${unobserved} not observed.`,
+    };
+  }
+  return {
+    tone: "warn",
+    text: `${states.length - active - unobserved} of ${states.length} server timers are not on.`,
+  };
+}
+
 export function HostCronPage() {
   const data = useData();
   const isLive = isRealHost(data.source);
@@ -255,13 +275,26 @@ export function HostCronPage() {
     <Page live>
       <Crumbs items={[{ href: "/", label: "Overview" }, { label: "Cron jobs" }]} />
       <div className="page-head">
-        <div>
-          <h1>Cron jobs &amp; timers</h1>
-          <p className="sub">
-            Managed systemd timers and per-site WordPress cron execution schedules with
-            traffic-aware load gating.
-          </p>
-        </div>
+        <SimpleHeader
+          title="Cron jobs & timers"
+          answer={
+            <AnswerLine
+              tone={
+                cronAnswer(
+                  isLive,
+                  managedTimers.map((t) => timerStatus(t.unit)),
+                ).tone
+              }
+            >
+              {
+                cronAnswer(
+                  isLive,
+                  managedTimers.map((t) => timerStatus(t.unit)),
+                ).text
+              }
+            </AnswerLine>
+          }
+        />
         <div className="row" style={{ gap: 8 }}>
           <Link className="btn quiet sm" to="/recovery/schedules">
             Backup schedules
@@ -715,6 +748,27 @@ function useUnitLogStream(unit: string, lineCount: number, autoRefreshSec: numbe
   return { reply, loading, reload };
 }
 
+/** W788: "What happened recently?" counted from the lines on screen. */
+function logsAnswer(
+  reply: { available?: boolean; unit?: string } | null | undefined,
+  entries: { severity: "error" | "warn" | "info" }[],
+): { tone: Tone; text: string } {
+  if (!reply) return { tone: "unknown", text: "Loading the journal…" };
+  if (!reply.available) return { tone: "unknown", text: "This journal is not available here." };
+  const errors = entries.filter((e) => e.severity === "error").length;
+  const warnings = entries.filter((e) => e.severity === "warn").length;
+  const where = `the last ${entries.length} lines of ${reply.unit ?? "this unit"}`;
+  if (errors > 0)
+    return { tone: "err", text: `${errors} ${errors === 1 ? "error" : "errors"} in ${where}.` };
+  if (warnings > 0) {
+    return {
+      tone: "warn",
+      text: `${warnings} ${warnings === 1 ? "warning" : "warnings"} in ${where}.`,
+    };
+  }
+  return { tone: "ok", text: `No errors or warnings in ${where}.` };
+}
+
 export function HostLogsPage() {
   const [unit, setUnit] = useState<string>("executor");
   const [lineCount, setLineCount] = useState(60);
@@ -745,13 +799,14 @@ export function HostLogsPage() {
     <Page live>
       <Crumbs items={[{ href: "/", label: "Overview" }, { label: "Server logs" }]} />
       <div className="page-head">
-        <div>
-          <h1>Server logs</h1>
-          <p className="sub">
-            Redacted, read-only systemd journal viewer for core hosting services. Sensitive tokens,
-            keys, and cookies are automatically stripped.
-          </p>
-        </div>
+        <SimpleHeader
+          title="Server logs"
+          answer={
+            <AnswerLine tone={logsAnswer(reply, parsedEntries).tone}>
+              {logsAnswer(reply, parsedEntries).text}
+            </AnswerLine>
+          }
+        />
         <div className="row" style={{ gap: 8 }}>
           <button
             type="button"

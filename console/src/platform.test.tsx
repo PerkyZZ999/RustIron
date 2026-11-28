@@ -22,11 +22,11 @@ test("apps page shows P27/P30 workloads and opens the slide-over inspector only 
   });
   render(<RouterProvider router={router} />);
   expect(await screen.findByRole("heading", { level: 1, name: "Apps" })).toBeTruthy();
-  expect(screen.getByRole("button", { name: "emdash.lab.test" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "emdash.lab.test" })).toBeTruthy();
   expect(screen.queryByText(/EMDASH_ENCRYPTION_KEY/)).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "emdash.lab.test" }));
+  fireEvent.click(screen.getByRole("button", { name: "Inspect emdash.lab.test" }));
   expect(screen.getByText(/EMDASH_ENCRYPTION_KEY/)).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "dashboard.lab.test" }));
+  fireEvent.click(screen.getByRole("button", { name: "Inspect dashboard.lab.test" }));
   expect(screen.getByText(/Automatic rollback preserved serving/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Close app details" }));
   expect(screen.queryByText(/Automatic rollback preserved serving/)).toBeNull();
@@ -55,6 +55,7 @@ test("host diagnoses keeps open findings visible and collapses passed checks by 
   });
   render(<RouterProvider router={router} />);
   expect(await screen.findByRole("heading", { level: 1, name: "Host diagnoses" })).toBeTruthy();
+  expect(screen.getByText(/1 problem, .*Open one to see what to do\./)).toBeTruthy();
   const toggle = screen.getByRole("button", { name: /Passed checks/ });
   expect(toggle.getAttribute("aria-expanded")).toBe("false");
   fireEvent.click(screen.getByRole("button", { name: "SSH" }));
@@ -75,7 +76,7 @@ test("host updates, domains, and migration views render read-only platform evide
 
   await act(() => router.navigate({ to: "/domains" }));
   expect(await screen.findByRole("heading", { level: 1, name: "Domains" })).toBeTruthy();
-  expect(screen.getByRole("button", { name: "emdash.lab.test" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Inspect emdash.lab.test" })).toBeTruthy();
 
   await act(() => router.navigate({ to: "/migration" }));
   expect(await screen.findByRole("heading", { level: 1, name: "Migration" })).toBeTruthy();
@@ -197,13 +198,12 @@ test("sites inspector drawer, recovery subviews, and domain DNS views render rea
     history: createMemoryHistory({ initialEntries: ["/sites"] }),
   });
   render(<RouterProvider router={router} />);
-  expect(await screen.findByRole("heading", { level: 1, name: "Sites" })).toBeTruthy();
+  expect(await screen.findByRole("heading", { level: 1, name: "Websites" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Inspect shop.lab.test" }));
   expect(screen.getByRole("complementary", { name: "Details for shop.lab.test" })).toBeTruthy();
-  fireEvent.change(screen.getByLabelText("Filter sites by hostname"), {
-    target: { value: "blog" },
-  });
+  fireEvent.click(screen.getByRole("button", { name: /^Serving/ }));
   expect(screen.getByRole("link", { name: "blog.lab.test" })).toBeTruthy();
+  expect(screen.queryByRole("link", { name: "shop.lab.test" })).toBeNull();
 
   await act(() => router.navigate({ to: "/recovery/schedules" }));
   expect(await screen.findByRole("heading", { level: 1, name: "Scheduled capture" })).toBeTruthy();
@@ -264,9 +264,12 @@ test("W624 views: host alerts, firewall, mail relay, site maintenance, apps filt
   expect(screen.getAllByText(/site_credential_rotate/).length).toBeGreaterThan(0);
 
   await act(() => router.navigate({ to: "/apps" }));
-  fireEvent.click(screen.getByRole("button", { name: "Bun app" }));
-  expect(screen.getByRole("button", { name: "api.lab.test" })).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "emdash.lab.test" })).toBeNull();
+  // Item 64: several apps can be chosen; a restart becomes one signed plan per app.
+  fireEvent.click(await screen.findByRole("checkbox", { name: "Choose api.lab.test" }));
+  fireEvent.click(screen.getByRole("button", { name: "Restart" }));
+  expect(await screen.findByText("Restart 1 app?")).toBeTruthy();
+  expect(document.body.textContent).toContain("--action restart --valid-from");
+  expect(document.body.textContent).toContain("> ./plan-1.json");
 
   await act(() => router.navigate({ to: "/settings" }));
   fireEvent.change(screen.getByLabelText("Transparency"), { target: { value: "reduce" } });
@@ -439,7 +442,7 @@ test("W630 Databases Manager and interactive Site Lifecycle Controls", async () 
   expect(await screen.findByRole("heading", { level: 1, name: "Databases" })).toBeTruthy();
   expect(screen.getAllByText(/rs_site_8KD2QW_wp/).length).toBeGreaterThan(0);
   expect(screen.queryByText(/site-credential-rotate/)).toBeNull();
-  const manageBtns = screen.getAllByRole("button", { name: "Manage" });
+  const manageBtns = screen.getAllByRole("button", { name: /^Manage / });
   const firstManage = manageBtns[0];
   if (!firstManage) throw new Error("no Manage button");
   fireEvent.click(firstManage);

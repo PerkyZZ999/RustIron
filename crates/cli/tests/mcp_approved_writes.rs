@@ -255,7 +255,7 @@ fn enforces_tiers_no_self_approval_no_blanket_no_budget_expansion_expiry_and_liv
         ],
     );
 
-    assert_eq!(replies[0]["result"]["tools"].as_array().unwrap().len(), 8);
+    assert_eq!(replies[0]["result"]["tools"].as_array().unwrap().len(), 14);
     assert_eq!(
         replies[1]["result"]["structuredContent"]["result"]["error"]["code"],
         "TIER_ESCALATION_DENIED"

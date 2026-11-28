@@ -1,4 +1,15 @@
 // W714 (pass 33, fix 7): Operations list, operation detail, and plan detail pages. Split from `pages.tsx`.
+import { AnswerLine, SimpleHeader } from "@/components/console/simple";
+import {
+  FilterChips,
+  ListArea,
+  ListControls,
+  ListToolbar,
+  matches,
+  rowClass,
+  rowLinkClass,
+  usePaged,
+} from "@/components/console/list";
 import { Button } from "@/components/ui/button";
 import { Link } from "@tanstack/react-router";
 import {
@@ -10,246 +21,173 @@ import {
   Lock,
   Signature,
   CircleAlert,
-  CircleCheck,
   CircleDashed,
-  CircleX,
-  LoaderCircle,
   Plus,
   RefreshCw,
-  Search,
 } from "lucide-react";
 import { Fragment, useState } from "react";
-import { isRealHost, useData } from "./data";
+import { useData } from "./data";
+import type { OperationRow } from "./fixture";
 import { LiveOperationEvidenceBar } from "./live-coordinator";
 import { ReceiptAttestationPanel, SignedBytesPanel } from "./signed-panel";
 import { liveOperation, type Observation, type LiveOperation } from "./live";
 import { CopyId, Crumbs, EvidenceStrip, Glyph, Page, TableScroll } from "./ui";
 import { matchesOutcome, Missing } from "./page-parts";
 
-export function OperationsPage() {
-  const [query, setQuery] = useState("");
-  const [outcome, setOutcome] = useState("All outcomes");
-  const [action, setAction] = useState("All actions");
-  const [pageNote, setPageNote] = useState("");
-  const needle = query.trim().toLowerCase();
-  const data = useData();
-  const rows = data.operations;
-  const count = (filter: string) =>
-    rows.filter((row) => matchesOutcome(row.outcome, filter)).length;
-  const visible = rows.filter((row) => {
-    const haystack = `${row.action} ${row.id} ${row.resources}`.toLowerCase();
-    return (
-      matchesOutcome(row.outcome, outcome) &&
-      (action === "All actions" || row.action === action) &&
-      (needle === "" || haystack.includes(needle))
-    );
-  });
+function operationCounts(rows: { outcome: string }[]) {
+  const count = (keep: (outcome: string) => boolean) => rows.filter((r) => keep(r.outcome)).length;
+  const attention = count((o) => o === "Needs attention");
+  const failed = count((o) => matchesOutcome(o, "Failed"));
+  const running = count((o) => matchesOutcome(o, "Running"));
+  const parts = [
+    attention > 0 ? `${attention} ${attention === 1 ? "needs" : "need"} attention` : "",
+    failed > 0 ? `${failed} failed` : "",
+    running > 0 ? `${running} still running` : "",
+  ].filter(Boolean);
+  return { attention, failed, parts };
+}
 
+/** W790 (v0.3 item 60): "What has changed recently?" without calling pending work done. */
+function OperationsAnswer({ data }: { data: ReturnType<typeof useData> }) {
+  if (data.source.kind === "loading") {
+    return <AnswerLine tone="unknown">Checking this server…</AnswerLine>;
+  }
+  const rows = data.operations;
+  if (rows.length === 0) return <AnswerLine tone="unknown">No changes recorded yet.</AnswerLine>;
+  const { attention, failed, parts } = operationCounts(rows);
+  const total = `${rows.length} recorded ${rows.length === 1 ? "change" : "changes"}`;
+  if (parts.length === 0) return <AnswerLine tone="ok">{total}, none waiting on you.</AnswerLine>;
+  return (
+    <AnswerLine tone={attention > 0 || failed > 0 ? "err" : "unknown"}>
+      {total}: {parts.join(", ")}.
+    </AnswerLine>
+  );
+}
+
+type OperationFilter = "all" | "attention" | "running" | "done" | "rejected";
+
+/** The outcome group an operation belongs to; partial and uncertain work is never "done". */
+function outcomeGroup(outcome: string): Exclude<OperationFilter, "all"> {
+  if (outcome === "Needs attention" || outcome.startsWith("Failed")) return "attention";
+  if (outcome.startsWith("Running")) return "running";
+  if (outcome === "Rejected") return "rejected";
+  if (outcome === "Succeeded") return "done";
+  return "attention";
+}
+
+function OperationItem({ row }: { row: OperationRow }) {
+  return (
+    <li className={rowClass}>
+      <div className="min-w-0 flex-1">
+        {row.linked ? (
+          <Link
+            className={rowLinkClass}
+            to="/operations/$operationId"
+            params={{ operationId: row.id }}
+          >
+            {row.action}
+          </Link>
+        ) : (
+          <strong className="block truncate text-[15px]">{row.action}</strong>
+        )}
+        <p className="truncate text-sm text-muted-foreground">
+          {row.resources} · {row.requester} · {row.started}
+          {row.duration ? ` · ${row.duration}` : ""} ·{" "}
+          <span className="mono" translate="no">
+            {row.id}
+          </span>
+        </p>
+      </div>
+      <span className="flex justify-end sm:w-48">
+        <span className={`state ${row.kind}`}>
+          <Glyph icon={row.icon} />
+          {row.outcome}
+        </span>
+      </span>
+    </li>
+  );
+}
+
+const operationChips = [
+  ["attention", "Needs you"],
+  ["running", "Running"],
+  ["done", "Done"],
+  ["rejected", "Rejected"],
+] as const;
+
+function OperationsList({ rows }: { rows: OperationRow[] }) {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<OperationFilter>("all");
+  const [sort, setSort] = useState<"newest" | "attention">("newest");
+  const count = (group: Exclude<OperationFilter, "all">) =>
+    rows.filter((row) => outcomeGroup(row.outcome) === group).length;
+  const filtered = rows
+    .filter((row) => matches(query, row.action, row.id, row.resources))
+    .filter((row) => filter === "all" || outcomeGroup(row.outcome) === filter);
+  // The records arrive newest first; "needs you first" keeps that order inside each group.
+  const needsYou = (row: OperationRow) => Number(outcomeGroup(row.outcome) === "attention");
+  const visible =
+    sort === "attention" ? [...filtered].sort((a, b) => needsYou(b) - needsYou(a)) : filtered;
+  const paged = usePaged(visible, `${query}|${filter}|${sort}|${rows.length}`);
+  const chips = operationChips
+    .map(([value, label]) => ({ value, label, count: count(value) }))
+    .filter((chip) => chip.count > 0 || chip.value === filter);
+  return (
+    <div className="flex flex-col gap-4">
+      <ListToolbar
+        hidden={rows.length === 0}
+        filters={
+          <FilterChips
+            label="Show"
+            value={filter}
+            onChange={setFilter}
+            options={[{ value: "all", label: "All", count: rows.length }, ...chips]}
+          />
+        }
+      >
+        <ListControls
+          count={rows.length}
+          searchLabel="Find an operation, plan, or website"
+          query={query}
+          onQuery={setQuery}
+          sort={sort}
+          onSort={setSort}
+          sorts={[
+            { value: "newest", label: "Newest first" },
+            { value: "attention", label: "Needs you first" },
+          ]}
+        />
+      </ListToolbar>
+      <ListArea
+        label="Operations"
+        noun="operations"
+        total={rows.length}
+        paged={paged}
+        onReset={() => {
+          setQuery("");
+          setFilter("all");
+        }}
+      >
+        {paged.rows.map((row) => (
+          <OperationItem key={`${row.action}-${row.id}-${row.started}`} row={row} />
+        ))}
+      </ListArea>
+    </div>
+  );
+}
+
+export function OperationsPage() {
+  const data = useData();
   return (
     <Page live>
       <div className="page-head">
-        <div>
-          <h1>Operations</h1>
-          <p className="sub">
-            Executor-recorded operations and their verified outcomes. Pending requests are never
-            shown as completed.
-          </p>
-        </div>
+        <SimpleHeader title="Operations" answer={<OperationsAnswer data={data} />} />
         <Link className="btn primary sm" to="/plans/new">
           <Glyph icon={Plus} />
           New plan
         </Link>
       </div>
-      <div className="grid g4">
-        <button className="panel" type="button" onClick={() => setOutcome("Needs attention")}>
-          <div className="row between">
-            <span className="state err">
-              <Glyph icon={CircleAlert} />
-              Needs attention
-            </span>
-            <strong className="tnum" style={{ fontSize: 24 }}>
-              {count("Needs attention")}
-            </strong>
-          </div>
-          <p className="cap" style={{ marginTop: 6 }}>
-            {isRealHost(data.source)
-              ? "Blocks new work on what it touched"
-              : "Blocks shop.lab.test and global config"}
-          </p>
-        </button>
-        <div className="panel">
-          <div className="row between">
-            <span className="state info">
-              <Glyph icon={LoaderCircle} />
-              Running
-            </span>
-            <strong className="tnum" style={{ fontSize: 24 }}>
-              {count("Running")}
-            </strong>
-          </div>
-          <p className="cap" style={{ marginTop: 6 }}>
-            {isRealHost(data.source) ? "Recorded, not finished" : "Backup capture · wiki.lab.test"}
-          </p>
-        </div>
-        <div className="panel">
-          <div className="row between">
-            <span className="state err">
-              <Glyph icon={CircleX} />
-              Failed
-            </span>
-            <strong className="tnum" style={{ fontSize: 24 }}>
-              {count("Failed") + count("Failed, compensated")}
-            </strong>
-          </div>
-          <p className="cap" style={{ marginTop: 6 }}>
-            {isRealHost(data.source)
-              ? "Including compensated and partial"
-              : "Partial resources retained"}
-          </p>
-        </div>
-        <div className="panel">
-          <div className="row between">
-            <span className="state ok">
-              <Glyph icon={CircleCheck} />
-              Succeeded
-            </span>
-            <strong className="tnum" style={{ fontSize: 24 }}>
-              {count("Succeeded")}
-            </strong>
-          </div>
-          <p className="cap" style={{ marginTop: 6 }}>
-            {isRealHost(data.source)
-              ? "Each verified by its observer"
-              : "Each verified by its observer"}
-          </p>
-        </div>
-      </div>
-      <section className="panel flush" aria-label="Operations table">
-        <div className="toolbar">
-          <label className="input search-input">
-            <Glyph icon={Search} />
-            <input
-              aria-label="Operation, plan or site ID"
-              placeholder="Operation, plan or site ID"
-              autoComplete="off"
-              spellCheck={false}
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </label>
-          <label className="field">
-            Outcome
-            <select
-              className="input"
-              value={outcome}
-              onChange={(event) => setOutcome(event.target.value)}
-            >
-              <option>All outcomes</option>
-              <option>Needs attention</option>
-              <option>Running</option>
-              <option>Failed</option>
-              <option>Failed, compensated</option>
-              <option>Succeeded</option>
-              <option>Rejected</option>
-            </select>
-          </label>
-          <label className="field">
-            Action
-            <select
-              className="input"
-              value={action}
-              onChange={(event) => setAction(event.target.value)}
-            >
-              <option>All actions</option>
-              <option>Site provision</option>
-              <option>Config activation</option>
-              <option>Backup capture</option>
-              <option>Restore probe</option>
-              <option>Site eject</option>
-            </select>
-          </label>
-          <label className="field">
-            Range
-            <select className="input" defaultValue="Last 7 days">
-              <option>Last 7 days</option>
-            </select>
-          </label>
-        </div>
-        <TableScroll label="Operations">
-          <table className="data">
-            <thead>
-              <tr>
-                <th>Operation</th>
-                <th>Outcome</th>
-                <th>Resources</th>
-                <th>Requester</th>
-                <th>Started (UTC)</th>
-                <th className="num">Duration</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.length === 0 ? (
-                <tr>
-                  <td colSpan={6}>No operations match this filter.</td>
-                </tr>
-              ) : (
-                visible.map((row) => (
-                  <tr key={`${row.action}-${row.id}-${row.started}`}>
-                    <td className="primary-cell">
-                      {row.linked ? (
-                        <Link to="/operations/$operationId" params={{ operationId: row.id }}>
-                          {row.action}
-                        </Link>
-                      ) : (
-                        <strong>{row.action}</strong>
-                      )}
-                      <small className="mono" translate="no">
-                        {row.id}
-                      </small>
-                    </td>
-                    <td>
-                      <span className={`state ${row.kind}`}>
-                        <Glyph icon={row.icon} />
-                        {row.outcome}
-                      </span>
-                    </td>
-                    <td>{row.resources}</td>
-                    <td>{row.requester}</td>
-                    <td className="tnum">{row.started}</td>
-                    <td className="num tnum">{row.duration}</td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </TableScroll>
-        <div className="pager">
-          <span>
-            {visible.length !== rows.length
-              ? `${visible.length} shown · newest first`
-              : isRealHost(data.source)
-                ? `${rows.length} recorded · newest first`
-                : "1–8 of 27 · newest first"}
-          </span>
-          <span className="row">
-            <button className="btn sm" type="button" disabled>
-              Previous
-            </button>
-            <button
-              className="btn sm"
-              type="button"
-              onClick={() => setPageNote("The fixture only includes this page.")}
-            >
-              Next
-            </button>
-          </span>
-        </div>
-        {pageNote ? (
-          <p className="cap" style={{ padding: "0 20px 12px" }} aria-live="polite">
-            {pageNote}
-          </p>
-        ) : null}
-      </section>
+      <OperationsList rows={data.operations} />
     </Page>
   );
 }

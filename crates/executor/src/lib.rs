@@ -47,6 +47,7 @@ mod durable;
 pub mod ejection;
 mod files;
 mod generation;
+mod host_summary;
 mod import;
 pub mod layout;
 mod manifest;

@@ -6,6 +6,7 @@ import { toastManager } from "@/components/ui/toast";
 import { hostLabel, isRealHost, useData } from "./data";
 import { evidenceLabel, fields, type Mark } from "./fixture";
 import type { HostHistory } from "./live";
+import type { TrendRow } from "@/components/console/trend-chart";
 
 export function Glyph({ icon: Icon, className }: { icon: LucideIcon; className?: string }) {
   return <Icon className={className} aria-hidden="true" strokeWidth={2} />;
@@ -519,6 +520,18 @@ function ChartSeries({
   });
 }
 
+/** W787: the same fixture or live plot as rows for the Recharts trend chart. */
+export function trendRows(history: HostHistory | null): TrendRow[] {
+  const plot = history ? livePlot(history) : fixturePlot();
+  const [cpu, mem, disk] = plot.lines;
+  return (cpu?.points ?? []).map(([unit, value], index) => ({
+    label: plot.timeAt(unit),
+    cpu: value,
+    memory: mem?.points[index]?.[1] ?? null,
+    disk: disk?.points[index]?.[1] ?? null,
+  }));
+}
+
 export function ResourceChart({
   label,
   height = 240,
@@ -649,53 +662,6 @@ export function ResourceChart({
           ) : null}
         </svg>
       </div>
-    </div>
-  );
-}
-
-export function Legend() {
-  return (
-    <div className="legend">
-      <span>
-        <svg viewBox="0 0 26 10" aria-hidden="true">
-          <line x1="0" x2="26" y1="5" y2="5" stroke="var(--cpu)" strokeWidth="2.5" />
-        </svg>
-        CPU
-      </span>
-      <span>
-        <svg viewBox="0 0 26 10" aria-hidden="true">
-          <line
-            x1="0"
-            x2="26"
-            y1="5"
-            y2="5"
-            stroke="var(--memory)"
-            strokeWidth="2.5"
-            strokeDasharray="7 5"
-          />
-        </svg>
-        Memory
-      </span>
-      <span>
-        <svg viewBox="0 0 26 10" aria-hidden="true">
-          <line
-            x1="0"
-            x2="26"
-            y1="5"
-            y2="5"
-            stroke="var(--disk)"
-            strokeWidth="2.5"
-            strokeDasharray="2 4"
-          />
-        </svg>
-        Disk /var
-      </span>
-      <span className="muted">
-        <svg viewBox="0 0 26 10" aria-hidden="true">
-          <rect width="26" height="10" rx="2" fill="var(--border)" opacity="0.6" />
-        </svg>
-        No samples
-      </span>
     </div>
   );
 }

@@ -21,11 +21,18 @@ Every change to your server, such as a new website, a backup, or a new DNS recor
 
 ## Fill in a form {#form}
 
-Most pages have a button that starts a form: Add website on Sites, Add domain on Domains, the DNS record editor, and New plan on Operations.
+Most pages have a button that starts a form: Add website on Websites, Add domain on Domains, the DNS record editor, and New plan on Operations.
 
 Each form checks your input as you type and explains any problem next to the field. The commands appear only when every field is valid, so you never copy a half-finished command.
 
 New plan offers these changes: config activation, backup capture, recovery probe, site provision, credential rotation, and modern app deploy.
+
+## Change several entries at once {#bulk}
+
+On Websites and Backups you can tick several websites and choose Back up now or Test a restore; on Apps, Restart. Each plan names one website or app, so the Console shows one command per entry, each writing its own plan file (plan-1.json, plan-2.json, and so on). Review and sign each plan on your computer, then submit them on the Plans page.
+
+- Nothing changes on the server until you sign and submit the plans.
+- Actions without a signed plan are not offered, and nothing is ever removed in bulk.
 
 ## Review the change {#review}
 

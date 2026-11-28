@@ -124,6 +124,53 @@ impl ExecutorTransport {
             .map_err(|_| ErrorCode::DependencyUnavailable)
     }
 
+    /// One framed read exchange; the caller encodes and decodes.
+    fn exchange(&self, bytes: &[u8], deadline: Instant) -> Result<Vec<u8>, ErrorCode> {
+        local::operator_uid()?;
+        let mut stream = self.connect(deadline)?;
+        local::write_frame(
+            &mut stream,
+            bytes,
+            MAX_REQUEST_BYTES,
+            ErrorCode::RequestTooLarge,
+            deadline,
+        )
+        .map_err(|_| ErrorCode::DependencyUnavailable)?;
+        local::read_frame(
+            &mut stream,
+            MAX_RESPONSE_BYTES,
+            ErrorCode::ResponseTooLarge,
+            deadline,
+        )
+        .map_err(|_| ErrorCode::DependencyUnavailable)
+    }
+
+    /// D-103 (W778): the executor journal's owned sites, read-only.
+    pub(crate) fn site_records_until(
+        &self,
+        query: &rustiron_contracts::execution::SiteRecordsQuery,
+        deadline: Instant,
+    ) -> Result<Result<Vec<rustiron_contracts::execution::SiteRecord>, ApiError>, ErrorCode> {
+        let bytes = rustiron_contracts::execution::encode_site_records_query(query)
+            .map_err(|_| ErrorCode::InvalidRequest)?;
+        let reply = self.exchange(&bytes, deadline)?;
+        rustiron_contracts::execution::decode_site_records_response(&reply, query)
+            .map_err(|_| ErrorCode::DependencyUnavailable)
+    }
+
+    /// D-104 (W779): the executor's bounded host summary, read-only.
+    pub(crate) fn host_summary_until(
+        &self,
+        query: &rustiron_contracts::summary::HostSummaryQuery,
+        deadline: Instant,
+    ) -> Result<Result<rustiron_contracts::summary::HostSummary, ApiError>, ErrorCode> {
+        let bytes = rustiron_contracts::summary::encode_host_summary_query(query)
+            .map_err(|_| ErrorCode::InvalidRequest)?;
+        let reply = self.exchange(&bytes, deadline)?;
+        rustiron_contracts::summary::decode_host_summary_response(&reply, query)
+            .map_err(|_| ErrorCode::DependencyUnavailable)
+    }
+
     /// Forwards one already-signed grant and plan without signing or retrying.
     pub fn submit(
         &self,

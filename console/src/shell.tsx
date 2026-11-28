@@ -81,7 +81,7 @@ const navGroups: { heading?: string; items: NavItem[] }[] = [
   {
     heading: "Hosting",
     items: [
-      { to: "/sites", label: "Sites", icon: Globe, match: "prefix" },
+      { to: "/sites", label: "Websites", icon: Globe, match: "prefix" },
       { to: "/apps", label: "Apps", icon: Box, match: "prefix" },
       { to: "/databases", label: "Databases", icon: Database, match: "prefix" },
       { to: "/migration", label: "Migration", icon: ArrowLeftRight, match: "prefix" },
@@ -97,7 +97,7 @@ const navGroups: { heading?: string; items: NavItem[] }[] = [
   {
     heading: "Safety",
     items: [
-      { to: "/recovery", label: "Recovery", icon: History, match: "prefix" },
+      { to: "/recovery", label: "Backups", icon: History, match: "prefix" },
       { to: "/operations", label: "Operations", icon: Activity, match: "prefix" },
     ],
   },
@@ -133,6 +133,8 @@ const segmentLabels: Record<string, string> = {
   relay: "Relay",
   users: "Users & access",
   help: "Docs & KB",
+  sites: "Websites",
+  recovery: "Backups",
 };
 
 /**

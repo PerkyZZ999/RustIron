@@ -58,7 +58,7 @@ Earlier versions and the full notes for each release are in the [Changelog](CHAN
 
 ## Console Admin Panel
 
-Built with **React 19**, strict **TypeScript**, **Bun**, **Tailwind CSS v4**, and **Coss UI (`@base-ui/react`)** across **43 built routes**, featuring a Matte Charcoal & Royal Blue default theme, an adaptive light theme, full-screen Better Auth login lockdown, and **290 automated Playwright + axe WCAG 2.2 AA checks**.
+Built with **React 19**, strict **TypeScript**, **Bun**, **Tailwind CSS v4**, and **Coss UI (`@base-ui/react`)** across **46 routes**, featuring a Matte Charcoal & Royal Blue default theme, an adaptive light theme, full-screen Better Auth sign-in, and **300+ automated Playwright + axe WCAG 2.2 AA checks**. Every page opens with one sentence on how things are, and every list works for a few entries or for hundreds.
 
 <p align="center">
   <picture>
@@ -66,18 +66,24 @@ Built with **React 19**, strict **TypeScript**, **Bun**, **Tailwind CSS v4**, an
     <source media="(prefers-color-scheme: light)" srcset="docs/assets/screenshots/console-overview-light.png" />
     <img alt="RustIron Console Admin Panel — Host Overview" src="docs/assets/screenshots/console-overview-dark.png" width="100%" />
   </picture>
-  <sub><b>Host Overview</b> — Real-time CPU, memory, disk, and uptime metrics, quick hosting actions, interactive resource history chart, and open host findings. Automatically adapts to your GitHub dark or light theme.</sub>
+  <sub><b>Host Overview</b> — One sentence on how the server is doing, CPU, memory, disk, and uptime tiles, an interactive resource history chart, and open host findings. Automatically adapts to your GitHub dark or light theme.</sub>
 </p>
 
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img alt="RustIron Console — Apps and Slide-Over Inspector Drawer" src="docs/assets/screenshots/console-apps-drawer-dark.png" width="100%" />
-      <p align="center"><sub><b>Apps &amp; Slide-Over Inspector</b> — On-demand detail drawer for Node.js 22, Bun 1.4, and EmDash CMS workloads with zero table layout shift.</sub></p>
+      <img alt="RustIron Console — Websites list with three websites chosen for a bulk backup" src="docs/assets/screenshots/console-websites-bulk-dark.png" width="100%" />
+      <p align="center"><sub><b>Websites &amp; Bulk Actions</b> — Problems first, with search, sorting, and pages as a list grows. Choose several websites to back up or test a restore: the Console writes one signed-plan command per website.</sub></p>
     </td>
     <td width="50%" valign="top">
-      <img alt="RustIron Console — Integrated Documentation and Knowledge Base" src="docs/assets/screenshots/console-kb-dark.png" width="100%" />
-      <p align="center"><sub><b>Integrated Docs &amp; Knowledge Base (<code>/help</code>)</b> — 14 step-by-step operational guides, incident-aware context, copyable CLI recipes, and a 38-runbook directory.</sub></p>
+      <img alt="RustIron Console — Apps and Slide-Over Inspector Drawer" src="docs/assets/screenshots/console-apps-drawer-dark.png" width="100%" />
+      <p align="center"><sub><b>Apps &amp; Slide-Over Inspector</b> — On-demand detail drawer for Node.js 22, Bun 1.4, and EmDash CMS workloads: runtime, service, limits, secret names, and backups.</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center" valign="top">
+      <img alt="RustIron Console — Integrated Documentation and Knowledge Base" src="docs/assets/screenshots/console-kb-dark.png" width="50%" />
+      <p align="center"><sub><b>Integrated Docs &amp; Knowledge Base (<code>/help</code>)</b> — 26 step-by-step guides, runbooks matched to the current host state, copyable CLI recipes, and a 38-runbook directory.</sub></p>
     </td>
   </tr>
 </table>

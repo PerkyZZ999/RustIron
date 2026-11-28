@@ -78,6 +78,7 @@ pub fn render_human(response: &Response) -> Result<String, ProtocolError> {
             status.operation_id.as_str(),
             status.state
         ),
+        Ok(ReadData::HostSummary(summary)) => host_summary(summary),
         Ok(ReadData::EvidenceExport(evidence)) => format!(
             "Operation: {}\nSelf-attested receipt. Not independent proof.\n{}\n{}\n",
             evidence.operation_id.as_str(),
@@ -89,6 +90,74 @@ pub fn render_human(response: &Response) -> Result<String, ProtocolError> {
             )
         ),
     })
+}
+
+/// D-104 (W779): recorded facts in four short sections; hostnames escaped.
+fn host_summary(summary: &crate::summary::HostSummary) -> String {
+    let id = |value: &Option<Id>| value.as_ref().map_or("-", Id::as_str).to_owned();
+    let run = |value: &Option<crate::summary::RecordedRun>| match value {
+        Some(run) => format!(
+            "{} {} (started {}, finished {})",
+            run.state.as_str(),
+            run.operation_id.as_str(),
+            run.started_at.get(),
+            run.finished_at
+                .map_or("-".to_owned(), |at| at.get().to_string())
+        ),
+        None => "none".to_owned(),
+    };
+    let mut lines = vec![
+        "Host summary: recorded executor facts, not a live probe.".to_owned(),
+        format!(
+            "Observed at: {}; journal last admission: {}",
+            summary.observed_at.get(),
+            summary.journal_last_time.get()
+        ),
+        format!(
+            "Signature verifier matches enrollment: {}",
+            summary.signature_verifier_matches
+        ),
+        format!(
+            "Backup destination enrolled: {}; retention days: {}",
+            summary.backup_destination_enrolled,
+            summary
+                .backup_retention_days
+                .map_or("-".to_owned(), |days| days.to_string())
+        ),
+        format!("Sites: {}", summary.sites.len()),
+    ];
+    for site in &summary.sites {
+        lines.push(format!(
+            "  {} | {} | {} | failed step {} | ejected {}",
+            site.site_id.as_str(),
+            escape_human(site.hostname.as_str()),
+            site.state.as_str(),
+            id(&site.failed_step),
+            site.ejected
+        ));
+    }
+    lines.push(format!("Certificates: {}", summary.certificates.len()));
+    for certificate in &summary.certificates {
+        lines.push(format!(
+            "  {} | {} | not after {} | finding {} | renewed by {}",
+            certificate.site_id.as_str(),
+            escape_human(certificate.hostname.as_str()),
+            certificate.not_after.get(),
+            id(&certificate.finding),
+            certificate.renewed_by.as_str()
+        ));
+    }
+    lines.push(format!("Backups: {} site(s)", summary.backups.len()));
+    for site in &summary.backups {
+        lines.push(format!(
+            "  {} | capture {} | probe {}",
+            site.site_id.as_str(),
+            run(&site.capture),
+            run(&site.probe)
+        ));
+    }
+    lines.push(String::new());
+    lines.join("\n")
 }
 
 /// W392: the signature state of a receipt. The CLI does not verify it.
@@ -104,7 +173,13 @@ fn receipt_signature_line(receipt: &crate::execution::EvidenceReceipt) -> String
 
 fn site_line(site: &SiteSummary) -> String {
     let provenance = match &site.inventory {
-        Some(report) => format!("operator_report; unix_seconds={}", report.reported_at.get()),
+        Some(report) => {
+            let source = match report.source {
+                crate::InventorySource::OperatorReport => "operator_report",
+                crate::InventorySource::ExecutorJournal => "executor_journal",
+            };
+            format!("{source}; unix_seconds={}", report.reported_at.get())
+        }
         None => "provenance unknown".to_owned(),
     };
     format!(

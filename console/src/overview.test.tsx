@@ -27,6 +27,7 @@ test("services keep an unchecked firewall and a stale cron visible", async () =>
   });
   render(<RouterProvider router={router} />);
   expect(await screen.findByRole("heading", { level: 1, name: "Services" })).toBeTruthy();
+  expect(screen.getByText(/services need a look: .*firewalld/)).toBeTruthy();
   const firewall = screen.getByRole("button", { name: "firewalld" });
   expect(firewall.closest("tr")?.textContent).toContain("Not checked");
   expect(screen.getByRole("button", { name: "crond" }).closest("tr")?.textContent).toContain(
@@ -48,10 +49,10 @@ test("operations keep a rejected request distinct from a completed one", async (
   expect(await screen.findByRole("heading", { level: 1, name: "Operations" })).toBeTruthy();
   expect(screen.getByRole("link", { name: "Config activation" })).toBeTruthy();
   expect(screen.getByText("op_7Q2KX9")).toBeTruthy();
-  expect(screen.getByText("agent: maint-bot")).toBeTruthy();
-  fireEvent.change(screen.getByLabelText("Outcome"), { target: { value: "Rejected" } });
+  expect(screen.getByText(/agent: maint-bot/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: /^Rejected/ }));
   expect(screen.queryByText("op_7Q2KX9")).toBeNull();
-  expect(screen.getByText("agent: maint-bot")).toBeTruthy();
+  expect(screen.getByText(/agent: maint-bot/)).toBeTruthy();
 });
 
 test("a plan shows its steps and approval without any way to sign or export", async () => {
@@ -115,16 +116,12 @@ test("recovery keeps each evidence field separate and filters passing sites", as
     history: createMemoryHistory({ initialEntries: ["/recovery"] }),
   });
   render(<RouterProvider router={router} />);
-  expect(await screen.findByRole("heading", { level: 1, name: "Recovery" })).toBeTruthy();
+  expect(await screen.findByRole("heading", { level: 1, name: "Backups" })).toBeTruthy();
   expect(screen.getByRole("link", { name: "blog.lab.test" })).toBeTruthy();
   expect(screen.getByRole("link", { name: "rcpt_2YB7" })).toBeTruthy();
-  fireEvent.change(screen.getByLabelText("Show"), { target: { value: "Any field not passing" } });
+  fireEvent.click(screen.getByRole("button", { name: /^Needs a look/ }));
   expect(screen.queryByRole("link", { name: "blog.lab.test" })).toBeNull();
   expect(screen.getByRole("link", { name: "portfolio.lab.test" })).toBeTruthy();
-  fireEvent.change(screen.getByLabelText("Site or snapshot ID"), {
-    target: { value: "snap_D1F5" },
-  });
-  expect(screen.getAllByRole("row").length).toBe(2);
   expect(screen.getByRole("link", { name: "docs.lab.test" })).toBeTruthy();
 
   await act(() =>
@@ -189,4 +186,30 @@ test("an unknown address shows a not-found page inside the shell (W718)", async 
   expect(await screen.findByRole("heading", { level: 1, name: "Page not found" })).toBeTruthy();
   expect(screen.getByRole("navigation", { name: "Primary" })).toBeTruthy();
   expect(screen.getByRole("link", { name: "Go to Host overview" }).getAttribute("href")).toBe("/");
+});
+
+test("websites and a website answer whether they are fine (W789)", async () => {
+  const router = createRouter({
+    routeTree,
+    history: createMemoryHistory({ initialEntries: ["/sites"] }),
+  });
+  render(<RouterProvider router={router} />);
+  expect(await screen.findByRole("heading", { level: 1, name: "Websites" })).toBeTruthy();
+  expect(screen.getByText(/8 websites\. 4 need a look; blocked: shop\.lab\.test\./)).toBeTruthy();
+  await act(() => router.navigate({ to: "/sites/$siteId", params: { siteId: "site_8KD2QW" } }));
+  expect(await screen.findByText(/This website is .*Open its activity to see why\./)).toBeTruthy();
+});
+
+test("domains, recovery, and operations answer first (W790)", async () => {
+  const router = createRouter({
+    routeTree,
+    history: createMemoryHistory({ initialEntries: ["/domains"] }),
+  });
+  render(<RouterProvider router={router} />);
+  expect(await screen.findByRole("heading", { level: 1, name: "Domains" })).toBeTruthy();
+  expect(screen.getByText(/domains\. 1 needs a look\./)).toBeTruthy();
+  await act(() => router.navigate({ to: "/recovery" }));
+  expect(await screen.findByText(/pass every recovery check; .* failed check\./)).toBeTruthy();
+  await act(() => router.navigate({ to: "/operations" }));
+  expect(await screen.findByText(/recorded changes: 1 needs attention/)).toBeTruthy();
 });

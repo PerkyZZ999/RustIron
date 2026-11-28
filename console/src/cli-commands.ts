@@ -211,6 +211,15 @@ export function buildAppPackCmd(opts: {
   return parts.join(" ");
 }
 
+/** D-099: a signed start, stop, or restart of one app's unit (item 64 bulk restart). */
+export function buildAppLifecycleCmd(opts: {
+  siteId: string;
+  action: "start" | "stop" | "restart";
+  hostId?: string;
+}): string {
+  return `rustiron plan create app-lifecycle ${envelopeFlags(opts.hostId)} --site-id ${shellQuote(opts.siteId)} --action ${opts.action} --valid-from <unix> --expires-at <unix> > ./plan.json`;
+}
+
 export function buildConfigActivateCmd(opts: {
   siteId: string;
   hostId?: string;

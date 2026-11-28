@@ -283,6 +283,8 @@ pub enum ReadCommand {
         /// The operation whose receipt is requested.
         operation_id: Id,
     },
+    /// D-104 (W779): the executor's bounded host summary.
+    HostSummary,
 }
 
 /// A validated read-only request; byte entrypoints enforce transport bounds.
@@ -312,6 +314,8 @@ pub enum ReadData {
     EvidenceExport(
         #[serde(deserialize_with = "crate::codec::object")] crate::execution::EvidenceValue,
     ),
+    /// D-104 (W779): the executor's bounded host summary.
+    HostSummary(#[serde(deserialize_with = "crate::codec::object")] crate::summary::HostSummary),
 }
 
 /// Exactly one success payload or error; wire codecs emit the required null slot.

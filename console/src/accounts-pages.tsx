@@ -1,5 +1,6 @@
 // W629 (P29 Slice 9): Console Sign-In, First-Run Admin Setup (/login), and
 // Console User Accounts & Roles management (/users) powered by Better Auth.
+import { AnswerLine, SimpleHeader } from "@/components/console/simple";
 import { consoleRequest, failureText, type ConsoleReply } from "./console-request";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
@@ -22,7 +23,7 @@ import { BrandLockup, BrandMark } from "@/components/console/brand-logo";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { OTPField, OTPFieldInput, OTPFieldSeparator } from "@/components/ui/otp-field";
-import type { ConsoleAccountUser, ConsoleRole } from "./auth-backend";
+import type { ConsoleAccountUser, ConsoleAuthStatus, ConsoleRole } from "./auth-backend";
 import { useAuth } from "./auth-context";
 import { ConfirmDeleteButton, Crumbs, Glyph, Page, TableScroll } from "./ui";
 
@@ -739,8 +740,31 @@ async function fetchConsoleUsers(): Promise<ConsoleAccountUser[] | null> {
   return reply.ok ? (reply.data?.users ?? []) : null;
 }
 
+/** W791 (v0.3 item 61): "Who can sign in?" without guessing for a non-Admin. */
+export function usersAnswer(
+  status: ConsoleAuthStatus | null,
+  resolved: boolean,
+  users: ConsoleAccountUser[],
+): { tone: "ok" | "warn" | "unknown"; text: string } {
+  if (!resolved) return { tone: "unknown", text: "Checking who can sign in…" };
+  if (status === null)
+    return { tone: "unknown", text: "The sign-in service could not be reached." };
+  if (status.setup_required) {
+    return { tone: "warn", text: "No account exists yet. Create the first Admin." };
+  }
+  if (status.session?.user.role !== "admin") {
+    return { tone: "unknown", text: "Only an Admin can see who else can sign in." };
+  }
+  const sessions = users.reduce((sum, user) => sum + user.activeSessions, 0);
+  const accounts = `${users.length} ${users.length === 1 ? "account" : "accounts"}`;
+  return {
+    tone: "ok",
+    text: `${accounts} can sign in, with ${sessions} active ${sessions === 1 ? "session" : "sessions"}.`,
+  };
+}
+
 export function UsersPage() {
-  const { status, refresh, signOut } = useAuth();
+  const { status, resolved, refresh, signOut } = useAuth();
   const [users, setUsers] = useState<ConsoleAccountUser[]>([]);
   const [notice, setNotice] = useState<{ tone: "err" | "ok"; text: string } | null>(null);
 
@@ -803,12 +827,14 @@ export function UsersPage() {
     <Page live>
       <Crumbs items={[{ href: "/", label: "Overview" }, { label: "Users & access" }]} />
       <div className="page-head">
-        <div>
-          <h1>Users &amp; access</h1>
-          <p className="sub">
-            Manage Console administrator, operator, and read-only accounts powered by Better Auth.
-          </p>
-        </div>
+        <SimpleHeader
+          title="Users & access"
+          answer={
+            <AnswerLine tone={usersAnswer(status, resolved, users).tone}>
+              {usersAnswer(status, resolved, users).text}
+            </AnswerLine>
+          }
+        />
         {session ? (
           <div className="row" style={{ gap: 8 }}>
             <button

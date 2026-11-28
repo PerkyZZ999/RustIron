@@ -19,7 +19,8 @@ test("values keep their case, route words get their labels", () => {
   expect(formatSegment("example.com")).toBe("example.com");
   expect(formatSegment("nope")).toBe("nope");
   expect(formatSegment("site_8KD2QW")).toBe("site_8KD2QW");
-  expect(formatSegment("sites")).toBe("Sites");
+  expect(formatSegment("sites")).toBe("Websites");
+  expect(formatSegment("recovery")).toBe("Backups");
   expect(formatSegment("dns")).toBe("DNS");
   expect(formatSegment("cron")).toBe("Cron jobs");
   expect(formatSegment("updates-and-releases")).toBe("Update RustIron");

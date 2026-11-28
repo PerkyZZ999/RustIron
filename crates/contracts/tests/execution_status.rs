@@ -238,3 +238,106 @@ fn evidence_receipt_states_its_signature_consistently() {
         );
     }
 }
+
+/// D-103 (W778): `site_records` is closed, correlated, sorted, and bounded.
+#[test]
+fn site_records_query_and_response_are_closed_and_correlated() {
+    use rustiron_contracts::execution::{
+        SiteRecordsQuery, decode_site_records_query, decode_site_records_response,
+        encode_site_records_query,
+    };
+    let query = SiteRecordsQuery {
+        request_id: id("query_1"),
+    };
+    assert_eq!(
+        decode_site_records_query(&encode_site_records_query(&query).unwrap()).unwrap(),
+        query
+    );
+    for bad in [
+        r#"{"schema_version":1,"request_id":"q","method":"site_records","params":{"limit":5}}"#,
+        r#"{"schema_version":1,"request_id":"q","method":"site_records","params":{},"extra":1}"#,
+        r#"{"schema_version":2,"request_id":"q","method":"site_records","params":{}}"#,
+    ] {
+        assert!(decode_site_records_query(bad.as_bytes()).is_err(), "{bad}");
+    }
+    let reply = |request: &str, sites: &str| {
+        format!(
+            r#"{{"schema_version":1,"request_id":"{request}","status":"ok","data":{{"kind":"site_records","value":{{"sites":{sites}}}}},"error":null}}"#
+        )
+    };
+    let two = r#"[{"site_id":"a","hostname":"a.example.test","adopted":false},{"site_id":"b","hostname":"b.example.test","adopted":true}]"#;
+    let sites = decode_site_records_response(reply("query_1", two).as_bytes(), &query)
+        .unwrap()
+        .unwrap();
+    assert_eq!(sites.len(), 2);
+    assert!(sites[1].adopted);
+    // Another request, an unsorted or duplicated list, and an unknown field are refused.
+    assert_eq!(
+        decode_site_records_response(reply("query_2", two).as_bytes(), &query).unwrap_err(),
+        ProtocolError::InvalidMessage
+    );
+    let unsorted = r#"[{"site_id":"b","hostname":"b","adopted":false},{"site_id":"a","hostname":"a","adopted":false}]"#;
+    let twice = r#"[{"site_id":"a","hostname":"a","adopted":false},{"site_id":"a","hostname":"a","adopted":false}]"#;
+    let extra = r#"[{"site_id":"a","hostname":"a","adopted":false,"path":"/srv/sites/rs_a"}]"#;
+    for bad in [unsorted, twice, extra] {
+        assert!(
+            decode_site_records_response(reply("query_1", bad).as_bytes(), &query).is_err(),
+            "{bad}"
+        );
+    }
+    let error = r#"{"schema_version":1,"request_id":"query_1","status":"error","data":null,"error":{"code":"UNAUTHORIZED_PEER","message":"Unauthorized peer","retryable":false,"operation_id":null,"details":[]}}"#;
+    assert_eq!(
+        decode_site_records_response(error.as_bytes(), &query)
+            .unwrap()
+            .unwrap_err()
+            .code(),
+        ErrorCode::UnauthorizedPeer
+    );
+}
+
+/// D-104 (W779): the host summary is closed: an unnamed field, a repeated
+/// site, or another request's reply is refused; the read method round-trips.
+#[test]
+fn host_summary_is_closed_and_correlated() {
+    use rustiron_contracts::{
+        ReadCommand, Request, decode_request, encode_request,
+        summary::{
+            HostSummaryQuery, decode_host_summary_query, decode_host_summary_response,
+            encode_host_summary_query,
+        },
+    };
+    let query = HostSummaryQuery {
+        request_id: id("query_1"),
+    };
+    assert_eq!(
+        decode_host_summary_query(&encode_host_summary_query(&query).unwrap()).unwrap(),
+        query
+    );
+    let request = Request {
+        request_id: id("r1"),
+        command: ReadCommand::HostSummary,
+    };
+    assert_eq!(
+        decode_request(&encode_request(&request).unwrap()).unwrap(),
+        request
+    );
+    let reply = |request: &str, site: &str| {
+        format!(
+            r#"{{"schema_version":1,"request_id":"{request}","status":"ok","data":{{"kind":"host_summary","value":{{"observed_at":10,"journal_last_time":9,"signature_verifier_matches":true,"backup_destination_enrolled":false,"backup_retention_days":null,"sites":[{site}],"certificates":[],"backups":[]}}}},"error":null}}"#
+        )
+    };
+    let site = r#"{"site_id":"a","hostname":"a.example.test","state":"succeeded","failed_step":null,"ejected":false}"#;
+    let summary = decode_host_summary_response(reply("query_1", site).as_bytes(), &query)
+        .unwrap()
+        .unwrap();
+    assert_eq!(summary.sites.len(), 1);
+    let leaked = r#"{"site_id":"a","hostname":"a","state":"succeeded","failed_step":null,"ejected":false,"path":"/srv/sites/rs_a"}"#;
+    let twice = format!("{site},{site}");
+    for bad in [leaked, twice.as_str()] {
+        assert!(
+            decode_host_summary_response(reply("query_1", bad).as_bytes(), &query).is_err(),
+            "{bad}"
+        );
+    }
+    assert!(decode_host_summary_response(reply("query_2", site).as_bytes(), &query).is_err());
+}

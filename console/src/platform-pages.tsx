@@ -18,6 +18,7 @@ import {
   Terminal,
 } from "lucide-react";
 import { useState } from "react";
+import { AnswerLine, QuietDetails, SimpleHeader, type Tone } from "@/components/console/simple";
 
 import { MigrationWizardsPanel } from "./backup-migration-wizards";
 import { isRealHost, useData } from "./data";
@@ -39,6 +40,26 @@ import {
 } from "./platform-data";
 import { FindingChip, OwnerBadge } from "./findings-panel";
 import { InspectorPanel, useDrawerSelection } from "./inspector";
+import {
+  type BulkAction,
+  BulkBar,
+  PageCheck,
+  RowCheck,
+  type Selection,
+  useSelection,
+} from "@/components/console/bulk";
+import { buildAppLifecycleCmd } from "./cli-commands";
+import {
+  FilterChips,
+  ListArea,
+  ListControls,
+  ListToolbar,
+  matches,
+  rowClass,
+  rowLinkClass,
+  SMALL_LIST,
+  usePaged,
+} from "@/components/console/list";
 import { copyText, Crumbs, EmptyState, Glyph, Page, TableScroll } from "./ui";
 
 function releasePillClass(state: AppRecord["releases"][number]["state"]) {
@@ -53,15 +74,25 @@ function servingIcon(kind: AppRecord["servingKind"]) {
   return CircleMinus;
 }
 
-const appStackFilters = [
-  "All",
-  "Full-stack app",
-  "EmDash CMS",
-  "Node.js app",
-  "Bun app",
-  "Static SPA",
-] as const;
-type AppStackFilter = (typeof appStackFilters)[number];
+type AppSort = "attention" | "name" | "kind";
+/** A static app has no unit to restart, so it is never chosen for bulk restart. */
+const restartable = (app: AppRecord) => app.runtimeProfile !== "static_v1";
+const appHealthy = (app: AppRecord) => app.servingKind === "ok" && app.healthKind === "ok";
+const appSorters: Record<AppSort, (a: AppRecord, b: AppRecord) => number> = {
+  attention: (a, b) =>
+    Number(appHealthy(a)) - Number(appHealthy(b)) || a.hostname.localeCompare(b.hostname),
+  name: (a, b) => a.hostname.localeCompare(b.hostname),
+  kind: (a, b) => a.kind.localeCompare(b.kind) || a.hostname.localeCompare(b.hostname),
+};
+
+/** Restart several apps: one signed `app-lifecycle` plan per app (item 64). */
+const appBulkActions: BulkAction[] = [
+  {
+    label: "Restart",
+    question: (n) => `Restart ${n} ${n === 1 ? "app" : "apps"}?`,
+    command: (siteId) => buildAppLifecycleCmd({ siteId, action: "restart" }),
+  },
+];
 
 const dbEngineLabels: Record<AppRecord["database"], string> = {
   none: "None",
@@ -70,30 +101,65 @@ const dbEngineLabels: Record<AppRecord["database"], string> = {
   postgresql_18: "PostgreSQL 18",
 };
 
-function AppStackFilterBar({
-  value,
-  onChange,
+function appFilterMatch(app: AppRecord, filter: "all" | "attention" | "running"): boolean {
+  if (filter === "all") return true;
+  return filter === "attention" ? !appHealthy(app) : appHealthy(app);
+}
+
+/** The app's one word: Running, or what is wrong. */
+function appWord(app: AppRecord): { word: string; tone: string } {
+  if (appHealthy(app)) return { word: "Running", tone: "ok" };
+  if (app.servingKind === "ok") return { word: app.health, tone: app.healthKind };
+  return { word: app.serving, tone: app.servingKind };
+}
+
+function AppRow({
+  app,
+  selection,
+  open,
+  onInspect,
 }: {
-  value: AppStackFilter;
-  onChange: (next: AppStackFilter) => void;
+  app: AppRecord;
+  selection: Selection | null;
+  open: boolean;
+  onInspect: () => void;
 }) {
+  const word = appWord(app);
   return (
-    <div className="filter-pills" role="group" aria-label="Filter apps by stack">
-      {appStackFilters.map((filter) => (
-        <button
-          key={filter}
-          type="button"
-          aria-pressed={value === filter}
-          onClick={() => onChange(filter)}
-        >
-          {filter}
-        </button>
-      ))}
-    </div>
+    <li className={rowClass}>
+      {selection && restartable(app) ? (
+        <RowCheck selection={selection} id={app.siteId} label={app.hostname} />
+      ) : selection ? (
+        <span className="size-8 shrink-0" />
+      ) : null}
+      <div className="min-w-0 flex-1">
+        <Link className={rowLinkClass} to="/apps/$appId" params={{ appId: app.id }} translate="no">
+          {app.hostname}
+        </Link>
+        <p className="truncate text-sm text-muted-foreground">
+          {app.kind} · release <span className="mono">{app.currentRelease}</span>
+        </p>
+      </div>
+      <span className="flex justify-end sm:w-44">
+        <span className={`pill ${word.tone}`}>
+          <Glyph icon={servingIcon(appHealthy(app) ? "ok" : app.servingKind)} />
+          {word.word}
+        </span>
+      </span>
+      <button
+        type="button"
+        className="btn quiet sm relative z-10"
+        aria-pressed={open}
+        aria-label={`Inspect ${app.hostname}`}
+        onClick={onInspect}
+      >
+        {open ? "Close" : "Inspect"}
+      </button>
+    </li>
   );
 }
 
-function AppsTable({
+function AppList({
   apps,
   selectedId,
   onSelect,
@@ -102,52 +168,87 @@ function AppsTable({
   selectedId: string | null;
   onSelect: (id: string) => void;
 }) {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"all" | "attention" | "running">("all");
+  const [sort, setSort] = useState<AppSort>("attention");
+  const selection = useSelection();
+  const attention = apps.filter((app) => !appHealthy(app)).length;
+  const visible = apps
+    .filter((app) => matches(query, app.hostname, app.kind))
+    .filter((app) => appFilterMatch(app, filter))
+    .sort(appSorters[sort]);
+  const paged = usePaged(visible, `${query}|${filter}|${sort}|${apps.length}`);
+  const bulk = apps.filter(restartable).length > 1;
   return (
-    <div className="panel flush">
-      <TableScroll label="Hosted modern apps">
-        <table className="data">
-          <thead>
-            <tr>
-              <th>App</th>
-              <th>Stack</th>
-              <th>Serving</th>
-              <th>Health</th>
-              <th>Current release</th>
-              <th>Loopback</th>
-            </tr>
-          </thead>
-          <tbody>
-            {apps.map((app) => (
-              <tr key={app.id} className={selectedId === app.id ? "selected" : undefined}>
-                <td>
-                  <button type="button" className="row-btn" onClick={() => onSelect(app.id)}>
-                    {app.hostname}
-                  </button>
-                  <div className="cap">{app.kind}</div>
-                </td>
-                <td>{app.runtime}</td>
-                <td>
-                  <span className={`pill ${app.servingKind}`}>
-                    <Glyph icon={servingIcon(app.servingKind)} />
-                    {app.serving}
-                  </span>
-                </td>
-                <td>
-                  <span className={`pill ${app.healthKind}`}>
-                    <Glyph icon={app.healthKind === "ok" ? CircleCheck : CircleX} />
-                    {app.health}
-                  </span>
-                </td>
-                <td className="mono">{app.currentRelease}</td>
-                <td className="mono">
-                  {app.port > 0 ? `127.0.0.1:${app.port}` : "Static files"}
-                  <div className="cap">{app.ingress}</div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </TableScroll>
+    <div className="flex flex-col gap-4">
+      <ListToolbar
+        hidden={apps.length <= SMALL_LIST}
+        filters={
+          <FilterChips
+            label="Show"
+            value={filter}
+            onChange={setFilter}
+            options={[
+              { value: "all", label: "All", count: apps.length },
+              { value: "attention", label: "Needs a look", count: attention },
+              { value: "running", label: "Running", count: apps.length - attention },
+            ]}
+          />
+        }
+      >
+        <ListControls
+          count={apps.length}
+          searchLabel="Find an app"
+          query={query}
+          onQuery={setQuery}
+          sort={sort}
+          onSort={setSort}
+          sorts={[
+            { value: "attention", label: "Needs a look first" },
+            { value: "name", label: "Name A–Z" },
+            { value: "kind", label: "Kind of app" },
+          ]}
+        />
+      </ListToolbar>
+      <ListArea
+        label="Apps"
+        noun="apps"
+        total={apps.length}
+        paged={paged}
+        onReset={() => {
+          setQuery("");
+          setFilter("all");
+        }}
+        top={
+          <PageCheck
+            enabled={bulk}
+            selection={selection}
+            wholeList={paged.pageCount === 1}
+            pageIds={paged.rows.filter(restartable).map((app) => app.siteId)}
+            noun="apps"
+          />
+        }
+        bottom={
+          <BulkBar
+            selection={selection}
+            matchingIds={visible.filter(restartable).map((app) => app.siteId)}
+            nameOf={(id) => apps.find((app) => app.siteId === id)?.hostname ?? id}
+            noun="apps"
+            one="app"
+            actions={appBulkActions}
+          />
+        }
+      >
+        {paged.rows.map((app) => (
+          <AppRow
+            key={app.id}
+            app={app}
+            selection={bulk ? selection : null}
+            open={selectedId === app.id}
+            onInspect={() => onSelect(app.id)}
+          />
+        ))}
+      </ListArea>
     </div>
   );
 }
@@ -221,8 +322,7 @@ export function AppsPage() {
   const isLive = isRealHost(data.source);
   const observedApps = data.observation ? liveApps(data.observation) : [];
   const allApps: AppRecord[] = isLive ? observedApps : fixtureApps;
-  const [stackFilter, setStackFilter] = useState<AppStackFilter>("All");
-  const apps = stackFilter === "All" ? allApps : allApps.filter((app) => app.kind === stackFilter);
+  const apps = allApps;
   const [selectedId, setSelectedId] = useDrawerSelection<string>();
   const selected = apps.find((a) => a.id === selectedId) ?? null;
 
@@ -230,13 +330,10 @@ export function AppsPage() {
     <Page live>
       <Crumbs items={[{ href: "/", label: "Overview" }, { label: "Apps" }]} />
       <div className="page-head">
-        <div>
-          <h1>Apps</h1>
-          <p className="sub">
-            Managed full-stack Bun 1.4, Node.js 22, Static SPA, and EmDash CMS applications running
-            in isolated per-site services behind confined Caddy HTTP/3 or OpenLiteSpeed.
-          </p>
-        </div>
+        <SimpleHeader
+          title="Apps"
+          answer={<AppsAnswer apps={allApps} loading={data.source.kind === "loading"} />}
+        />
         <Link className="btn primary sm" to="/sites/new">
           Deploy app
         </Link>
@@ -264,8 +361,7 @@ export function AppsPage() {
         />
       ) : (
         <>
-          <AppStackFilterBar value={stackFilter} onChange={setStackFilter} />
-          <AppsTable
+          <AppList
             apps={apps}
             selectedId={selected?.id ?? null}
             onSelect={(id) => setSelectedId((cur) => (cur === id ? null : id))}
@@ -769,6 +865,64 @@ function DiagnosesTableCard({
   );
 }
 
+/** W789 (v0.3 item 59): "Which apps run here?" */
+function AppsAnswer({ apps, loading }: { apps: AppRecord[]; loading: boolean }) {
+  if (loading) return <AnswerLine tone="unknown">Checking this server…</AnswerLine>;
+  if (apps.length === 0) return <AnswerLine tone="unknown">No apps deployed yet.</AnswerLine>;
+  const down = apps.filter((app) => app.servingKind !== "ok");
+  const count = `${apps.length} ${apps.length === 1 ? "app" : "apps"}`;
+  if (down.length === 0) return <AnswerLine tone="ok">{count}, all serving.</AnswerLine>;
+  return (
+    <AnswerLine tone={down.some((app) => app.servingKind === "err") ? "err" : "warn"}>
+      {count}. Not serving normally: {down.map((app) => app.hostname).join(", ")}.
+    </AnswerLine>
+  );
+}
+
+/** W789: "What am I moving in, and how far is it?" */
+function MigrationAnswer({
+  migrations,
+  loading,
+}: {
+  migrations: MigrationRecord[];
+  loading: boolean;
+}) {
+  if (loading) return <AnswerLine tone="unknown">Checking this server…</AnswerLine>;
+  if (migrations.length === 0) {
+    return <AnswerLine tone="unknown">No migrations recorded yet.</AnswerLine>;
+  }
+  const imported = migrations.filter((m) => m.importState === "ok").length;
+  const failed = migrations.filter(
+    (m) => m.importState === "fail" || m.dryRunState === "fail",
+  ).length;
+  const text = `${imported} of ${migrations.length} ${migrations.length === 1 ? "migration" : "migrations"} imported${failed > 0 ? `, ${failed} stopped` : ""}.`;
+  return (
+    <AnswerLine tone={failed > 0 ? "warn" : imported === migrations.length ? "ok" : "unknown"}>
+      {text}
+    </AnswerLine>
+  );
+}
+
+/** W788 (v0.3 item 58): "Is anything wrong?" in one sentence. */
+function diagnosesTone(open: DiagnosisFinding[]): Tone {
+  if (open.some((f) => f.state === "fail")) return "err";
+  if (open.some((f) => f.state === "warn")) return "warn";
+  return open.length > 0 ? "unknown" : "ok";
+}
+
+function diagnosesText(open: DiagnosisFinding[]): string {
+  if (open.length === 0) return "Nothing is wrong in this observation.";
+  const failed = open.filter((f) => f.state === "fail").length;
+  const warned = open.filter((f) => f.state === "warn").length;
+  const unknown = open.length - failed - warned;
+  const parts = [
+    failed > 0 ? `${failed} ${failed === 1 ? "problem" : "problems"}` : "",
+    warned > 0 ? `${warned} ${warned === 1 ? "warning" : "warnings"}` : "",
+    unknown > 0 ? `${unknown} not checked` : "",
+  ].filter(Boolean);
+  return `${parts.join(", ")}. Open one to see what to do.`;
+}
+
 export function HostDiagnosesPage() {
   const data = useData();
   const findings = isRealHost(data.source)
@@ -778,6 +932,8 @@ export function HostDiagnosesPage() {
     : fixtureFindings;
   const open = findings.filter((f) => f.state !== "ok");
   const passed = findings.filter((f) => f.state === "ok");
+  // Never call a server healthy before anything was observed.
+  const observed = !isRealHost(data.source) || data.observation !== null;
   const hasAlerts = open.some((f) => f.state === "fail" || f.state === "warn");
   const [selectedId, setSelectedId] = useDrawerSelection<string>();
   const [passedOpen, setPassedOpen] = useState(!hasAlerts && passed.length > 0);
@@ -792,13 +948,20 @@ export function HostDiagnosesPage() {
     <Page live>
       <Crumbs items={[{ href: "/", label: "Overview" }, { label: "Host diagnoses" }]} />
       <div className="page-head">
-        <div>
-          <h1>Host diagnoses</h1>
-          <p className="sub">
-            Automated health checks for security, services, certificates, storage, and backups.
-            Review open findings below for recommended actions.
-          </p>
-        </div>
+        <SimpleHeader
+          title="Host diagnoses"
+          answer={
+            observed ? (
+              <AnswerLine tone={diagnosesTone(open)}>{diagnosesText(open)}</AnswerLine>
+            ) : (
+              <AnswerLine tone="unknown">
+                {data.source.kind === "loading"
+                  ? "Checking this server…"
+                  : "No observation of this server yet."}
+              </AnswerLine>
+            )
+          }
+        />
       </div>
       <DiagnosesSummaryBar findings={findings} passedCount={passed.length} />
 
@@ -823,6 +986,11 @@ export function HostDiagnosesPage() {
   );
 }
 
+function updatesTone(inRange: number, installed: number, unobserved: number): Tone {
+  if (unobserved > 0) return "unknown";
+  return inRange === installed ? "ok" : "warn";
+}
+
 export function HostUpdatesPage() {
   const data = useData();
   const isLive = isRealHost(data.source);
@@ -843,47 +1011,42 @@ export function HostUpdatesPage() {
     <Page live>
       <Crumbs items={[{ href: "/", label: "Overview" }, { label: "Host updates" }]} />
       <div className="page-head">
-        <div>
-          <h1>Host updates</h1>
-          <p className="sub">
-            Installed server stack versions, support lifecycle dates, and security advisories. Run
-            stack updates from the server CLI to apply verified updates with automatic rollback.
-          </p>
-        </div>
-        <Link className="btn quiet sm" to="/help/$slug" params={{ slug: "updates-and-releases" }}>
-          Update guide
-        </Link>
+        <SimpleHeader
+          title="Host updates"
+          answer={
+            <AnswerLine tone={updatesTone(inRange, installedCount, unobservedCount)}>
+              {unobservedCount > 0
+                ? `${inRange} of ${installedCount} components are in a supported series; ${unobservedCount} not observed.`
+                : inRange === installedCount
+                  ? `All ${installedCount} components are in a supported series.`
+                  : `${installedCount - inRange} of ${installedCount} components are outside a supported series.`}
+            </AnswerLine>
+          }
+          action={
+            <Link
+              className="btn quiet sm"
+              to="/help/$slug"
+              params={{ slug: "updates-and-releases" }}
+            >
+              Update guide
+            </Link>
+          }
+        />
       </div>
 
-      <section className="grid g3" aria-label="Update summary">
-        <article className="panel metric">
-          <div className="m-head">Server platform</div>
-          <div className="m-val" style={{ fontSize: 22 }}>
-            {buildLabel}
-          </div>
-          <div className="m-detail">Verified updates with automatic rollback</div>
-        </article>
-        <article className="panel metric">
-          <div className="m-head">Version policy</div>
-          <div className="m-val" style={{ fontSize: 22 }}>
-            Supported stack
-          </div>
-          <div className="m-detail">Pinned versions and security advisory checks</div>
-        </article>
-        <article className="panel metric">
-          <div className="m-head">Components in range</div>
-          <div className="m-val" style={{ fontSize: 22 }}>
-            {inRange} of {installedCount}
-          </div>
-          <div className="m-detail">
-            {unobservedCount > 0
-              ? `${unobservedCount} not observed in this snapshot`
-              : optionalAbsent > 0
-                ? `${optionalAbsent} optional not installed`
-                : "0 outside supported series"}
-          </div>
-        </article>
-      </section>
+      <QuietDetails summary={`${buildLabel} · verified updates with automatic rollback`}>
+        <dl className="kv">
+          <dt>Server platform</dt>
+          <dd>{buildLabel}</dd>
+          <dt>Version policy</dt>
+          <dd>Supported stack: pinned versions and security advisory checks</dd>
+          <dt>Optional</dt>
+          <dd>{optionalAbsent} optional components not installed</dd>
+        </dl>
+        <p className="cap">
+          Run stack updates from the server CLI to apply verified updates with automatic rollback.
+        </p>
+      </QuietDetails>
 
       <div className="panel flush">
         <TableScroll label="Support matrix components">
@@ -966,6 +1129,180 @@ export function HostUpdatesPage() {
   );
 }
 
+/**
+ * Item 64: a domain's one word. Renewal that RustIron does by itself is news,
+ * not a problem; a failed renewal, or one the operator must do, needs a look.
+ */
+function domainVerdict(d: DomainRecord): { word: string; tone: string; rank: number } {
+  if (d.certificate === "renewal_failed") return { word: "Renewal failed", tone: "err", rank: 0 };
+  if (d.certificate === "expires_soon" && d.renewedBy === "operator")
+    return { word: "Renew it soon", tone: "warn", rank: 1 };
+  if (d.certificate === "expires_soon") return { word: "Renews soon", tone: "info", rank: 2 };
+  if (d.certificate === "not_issued") return { word: "No HTTPS yet", tone: "", rank: 3 };
+  return { word: "Secure", tone: "ok", rank: 4 };
+}
+
+/** W790 / item 64: "Which domains point here, and is HTTPS fine?" */
+function DomainsAnswer({ loading, domains }: { loading: boolean; domains: DomainRecord[] }) {
+  if (loading) return <AnswerLine tone="unknown">Checking this server…</AnswerLine>;
+  if (domains.length === 0)
+    return <AnswerLine tone="unknown">No domains on this server yet.</AnswerLine>;
+  const total = `${domains.length} ${domains.length === 1 ? "domain" : "domains"}.`;
+  const problems = domains.filter((d) => domainVerdict(d).rank < 2);
+  const renewing = domains.filter((d) => domainVerdict(d).rank === 2).length;
+  const renewText =
+    renewing > 0
+      ? ` ${renewing} ${renewing === 1 ? "certificate renews" : "certificates renew"} soon; RustIron does it for you.`
+      : "";
+  if (problems.length > 0) {
+    const failed = problems.some((d) => domainVerdict(d).rank === 0);
+    return (
+      <AnswerLine tone={failed ? "err" : "warn"}>
+        {total} {problems.length} {problems.length === 1 ? "needs" : "need"} a look.{renewText}
+      </AnswerLine>
+    );
+  }
+  return (
+    <AnswerLine tone="ok">
+      {total} HTTPS is fine on every one.{renewText}
+    </AnswerLine>
+  );
+}
+
+type DomainFilter = "all" | "attention" | "fine";
+
+function domainFilterMatch(d: DomainRecord, filter: DomainFilter): boolean {
+  if (filter === "all") return true;
+  return filter === "attention" ? domainVerdict(d).rank < 2 : domainVerdict(d).rank >= 2;
+}
+
+const domainSorters: Record<"attention" | "name", (a: DomainRecord, b: DomainRecord) => number> = {
+  attention: (a, b) =>
+    domainVerdict(a).rank - domainVerdict(b).rank || a.hostname.localeCompare(b.hostname),
+  name: (a, b) => a.hostname.localeCompare(b.hostname),
+};
+
+/** "HTTPS until 10 Feb 2027", or nothing when the date is not known. */
+function httpsUntil(notAfter: string): string {
+  return notAfter.startsWith("—") || notAfter.startsWith("Not ")
+    ? ""
+    : ` · HTTPS until ${notAfter}`;
+}
+
+function DomainRow({
+  dom,
+  open,
+  onInspect,
+}: {
+  dom: DomainRecord;
+  open: boolean;
+  onInspect: () => void;
+}) {
+  const v = domainVerdict(dom);
+  return (
+    <li className={rowClass}>
+      <div className="min-w-0 flex-1">
+        <Link
+          className={rowLinkClass}
+          to="/domains/$hostname"
+          params={{ hostname: dom.hostname }}
+          translate="no"
+        >
+          {dom.hostname}
+        </Link>
+        <p className="truncate text-sm text-muted-foreground">
+          Serves {dom.serves}
+          {httpsUntil(dom.notAfter)}
+        </p>
+      </div>
+      <span className="flex justify-end sm:w-40">
+        <span className={`pill ${v.tone}`}>{v.word}</span>
+      </span>
+      <button
+        type="button"
+        className="btn quiet sm relative z-10"
+        aria-pressed={open}
+        aria-label={`Inspect ${dom.hostname}`}
+        onClick={onInspect}
+      >
+        {open ? "Close" : "Inspect"}
+      </button>
+    </li>
+  );
+}
+
+function DomainsList({
+  domains,
+  selectedHost,
+  onInspect,
+}: {
+  domains: DomainRecord[];
+  selectedHost: string | null;
+  onInspect: (host: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<DomainFilter>("all");
+  const [sort, setSort] = useState<"attention" | "name">("attention");
+  const needsLook = domains.filter((d) => domainVerdict(d).rank < 2).length;
+  const visible = domains
+    .filter((d) => matches(query, d.hostname, d.serves))
+    .filter((d) => domainFilterMatch(d, filter))
+    .sort(domainSorters[sort]);
+  const paged = usePaged(visible, `${query}|${filter}|${sort}|${domains.length}`);
+  const big = domains.length > SMALL_LIST;
+  return (
+    <div className="flex flex-col gap-4">
+      <ListToolbar
+        hidden={!big}
+        filters={
+          <FilterChips
+            label="Show"
+            value={filter}
+            onChange={setFilter}
+            options={[
+              { value: "all", label: "All", count: domains.length },
+              { value: "attention", label: "Needs a look", count: needsLook },
+              { value: "fine", label: "Fine", count: domains.length - needsLook },
+            ]}
+          />
+        }
+      >
+        <ListControls
+          count={domains.length}
+          searchLabel="Find a domain"
+          query={query}
+          onQuery={setQuery}
+          sort={sort}
+          onSort={setSort}
+          sorts={[
+            { value: "attention", label: "Needs a look first" },
+            { value: "name", label: "Name A–Z" },
+          ]}
+        />
+      </ListToolbar>
+      <ListArea
+        label="Domains"
+        noun="domains"
+        total={domains.length}
+        paged={paged}
+        onReset={() => {
+          setQuery("");
+          setFilter("all");
+        }}
+      >
+        {paged.rows.map((dom) => (
+          <DomainRow
+            key={dom.hostname}
+            dom={dom}
+            open={selectedHost === dom.hostname}
+            onInspect={() => onInspect(dom.hostname)}
+          />
+        ))}
+      </ListArea>
+    </div>
+  );
+}
+
 export function DomainsPage() {
   const data = useData();
   const domains: DomainRecord[] = isRealHost(data.source)
@@ -976,108 +1313,34 @@ export function DomainsPage() {
   const [selectedHost, setSelectedHost] = useDrawerSelection<string>();
   const selected = domains.find((d) => d.hostname === selectedHost) ?? null;
 
-  const expiring = domains.filter(
-    (d) => d.certificate === "expires_soon" || d.certificate === "renewal_failed",
-  ).length;
   const operatorManaged = domains.filter((d) => d.renewedBy === "operator").length;
 
   return (
     <Page live>
       <Crumbs items={[{ href: "/", label: "Overview" }, { label: "Domains" }]} />
       <div className="page-head">
-        <div>
-          <h1>Domains</h1>
-          <p className="sub">
-            Hosted domains, SSL/TLS certificates, and authoritative PowerDNS zones on this server.
-          </p>
-        </div>
+        <SimpleHeader
+          title="Domains"
+          answer={<DomainsAnswer loading={data.source.kind === "loading"} domains={domains} />}
+        />
         <Link className="btn primary sm" to="/domains/new">
           Add domain
         </Link>
       </div>
 
-      <section className="grid g4" aria-label="Domain summary">
-        <article className="panel metric">
-          <div className="m-head">Hostnames</div>
-          <div className="m-val">{domains.length}</div>
-          <div className="m-detail">Websites, EmDash CMS, and modern apps</div>
-        </article>
-        <article className="panel metric">
-          <div className="m-head">Renewal attention</div>
-          <div className="m-val">{expiring}</div>
-          <div className="m-detail">Inside 30-day window or failed check</div>
-        </article>
-        <article className="panel metric">
-          <div className="m-head">Operator renewed</div>
-          <div className="m-val">{operatorManaged}</div>
-          <div className="m-detail">Ejected sites keep standalone HTTPS</div>
-        </article>
-        <article className="panel metric">
-          <div className="m-head">Authoritative DNS</div>
-          <div className="m-val" style={{ fontSize: 22 }}>
-            PowerDNS 5.1
-          </div>
-          <div className="m-detail">Signed zone imports & TSIG AXFR</div>
-        </article>
-      </section>
-
-      <div className="panel flush">
-        <TableScroll label="Served hostnames and certificates">
-          <table className="data">
-            <thead>
-              <tr>
-                <th>Hostname</th>
-                <th>Serves</th>
-                <th>Certificate</th>
-                <th>Not after</th>
-                <th>Renewed by</th>
-              </tr>
-            </thead>
-            <tbody>
-              {domains.map((dom) => (
-                <tr
-                  key={dom.hostname}
-                  className={selected?.hostname === dom.hostname ? "selected" : undefined}
-                >
-                  <td>
-                    <button
-                      type="button"
-                      className="row-btn"
-                      onClick={() =>
-                        setSelectedHost((cur) => (cur === dom.hostname ? null : dom.hostname))
-                      }
-                    >
-                      {dom.hostname}
-                    </button>
-                  </td>
-                  <td>{dom.serves}</td>
-                  <td>
-                    <span
-                      className={
-                        dom.certificate === "valid"
-                          ? "pill ok"
-                          : dom.certificate === "not_issued"
-                            ? "pill"
-                            : "pill warn"
-                      }
-                    >
-                      {dom.certificateLabel}
-                    </span>
-                  </td>
-                  <td>{dom.notAfter}</td>
-                  <td>
-                    <span
-                      className={dom.renewedBy === "operator" ? "owner-badge host" : "owner-badge"}
-                    >
-                      {dom.renewedBy}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </TableScroll>
-      </div>
+      <DomainsList
+        domains={domains}
+        selectedHost={selected?.hostname ?? null}
+        onInspect={(host) => setSelectedHost((cur) => (cur === host ? null : host))}
+      />
+      <QuietDetails title="Technical details">
+        <p className="muted">
+          Authoritative DNS is PowerDNS 5.1, with signed zone imports and TSIG AXFR. RustIron renews
+          the certificates of the websites it manages; {operatorManaged}{" "}
+          {operatorManaged === 1 ? "hostname is" : "hostnames are"} renewed by the operator (an
+          ejected website keeps its own HTTPS).
+        </p>
+      </QuietDetails>
 
       {selected ? (
         <InspectorPanel
@@ -1269,13 +1532,12 @@ export function MigrationPage() {
     <Page live>
       <Crumbs items={[{ href: "/", label: "Overview" }, { label: "Migration" }]} />
       <div className="page-head">
-        <div>
-          <h1>Migration</h1>
-          <p className="sub">
-            Import websites from CyberPanel or migrate WordPress sites to EmDash CMS. Your source
-            server, DNS, and email stay untouched until you approve cutover.
-          </p>
-        </div>
+        <SimpleHeader
+          title="Migration"
+          answer={
+            <MigrationAnswer migrations={migrations} loading={data.source.kind === "loading"} />
+          }
+        />
         <Link className="btn sm" to="/help/$slug" params={{ slug: "migrations" }}>
           Migration guide
         </Link>

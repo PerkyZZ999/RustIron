@@ -30,6 +30,7 @@ use std::{
 };
 
 pub mod executor_transport;
+mod journal_sites;
 mod observe;
 pub mod submission_worker;
 
@@ -221,7 +222,27 @@ fn process_request(
                             .map_err(ApiError::new)
                     })
                     .and_then(|result| result.map(ReadData::EvidenceExport)),
-                command => read_inventory(inventory, command).map_err(ApiError::new),
+                ReadCommand::HostSummary => executor
+                    .ok_or_else(|| ApiError::new(ErrorCode::DependencyUnavailable))
+                    .and_then(|executor| {
+                        executor
+                            .host_summary_until(
+                                &rustiron_contracts::summary::HostSummaryQuery {
+                                    request_id: request.request_id,
+                                },
+                                deadline,
+                            )
+                            .map_err(ApiError::new)
+                    })
+                    .and_then(|result| result.map(ReadData::HostSummary)),
+                // D-103 (W778): with no operator report, the executor journal answers.
+                command => match has_report(inventory) {
+                    Ok(true) => read_inventory(inventory, command).map_err(ApiError::new),
+                    Ok(false) => {
+                        journal_sites::read(executor, request.request_id, command, deadline)
+                    }
+                    Err(code) => Err(ApiError::new(code)),
+                },
             },
         }),
         Err(error) => OperatorResponse::Read(Response {
@@ -285,6 +306,17 @@ fn apply(
     }
 }
 
+/// Whether the inventory holds an operator report; a missing store has none.
+fn has_report(inventory: Option<&Mutex<rustiron_core::InventoryStore>>) -> Result<bool, ErrorCode> {
+    let Some(mutex) = inventory else {
+        return Ok(false);
+    };
+    let mut store = mutex
+        .try_lock()
+        .map_err(|_| ErrorCode::DependencyUnavailable)?;
+    store.has_report()
+}
+
 fn read_inventory(
     inventory: Option<&Mutex<rustiron_core::InventoryStore>>,
     command: ReadCommand,
@@ -301,6 +333,7 @@ fn read_inventory(
         ReadCommand::SiteInspect { site_id } => store.inspect(&site_id).map(ReadData::SiteInspect),
         ReadCommand::Doctor
         | ReadCommand::OperationStatus { .. }
-        | ReadCommand::EvidenceExport { .. } => Err(ErrorCode::InvalidRequest),
+        | ReadCommand::EvidenceExport { .. }
+        | ReadCommand::HostSummary => Err(ErrorCode::InvalidRequest),
     }
 }

@@ -3714,6 +3714,23 @@ impl Executor {
         Ok(self.journal.quarantine_provision(operation_id)?)
     }
 
+    /// D-103 (W778): the owned sites for `site_records`, as (site ID,
+    /// hostname, adopted). One row more than the limit lets the caller refuse
+    /// an oversized answer instead of cutting it short.
+    pub fn owned_sites(&self) -> Result<Vec<(String, String, bool)>, ExecutorError> {
+        self.journal
+            .owned_sites(rustiron_contracts::MAX_INVENTORY_SITES + 1)
+            .map_err(Into::into)
+    }
+
+    /// D-104 (W779): the closed host summary from the read-only observation.
+    pub fn host_summary(&self) -> Result<rustiron_contracts::summary::HostSummary, ExecutorError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        crate::host_summary::project(&Self::observe(&self.anchor)?, now)
+    }
+
     /// Self-attested receipt for a finished probe or capture, signed by the
     /// host receipt key when one is installed (W392). None when the id is absent.
     pub fn evidence(&self, operation_id: &Id) -> Result<Option<serde_json::Value>, ExecutorError> {

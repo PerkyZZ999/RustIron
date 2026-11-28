@@ -123,6 +123,11 @@ impl InventoryStore {
         transaction.execute("UPDATE inventory_meta SET revision=?1,reported_at=?2,source='operator_report',has_snapshot=1 WHERE singleton=1",params![revision,i64::try_from(snapshot.report.reported_at.get()).map_err(unavailable)?]).map_err(unavailable)?;
         transaction.commit().map_err(unavailable)
     }
+    /// D-103 (W778): whether an operator report was imported.
+    pub fn has_report(&mut self) -> Result<bool, ErrorCode> {
+        storage::validate_schema(&self.connection)?;
+        Ok(read_meta(&self.connection)?.report.is_some())
+    }
     /// Reads a stable bounded page; stale/cross-store/rebound tokens are errors.
     pub fn list(&mut self, token: Option<&Id>, limit: PageLimit) -> Result<SitePage, ErrorCode> {
         let transaction = self.connection.transaction().map_err(unavailable)?;

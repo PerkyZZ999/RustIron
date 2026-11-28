@@ -114,7 +114,7 @@ export const kbCategories: [KbCategory, ...KbCategory[]] = [
   },
   {
     id: "hosting",
-    label: "Sites & apps",
+    label: "Websites & apps",
     description: "WordPress, EmDash, Node.js and Bun apps, and their databases.",
   },
   {
@@ -300,7 +300,7 @@ export const operatorRunbooks: OperatorRunbookRef[] = [
   {
     id: "15",
     title: "Page cache on",
-    group: "Sites & apps",
+    group: "Websites & apps",
     file: "docs/operator/15-PAGE-CACHE-ON.md",
     summary: "Enable or disable LiteSpeed Page Cache for a WordPress site.",
     guideSlug: "wordpress-sites",
@@ -372,7 +372,7 @@ export const operatorRunbooks: OperatorRunbookRef[] = [
   {
     id: "24",
     title: "WordPress update",
-    group: "Sites & apps",
+    group: "Websites & apps",
     file: "docs/operator/24-WORDPRESS-UPDATE.md",
     summary: "Apply signed WordPress core, plugin, or theme updates with rollback.",
     guideSlug: "wordpress-sites",
@@ -380,7 +380,7 @@ export const operatorRunbooks: OperatorRunbookRef[] = [
   {
     id: "25",
     title: "Delete a live site",
-    group: "Sites & apps",
+    group: "Websites & apps",
     file: "docs/operator/25-DELETE-LIVE-SITE.md",
     summary: "Delete a site behind a fresh verified capture or settle an open deletion.",
     guideSlug: "wordpress-sites",
@@ -420,7 +420,7 @@ export const operatorRunbooks: OperatorRunbookRef[] = [
   {
     id: "30",
     title: "Proxy site",
-    group: "Sites & apps",
+    group: "Websites & apps",
     file: "docs/operator/30-PROXY-SITE.md",
     summary: "Provision and manage loopback HTTP or WebSocket proxy sites.",
     guideSlug: "modern-apps-and-emdash",
@@ -436,7 +436,7 @@ export const operatorRunbooks: OperatorRunbookRef[] = [
   {
     id: "32",
     title: "Modern apps",
-    group: "Sites & apps",
+    group: "Websites & apps",
     file: "docs/operator/32-MODERN-APPS.md",
     summary: "Provision, deploy, diagnose, roll back, and delete Node.js 22 / Bun 1.4 apps.",
     guideSlug: "modern-apps-and-emdash",
@@ -444,7 +444,7 @@ export const operatorRunbooks: OperatorRunbookRef[] = [
   {
     id: "33",
     title: "EmDash CMS",
-    group: "Sites & apps",
+    group: "Websites & apps",
     file: "docs/operator/33-EMDASH.md",
     summary: "Run EmDash 1.6.0, rehearse WordPress WXR migration, back up, and upgrade.",
     guideSlug: "modern-apps-and-emdash",
@@ -452,7 +452,7 @@ export const operatorRunbooks: OperatorRunbookRef[] = [
   {
     id: "34",
     title: "Developer platform",
-    group: "Sites & apps",
+    group: "Websites & apps",
     file: "docs/operator/34-DEVELOPER-PLATFORM.md",
     summary: "Unified Day-0 to Day-2 workflow across sites, apps, DNS, backups, and Console.",
     guideSlug: "how-rustiron-works",
@@ -460,7 +460,7 @@ export const operatorRunbooks: OperatorRunbookRef[] = [
   {
     id: "35",
     title: "Site credential rotation",
-    group: "Sites & apps",
+    group: "Websites & apps",
     file: "docs/operator/35-SITE-CREDENTIAL-ROTATION.md",
     summary: "Rotate per-site MariaDB passwords locally with atomic db.cnf swap.",
     guideSlug: "databases-and-credentials",
@@ -484,7 +484,7 @@ export const operatorRunbooks: OperatorRunbookRef[] = [
   {
     id: "38",
     title: "Console deployment & hardening",
-    group: "Sites & apps",
+    group: "Websites & apps",
     file: "docs/operator/38-CONSOLE-PRODUCTION-DEPLOYMENT.md",
     summary: "Deploy and harden the Console with Better Auth, HTTPS origin, and P16 access.",
     guideSlug: "install-and-setup",

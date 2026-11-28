@@ -6,12 +6,12 @@ order: 8
 readMinutes: 4
 runbooks: ["Runbook 10","Runbook 13","Runbook 22"]
 keywords: ["backup","recovery","restore","snapshot","schedule","evidence","receipt","store","probe"]
-consoleLinks: [{"to":"/recovery","label":"Recovery"},{"to":"/recovery/schedules","label":"Scheduled capture"},{"to":"/recovery/store","label":"Backup store"}]
+consoleLinks: [{"to":"/recovery","label":"Backups"},{"to":"/recovery/schedules","label":"Scheduled capture"},{"to":"/recovery/store","label":"Backup store"}]
 ---
 
-## Recovery {#recovery}
+## Backups {#recovery}
 
-The Recovery page shows, site by site, how sure you can be that a backup will restore. RustIron does not count a backup as recoverable until a restore has been tested.
+The Backups page shows, site by site, weakest first, how sure you can be that a backup will restore. RustIron does not count a backup as recoverable until a restore has been tested.
 
 For each site it checks seven things:
 
@@ -25,7 +25,9 @@ For each site it checks seven things:
 
 ## Take a backup or test a restore {#actions}
 
-The Backup & restore panel on the Recovery page prepares a backup of a site, or a restore test (a recovery probe) in an isolated sandbox. A restore test never touches the live site. Choose the site, and the panel gives you the commands to create and sign the plan.
+The Backup & restore panel on the Backups page prepares a backup of a site, or a restore test (a recovery probe) in an isolated sandbox. A restore test never touches the live site. Choose the site, and the panel gives you the commands to create and sign the plan.
+
+To do the same for several sites, tick them in the list and choose Back up now or Test a restore: you get one plan command per site.
 
 Click a backup (a snapshot) to see its parts and its checks. Click a restore test result (a receipt) to see how the restore went and the safe next step.
 

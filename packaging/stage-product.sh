@@ -28,7 +28,7 @@ RUSTFLAGS='--cfg rustiron_profile="product"' cargo build --release --locked --of
     --target-dir "$build" \
     --bin rustiron --bin rustiron-control --bin rustiron-s02-executor \
     --bin rustiron-admin-helper --bin rustiron-restore-inventory --bin rustiron-capture-manifest \
-    --bin rustiron-migration-inventory
+    --bin rustiron-migration-inventory --bin rustiron-mcp
 
 stage=$(mktemp -d "$output/rustiron-product.XXXXXXXX")
 policy_build=
@@ -58,6 +58,8 @@ bin=$build/release
 libexec=$stage/usr/libexec/rustiron
 install -D -m 0755 "$bin/rustiron" "$stage/usr/bin/rustiron"
 install -D -m 0755 "$bin/rustiron-control" "$libexec/rustiron-control"
+# W776: the stdio MCP server; an agent runs it as rustiron-coordinator over SSH.
+install -D -m 0755 "$bin/rustiron-mcp" "$libexec/rustiron-mcp"
 install -D -m 0755 "$bin/rustiron-s02-executor" "$libexec/rustiron-executor"
 install -D -m 0755 "$bin/rustiron-admin-helper" "$libexec/rustiron-admin-helper"
 install -D -m 0755 "$bin/rustiron-restore-inventory" "$libexec/jobs/restore-inventory"
@@ -113,6 +115,8 @@ install -D -m 0644 packaging/mail/rustiron-mail-relay.php "$stage/usr/share/rust
 install -D -m 0755 packaging/mail-relay.py "$libexec/mail-relay"
 install -D -m 0755 packaging/store/rustiron-store-netns "$libexec/store-netns"
 install -D -m 0755 packaging/alert/rustiron-alert-checkin "$libexec/alert-checkin"
+# W777: the sudoers rule for rustiron-agents (rustiron-mcp only).
+install -D -m 0440 packaging/sudoers.d/rustiron-mcp "$stage/etc/sudoers.d/rustiron-mcp"
 install -D -m 0644 packaging/sysusers.d/rustiron-coordinator.conf "$stage/usr/lib/sysusers.d/rustiron-coordinator.conf"
 # W348: the reviewed OLS parent that the installer writes once and pins.
 install -D -m 0644 packaging/ols/httpd_config.conf "$stage/usr/share/rustiron/ols/httpd_config.conf"

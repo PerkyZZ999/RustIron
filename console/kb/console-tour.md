@@ -34,11 +34,20 @@ Admin accounts also need a second factor: a 6-digit code from an authenticator a
 The menu on the left groups the pages by what they are about:
 
 - Overview: the health of the whole server on one page.
-- Hosting: Sites, Apps, Databases, and Migration.
+- Hosting: Websites, Apps, Databases, and Migration.
 - Domains & mail: Domains and Email.
-- Safety: Recovery (backups) and Operations (the history of changes).
+- Safety: Backups and Operations (the history of changes).
 - Host: Metrics, Services, Firewall, Cron jobs, Logs, Diagnoses, Alerts, and Updates.
 - At the bottom: Users, Settings, and Docs & KB.
+
+## Lists, long and short {#lists}
+
+Websites, Domains, Apps, Databases, Backups, and Operations are lists, with what needs a look first. Each page starts with one sentence that says how things are.
+
+- A short list shows only its rows.
+- Once a list has more than 8 entries, a search box and a Sort menu appear.
+- Once it is longer than one page, page buttons appear. Choose how many rows a page shows in Settings, under Rows per page (50 by default).
+- On Websites, Backups, and Apps, tick several entries to act on them together. "Make changes from the Console" explains what happens next.
 
 ## The top bar {#top-bar}
 

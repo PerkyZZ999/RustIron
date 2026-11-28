@@ -30,8 +30,13 @@ Prefer the MCP tools when they are available. They are read-only. See [reference
 | Server health | `rustiron_doctor` | `rustiron doctor` |
 | List sites | `rustiron_site_list` | `rustiron site list` |
 | One site | `rustiron_site_inspect` | `rustiron site inspect <site_id>` |
+| Site states and problems | `rustiron_host_summary` | `rustiron host summary` |
+| Host problems and what to do | `rustiron_diagnoses` | `rustiron-control --host-status --diagnose` |
+| Certificate expiry | `rustiron_certificate_status` | `rustiron host summary` |
+| Last backup and restore test | `rustiron_backup_status` | `rustiron host summary` |
 | Outcome of a change | `rustiron_operation_status` | `rustiron operation status <operation_id>` |
 | Recovery evidence | `rustiron_evidence_export` | `rustiron evidence export <operation_id>` |
+| Draft a plan to sign | `rustiron_plan_draft` | `rustiron plan create <verb> ...` |
 | Read a plan | `rustiron_plan_inspect` | `rustiron plan review-file <path>` |
 | Blast radius of a plan | `rustiron_plan_envelope` | `rustiron-plan envelope <plan.json>` |
 
@@ -42,8 +47,8 @@ If a host tool answers `COORDINATOR_NOT_CONFIGURED`, the MCP server runs without
 ### Health check
 
 1. Call `rustiron_doctor`.
-2. Call `rustiron_site_list`.
-3. Summarize: the OS and service state, the number of sites, and anything that is not healthy or is unknown. Quote states as reported; do not upgrade "unknown" to "fine".
+2. Call `rustiron_host_summary`, `rustiron_diagnoses`, `rustiron_certificate_status`, and `rustiron_backup_status`.
+3. Summarize: the OS and service state, the number of sites by state, quarantined or ejected sites, certificates with a finding, owned sites without a backup, and anything that is unknown. Quote states as reported; do not upgrade "unknown" to "fine".
 
 ### Look into one site
 
@@ -65,8 +70,8 @@ If a host tool answers `COORDINATOR_NOT_CONFIGURED`, the MCP server runs without
 
 ### Prepare a change
 
-1. Agree with the user on the verb and its inputs. The verbs are the `rustiron plan create` subcommands in [references/cli.md](references/cli.md).
-2. Give the exact `rustiron plan create ...` command for the user to run. It prints the canonical plan; it changes nothing.
-3. Review the plan with "Review a plan".
+1. Agree with the user on the verb and its inputs. `rustiron_plan_draft_help` lists the verbs, and with a verb, its flags. Never guess a host ID, epoch, profile digest, or recipe digest: ask the user for them.
+2. Call `rustiron_plan_draft` with the verb and flags. It returns the unsigned plan, its fields, and its blast radius, built by the same code as `rustiron plan create`. Without the MCP server, give the exact `rustiron plan create ...` command instead.
+3. Show the user every field and the envelope, and say plainly that the plan is unsigned and that the values are their assertions, not checks of the server. Review it with "Review a plan".
 4. The user signs the plan and its grant offline with their operator key (https://docs.rustiron.app/signing-and-plans/), then applies it with `rustiron plan apply-file`, or in the Console.
 5. Follow it with "Follow a change".

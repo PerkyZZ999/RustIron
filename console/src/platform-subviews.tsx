@@ -73,7 +73,7 @@ export function RecoverySchedulesPage() {
       <Crumbs
         items={[
           { href: "/", label: "Overview" },
-          { href: "/recovery", label: "Recovery" },
+          { href: "/recovery", label: "Backups" },
           { label: "Scheduled capture" },
         ]}
       />
@@ -174,7 +174,7 @@ export function RecoveryStorePage() {
       <Crumbs
         items={[
           { href: "/", label: "Overview" },
-          { href: "/recovery", label: "Recovery" },
+          { href: "/recovery", label: "Backups" },
           { label: "Backup store" },
         ]}
       />

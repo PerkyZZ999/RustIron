@@ -36,6 +36,7 @@ jobs = load_script("stage_job_tools", HERE / "stage-job-tools.py")
 EXECUTABLES = (
     "usr/bin/rustiron",
     "usr/libexec/rustiron/rustiron-control",
+    "usr/libexec/rustiron/rustiron-mcp",
     "usr/libexec/rustiron/rustiron-executor",
     "usr/libexec/rustiron/rustiron-admin-helper",
     "usr/libexec/rustiron/check-site-sandbox",
@@ -87,6 +88,8 @@ OLS_GUARD_DROPIN = "etc/systemd/system/lshttpd.service.d/51-rustiron-boot-guard.
 JOURNALD_DROPIN = "etc/systemd/journald.conf.d/50-rustiron-persistent.conf"
 # W569 (W558-F1): MariaDB answers on loopback only.
 MARIADB_DROPIN = "etc/my.cnf.d/zz-rustiron-loopback.cnf"
+# W777: lets members of rustiron-agents start rustiron-mcp, and nothing else.
+SUDOERS_DROPIN = "etc/sudoers.d/rustiron-mcp"
 # W658 (D-102 Decision C2): PostgreSQL 18 loopback and strict pg_hba templates.
 POSTGRES_LOOPBACK_TEMPLATE = "usr/share/rustiron/postgres/zz-rustiron-loopback.conf"
 POSTGRES_HBA_TEMPLATE = "usr/share/rustiron/postgres/pg_hba.conf"
@@ -114,6 +117,7 @@ MANAGEMENT_FILES = {
     **dict.fromkeys(OLS_UNIT_DROPINS, 0o644),
     JOURNALD_DROPIN: 0o644,
     MARIADB_DROPIN: 0o644,
+    SUDOERS_DROPIN: 0o440,
     POSTGRES_LOOPBACK_TEMPLATE: 0o644,
     POSTGRES_HBA_TEMPLATE: 0o644,
 }
@@ -482,7 +486,7 @@ def check_destination(root, relative, owner=0):
 
 def destination_conflicts(root, owner=0):
     paths = (
-        *OWNED_ROOTS, *LAB_ROOTS, "usr/bin/rustiron",
+        *OWNED_ROOTS, *LAB_ROOTS, "usr/bin/rustiron", SUDOERS_DROPIN,
         *(f"{directory}/rustiron-coordinator.conf" for directory in SYSUSERS_ROOTS),
     )
     for name in paths:

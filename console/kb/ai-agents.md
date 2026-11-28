@@ -13,11 +13,13 @@ consoleLinks: [{"to":"/operations","label":"Operations"},{"to":"/","label":"Host
 
 RustIron is built so that an AI agent, such as Claude, can help you run your server. Through the RustIron MCP server (rustiron-mcp), an agent can:
 
-- check the server's health;
+- check the server's health, see which sites are quarantined or ejected, and list the server's problems with what to do about each;
+- see which HTTPS certificates expire soon, and when each site was last backed up and restore-tested;
 - list your sites and look at one in detail;
 - follow a change and read its outcome;
 - read the recovery evidence of a change;
-- read a plan and explain what it will touch, how many sites reload, and what happens if it fails.
+- read a plan and explain what it will touch, how many sites reload, and what happens if it fails;
+- draft a plan for a change you ask for, for you to review and sign. The draft is unsigned and changes nothing.
 
 ## With the agent skill {#skill}
 
@@ -38,8 +40,15 @@ If an agent asks for your signing key, refuse. Sign plans yourself, after you re
 
 ## Signed changes through an agent {#writes}
 
-An optional, experimental mode lets an agent submit a plan that a person already signed, within limits you set (how many changes, how many server reloads). The agent still cannot approve its own plan, raise its limits, or use delete-type actions. This mode is not yet recommended for production servers; its review is planned for version 0.3.
+An optional, experimental mode lets an agent submit a plan that a person already signed, within limits RustIron enforces: one operation per grant, at most 4 changes and 1 web-server reload per plan. The agent still cannot approve its own plan, raise its limits, or use delete-type actions, and it never holds a signing key.
+
+- **On a test server**, you can turn on the nonproduction mode yourself. "Connect an AI agent" shows how. It needs a second sudoers rule that you write on purpose; the rule RustIron installs never allows it.
+- **On a production server**, this mode is not recommended yet. Its guide comes after a supervised run on a pilot server.
+
+:::caution[Sign what you read, not what the agent says]
+Before you sign a plan an agent drafted, run rustiron plan review-file on your own computer and read every field. Never sign from the agent's summary of the plan. Keep grant windows short: an agent can use a signed grant at any moment until it expires.
+:::
 
 ## Current state {#status}
 
-The MCP server and the agent skill are new and experimental, like the rest of RustIron. Today you build rustiron-mcp from the source and install it yourself; "Connect an AI agent" shows how. Packaging it with RustIron and adding more tools is planned for version 0.3.
+The MCP server and the agent skill are new and experimental, like the rest of RustIron. RustIron installs rustiron-mcp with the rest of the product, starting with the first release after 0.2.0; "Connect an AI agent" shows how to connect it. More tools are planned for version 0.3.

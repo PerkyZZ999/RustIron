@@ -6,7 +6,7 @@ order: 21
 readMinutes: 5
 runbooks: ["Runbook 01","Runbook 10","Runbook 13","Runbook 22","Runbook 26"]
 keywords: ["backup","restore","restic","snapshot","retention","compliance","object lock","probe","recovery","schedule"]
-consoleLinks: [{"to":"/recovery","label":"Recovery"},{"to":"/recovery/schedules","label":"Scheduled capture"},{"to":"/recovery/store","label":"Backup store"}]
+consoleLinks: [{"to":"/recovery","label":"Backups"},{"to":"/recovery/schedules","label":"Scheduled capture"},{"to":"/recovery/store","label":"Backup store"}]
 ---
 
 ## Why RustIron backups survive a compromised host {#immutable-backups}
@@ -28,7 +28,7 @@ rustiron plan create product-standing-capture \
 
 ## Reading the 7-field Recovery Evidence strip {#seven-evidence-fields}
 
-A snapshot file alone does not prove recoverability. RustIron tracks seven independent verification fields for every site — shown on Sites and Recovery:
+A snapshot file alone does not prove recoverability. RustIron tracks seven independent verification fields for every site — shown on Websites and Backups:
 
 - 1. Artifacts present — encrypted files and database dump recorded in the store.
 - 2. Integrity verified — SHA-256 and restic repository checksums match.

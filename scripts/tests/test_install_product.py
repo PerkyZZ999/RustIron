@@ -304,7 +304,7 @@ class InstallProductTests(unittest.TestCase):
         self.assertEqual(record["shipped_parent_sha256"], self.digests[installer.PARENT_TEMPLATE])
         self.assertEqual(record["modules"], sorted(installer.preflight.MODULES))
         self.assertEqual(record["users"], ["rustiron-coordinator", "rustiron-acme", "rustiron-caddy"])
-        self.assertEqual(record["groups"], ["rustiron-coordinator", "rustiron-requesters", "rustiron-acme", "rustiron-caddy"])
+        self.assertEqual(record["groups"], ["rustiron-coordinator", "rustiron-requesters", "rustiron-agents", "rustiron-acme", "rustiron-caddy"])
         self.assertEqual(record["relabelled"], ["usr/local/lsws/lsphp84/bin/lsphp"])
 
     def test_the_record_leaves_out_a_kept_sites_mount(self):

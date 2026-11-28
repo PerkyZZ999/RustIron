@@ -1,5 +1,6 @@
 // W631 (P29 Slice 11): CyberPanel-grade Self-Hosted Postfix + Dovecot Email Manager
 // (Mailboxes CRUD, Aliases & Forwarders, Per-Site Outbound Relay, and MX/SPF/DKIM/DMARC DNS).
+import { AnswerLine, SimpleHeader } from "@/components/console/simple";
 import { consoleRequest, failureText } from "./console-request";
 import { Link } from "@tanstack/react-router";
 import {
@@ -778,13 +779,16 @@ export function EmailManagementPage({ initialTab = "mailboxes" }: { initialTab?:
       >
         <Crumbs items={[{ href: "/", label: "Overview" }, { label: "Email" }]} />
         <div className="page-head">
-          <div>
-            <h1>Email</h1>
-            <p className="sub">
-              Console-local Postfix and Dovecot mailbox catalog (pending host sync), aliases and
-              forwarders, per-site outbound relay reference, and mail DNS templates.
-            </p>
-          </div>
+          <SimpleHeader
+            title="Email"
+            answer={
+              <AnswerLine tone="unknown">
+                {mailState.mailboxes.length}{" "}
+                {mailState.mailboxes.length === 1 ? "mailbox" : "mailboxes"} in the Console's
+                catalog. They reach the server only after a host sync.
+              </AnswerLine>
+            }
+          />
           <button type="button" className="btn sm" onClick={() => void handleExport()}>
             <Glyph icon={Download} />
             Export Postfix / Dovecot maps

@@ -7,8 +7,9 @@ The `rustiron` CLI runs on the server and talks to the local coordinator. Add `-
 | Command | What it shows |
 | --- | --- |
 | `rustiron doctor` | OS and host state |
-| `rustiron site list` | Sites in the coordinator inventory |
+| `rustiron site list` | Sites in the coordinator inventory, or the sites the executor journal owns |
 | `rustiron site inspect <site_id>` | One site |
+| `rustiron host summary` | Site states, certificates, and the newest backup and restore test per site |
 | `rustiron operation status <operation_id>` | The recorded state of one change |
 | `rustiron evidence export <operation_id>` | The recovery receipt of one change |
 | `rustiron plan review-file <path>` | Every field of a plan file, offline |

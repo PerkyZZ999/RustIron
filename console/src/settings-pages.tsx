@@ -1,4 +1,5 @@
 // W714 (pass 33, fix 7): Settings and shared-state pages, and the package and signer rows. Split from `pages.tsx`.
+import { AnswerLine, SimpleHeader } from "@/components/console/simple";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { toastManager } from "@/components/ui/toast";
@@ -450,13 +451,14 @@ export function SettingsPage() {
   return (
     <Page live={live}>
       <div className="page-head">
-        <div>
-          <h1>Settings</h1>
-          <p className="sub">
-            Console preferences, and read-only views of the host profile and approval authority.
-            Host security policy is not changed from here.
-          </p>
-        </div>
+        <SimpleHeader
+          title="Settings"
+          answer={
+            <AnswerLine tone="ok">
+              Your preferences live in this browser. Server security is never changed from here.
+            </AnswerLine>
+          }
+        />
       </div>
       <div className="grid g-main-side">
         <div className="stack">

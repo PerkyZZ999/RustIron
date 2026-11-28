@@ -11,6 +11,9 @@ pub const MAX_INVENTORY_SITES: usize = 1000;
 pub enum InventorySource {
     /// Metadata explicitly reported by the operator, not a live verified host probe.
     OperatorReport,
+    /// D-103 (W778): a site the executor journal records as created or
+    /// adopted, read when no operator report exists; not a live host probe.
+    ExecutorJournal,
 }
 
 /// Provenance retained on imported observations.

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createMemoryHistory, createRouter, RouterProvider } from "@tanstack/react-router";
 
+import { usersAnswer } from "./accounts-pages";
 import {
   createConsoleAuthBackend,
   generateRecoveryCodes,
@@ -668,10 +669,43 @@ describe("W748 (QA-17): sign-in keeps the page that was asked for", () => {
       const form = email.closest("form");
       if (!form) throw new Error("no sign-in form");
       fireEvent.submit(form);
-      expect(await screen.findByRole("heading", { level: 1, name: "Sites" })).toBeTruthy();
+      expect(await screen.findByRole("heading", { level: 1, name: "Websites" })).toBeTruthy();
       expect(router.state.location.pathname).toBe("/sites");
     } finally {
       globalThis.fetch = origFetch;
     }
+  });
+});
+
+describe("W791 Users & access answer", () => {
+  const base = { auth_provider: "better-auth", auth_required: true, user_count: 2 } as const;
+  const admin = {
+    ...base,
+    setup_required: false,
+    session: {
+      sessionId: "s1",
+      user: { id: "u1", name: "A", email: "a@lab.test", role: "admin", twoFactorEnabled: true },
+    },
+  } as const;
+  const user = (activeSessions: number) => ({
+    id: "u",
+    name: "U",
+    email: "u@lab.test",
+    role: "readonly",
+    createdAt: "",
+    activeSessions,
+  });
+  it("never claims anything before the status, and keeps non-Admins in the dark", () => {
+    expect(usersAnswer(null, false, []).text).toBe("Checking who can sign in…");
+    expect(usersAnswer(null, true, []).text).toBe("The sign-in service could not be reached.");
+    expect(usersAnswer({ ...base, setup_required: true, session: null }, true, []).tone).toBe(
+      "warn",
+    );
+    expect(usersAnswer({ ...admin, session: null }, true, []).text).toContain("Only an Admin");
+  });
+  it("counts accounts and sessions for an Admin", () => {
+    expect(usersAnswer(admin, true, [user(1), user(2)] as never).text).toBe(
+      "2 accounts can sign in, with 3 active sessions.",
+    );
   });
 });

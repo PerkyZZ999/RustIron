@@ -22,6 +22,19 @@ ASSEMBLE_SPEC.loader.exec_module(assembler)
 
 
 class InstallerPreflightTests(unittest.TestCase):
+    def test_the_sudoers_rule_allows_only_rustiron_mcp_for_the_agents_group(self):
+        # W777: one rule, for the group, with the exact argument list and no wildcard.
+        packaging = SCRIPT.parent
+        rules = [line for line in (packaging / "sudoers.d/rustiron-mcp").read_text().splitlines()
+                 if line and not line.startswith("#")]
+        self.assertEqual(rules, ["%rustiron-agents ALL=(rustiron-coordinator) NOPASSWD: "
+                                 "/usr/libexec/rustiron/rustiron-mcp --socket /run/rustiron-coordinator/control.sock"])
+        self.assertEqual(preflight.MANAGEMENT_FILES[preflight.SUDOERS_DROPIN], 0o440)
+        self.assertIn("usr/libexec/rustiron/rustiron-mcp", preflight.EXECUTABLES)
+        sysusers = (packaging / "sysusers.d/rustiron-coordinator.conf").read_text()
+        self.assertIn("\ng rustiron-agents -\n", sysusers)
+        self.assertNotRegex(sysusers, r"(?m)^m \S+ rustiron-agents$")  # no member by default
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="rustiron-preflight-")
         self.addCleanup(temporary.cleanup)

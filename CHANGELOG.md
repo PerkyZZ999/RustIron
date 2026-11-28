@@ -13,10 +13,31 @@ RustIron is experimental pre-release software. No version below is a supported p
 - **Guides for the Console web interface**, in a new "Using the Console" category: a tour, making changes, sites and apps, domains and email, backups, server pages, and users and sign-in.
 - **Guides for AI agents**: what an agent can and cannot do, connecting one through the read-only `rustiron-mcp` server over SSH, and the agent skill.
 - **RustIron agent skill** in `skills/rustiron/`, in the [Agent Skills](https://agentskills.io) format.
+- **`rustiron-mcp` ships with the product** as `/usr/libexec/rustiron/rustiron-mcp`. The installer, the product update, and the uninstaller handle it like the other product files, so a host has the MCP server without a source build.
+- **A supported SSH connection for AI agents.** The product installs `/etc/sudoers.d/rustiron-mcp`, which lets members of the new, empty `rustiron-agents` group start `rustiron-mcp` read-only as the coordinator, with its exact arguments and nothing else. Add your SSH account with `usermod -aG rustiron-agents ACCOUNT`. If you wrote that file yourself from the earlier guide, delete it before updating.
+- **Host summary for the CLI and AI agents.** `rustiron host summary` and three new read-only MCP tools (`rustiron_host_summary`, `rustiron_certificate_status`, `rustiron_backup_status`) show each site's recorded state, certificates that expire or failed to renew, and each site's newest backup and restore test. The summary holds no paths, keys, plans, or receipts.
+- **Plan drafts for AI agents.** `rustiron_plan_draft` builds an unsigned plan with the same code as `rustiron plan create`, and returns its fields and blast radius for you to review and sign; `rustiron_plan_draft_help` lists the verbs and their flags. Drafts sign, store, and submit nothing. The DNS verbs that read files stay CLI-only.
+- **Host diagnoses for AI agents.** `rustiron_diagnoses` runs the server's own `rustiron-control --host-status --diagnose` and lists the problems it finds with what to do about each.
+- **Newer MCP protocol, guides, and prompts.** `rustiron-mcp` negotiates MCP `2025-06-18` (and still speaks `2025-03-26` and `2024-11-05`), gives every tool a title and an output schema, serves every RustIron guide as a read-only resource (`rustiron://guides/<slug>`), and offers five ready-made prompts: health check, look into a site, backup readiness, prepare a change, and follow a change.
+- **How to let an agent submit signed changes on a test server.** The AI agent guides now show the optional nonproduction write mode, with a sudoers rule you write yourself, and say to read a plan with `rustiron plan review-file` before you sign it. The production write mode is not recommended yet.
 
 ### Changed
 
+- **A simpler Host overview.** One sentence says how the server is doing, four tiles show CPU, memory, disk, and uptime with a word and a meter, the resource chart draws in, and services and recent operations fold away under "Server details". Motion stops when the system or the Console asks for reduced motion.
+- **Server pages say how things are first.** Metrics, services, firewall, timers, logs, diagnoses, alerts, and updates each start with one sentence built from what the server reports, with details folded away.
+- **Websites, apps, databases, migrations, domains, email, backups, operations, users, and settings say how they are first**, in one sentence each.
+- **Lists for a few entries or hundreds.** Websites, Domains, Apps, Databases, Backups, and Operations are lists with problems first. Search and sorting appear once a list has more than 8 entries, and pages once it is longer than one page; Settings → Rows per page now defaults to 50.
+- **Choose several entries at once.** On Websites and Backups (back up now, test a restore) and Apps (restart), check the entries and pick an action: the Console shows one `rustiron plan create` command per entry to review and sign offline, then submit on the Plans page. Nothing changes from the browser, and removal is never offered in bulk.
+- **"Websites" and "Backups".** The Sites and Recovery pages are now called Websites and Backups in the sidebar, the titles, the breadcrumbs, and the search. Addresses are unchanged.
 - Shorter guide titles and summaries, simpler category names, and guides grouped by category.
+- **Guides for lists and bulk actions.** The Console tour, "Make changes from the Console", "Websites & apps in the Console", and "Backups in the Console" explain long lists, choosing several entries, and the Websites and Backups names.
+- New Console screenshots in the README.
+
+### Fixed
+
+- **The details drawer opens above the top bar.** On desktop its title and close button were hidden under the top bar.
+- **No scrollbar beside the Console's tab rows.** Recovery, a domain's details, and an app's details showed a small vertical scrollbar at the end of their tab row.
+- **Site list and site inspect work on a fresh server.** Without an imported inventory, the CLI and the MCP server now list the sites RustIron created or adopted, read from the executor journal (`inventory.source: executor_journal`), instead of answering "dependency unavailable".
 
 ### Security
 
