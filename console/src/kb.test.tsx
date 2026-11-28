@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { createMemoryHistory, createRouter, RouterProvider } from "@tanstack/react-router";
 
 import { glossaryTerms, kbArticles, kbCategories, operatorRunbooks } from "./kb-data";
+import { parseKbMarkdown } from "./kb-markdown";
 import { routeTree } from "./router";
 
 afterEach(cleanup);
@@ -43,22 +44,18 @@ describe("Integrated Documentation & Knowledge Base (W649)", () => {
     expect(
       await screen.findByRole("heading", { level: 1, name: "Docs & Knowledge Base" }),
     ).toBeTruthy();
-    expect(screen.getByRole("link", { name: /How RustIron Works/ })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /How RustIron works/ })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Updates & Releases" }));
-    expect(
-      screen.getByRole("link", { name: /Updating RustIron & Cutting Signed Releases/ }),
-    ).toBeTruthy();
-    expect(screen.queryByRole("link", { name: /How RustIron Works/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Updates & troubleshooting" }));
+    expect(screen.getByRole("link", { name: /Update RustIron/ })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /How RustIron works/ })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /All guides/ }));
     fireEvent.change(screen.getByLabelText(/Search docs, commands, runbooks, and terms/), {
       target: { value: "rustiron-updater.py" },
     });
-    expect(
-      screen.getByRole("link", { name: /Updating RustIron & Cutting Signed Releases/ }),
-    ).toBeTruthy();
-    expect(screen.queryByRole("link", { name: /Host & Manage WordPress Websites/ })).toBeNull();
+    expect(screen.getByRole("link", { name: /Update RustIron/ })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /WordPress sites/ })).toBeNull();
 
     fireEvent.change(screen.getByLabelText(/Search docs, commands, runbooks, and terms/), {
       target: { value: "" },
@@ -76,7 +73,7 @@ describe("Integrated Documentation & Knowledge Base (W649)", () => {
     expect(
       await screen.findByRole("heading", {
         level: 1,
-        name: "Updating RustIron & Cutting Signed Releases",
+        name: "Update RustIron",
       }),
     ).toBeTruthy();
     expect(screen.getByText(/packaging\/rustiron-updater\.py status/)).toBeTruthy();
@@ -85,5 +82,66 @@ describe("Integrated Documentation & Knowledge Base (W649)", () => {
 
     await act(() => router.navigate({ to: "/help/$slug", params: { slug: "does-not-exist" } }));
     expect(await screen.findByRole("heading", { level: 1, name: "Guide not found" })).toBeTruthy();
+  });
+});
+
+describe("Docs & KB Markdown source (W769)", () => {
+  it("keeps each file's title and order equal to the Console's index", async () => {
+    const slugs = Object.keys(kbArticleTitles);
+    for (const [index, slug] of slugs.entries()) {
+      const text = await Bun.file(`${import.meta.dir}/../kb/${slug}.md`).text();
+      const { meta } = parseKbMarkdown(text, slug);
+      expect(meta.title).toBe(kbArticleTitles[slug as keyof typeof kbArticleTitles]);
+      expect(meta.order).toBe(index + 1);
+    }
+    expect(kbArticles.map((a) => a.slug)).toEqual(slugs as (typeof kbArticles)[number]["slug"][]);
+  });
+
+  it("reads sections, escapes, callouts, and labelled commands", () => {
+    const text = [
+      "---",
+      'title: "T"',
+      "---",
+      "",
+      "## One \\<a\\> {#one}",
+      "",
+      "Line \\*one\\*",
+      "goes on.",
+      "",
+      "- a \\_b",
+      "",
+      ":::caution[Careful]",
+      "Body.",
+      ":::",
+      "",
+      '```sh title="Run \\"it\\"" where="Server (root)"',
+      "echo 1",
+      "```",
+    ].join("\n");
+    const [section] = parseKbMarkdown(text, "t").sections;
+    expect(section).toEqual({
+      id: "one",
+      heading: "One <a>",
+      paragraphs: ["Line *one* goes on."],
+      bullets: ["a _b"],
+      callout: { tone: "warn", title: "Careful", body: "Body." },
+      commands: [{ label: 'Run "it"', where: "Server (root)", code: "echo 1" }],
+    });
+  });
+
+  it("refuses Markdown the Console cannot show", () => {
+    const head = '---\ntitle: "T"\n---\n\n## S {#s}\n\n';
+    expect(() => parseKbMarkdown(`${head}### Sub`, "t")).toThrow("unsupported");
+    expect(() => parseKbMarkdown(`${head}> quote`, "t")).toThrow("unsupported");
+    expect(() => parseKbMarkdown(`${head}\`\`\`sh\nx\n\`\`\``, "t")).toThrow("without title");
+    expect(() => parseKbMarkdown("no frontmatter", "t")).toThrow("no frontmatter");
+    expect(() => parseKbMarkdown('---\ntitle: "T"\n---\ntext', "t")).toThrow(
+      "before the first section",
+    );
+    expect(() => parseKbMarkdown(`${head}1. step`, "t")).toThrow("unsupported");
+    expect(() => parseKbMarkdown(`${head}- item\n\nafter the list`, "t")).toThrow("out of order");
+    expect(() =>
+      parseKbMarkdown(`${head}\`\`\`sh title="a" where="b"\nx\n\`\`\`\n\n- item`, "t"),
+    ).toThrow("out of order");
   });
 });

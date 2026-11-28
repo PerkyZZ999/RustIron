@@ -7,6 +7,17 @@ RustIron is experimental pre-release software. No version below is a supported p
 
 ## [Unreleased]
 
+### Added
+
+- **Docs & KB in Markdown.** The Console's guides are Markdown files in `console/kb/`, the same source as the documentation site.
+- **Guides for the Console web interface**, in a new "Using the Console" category: a tour, making changes, sites and apps, domains and email, backups, server pages, and users and sign-in.
+- **Guides for AI agents**: what an agent can and cannot do, connecting one through the read-only `rustiron-mcp` server over SSH, and the agent skill.
+- **RustIron agent skill** in `skills/rustiron/`, in the [Agent Skills](https://agentskills.io) format.
+
+### Changed
+
+- Shorter guide titles and summaries, simpler category names, and guides grouped by category.
+
 ### Security
 
 - The Console can no longer connect to the executor socket. The coordinator's user is no longer a member of `rustiron-requesters`; only the coordinator service gets that group. The product update removes the membership on existing hosts; restart the Console after the update ([Runbook 38](docs/operator/38-CONSOLE-PRODUCTION-DEPLOYMENT.md)).
