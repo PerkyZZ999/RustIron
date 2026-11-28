@@ -139,7 +139,7 @@ export const kbCategories: [KbCategory, ...KbCategory[]] = [
   },
 ];
 
-// W769: the article text lives in `console/kb/*.md`, shared with docs.rustiron.dev.
+// W769: the article text lives in `console/kb/*.md`, shared with docs.rustiron.app.
 const articleSources: [KbSlug, string][] = [
   ["how-rustiron-works", md_how_rustiron_works],
   ["install-and-setup", md_install_and_setup],

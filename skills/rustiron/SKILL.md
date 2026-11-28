@@ -5,7 +5,7 @@ license: Apache-2.0
 compatibility: Works with the read-only rustiron-mcp server (stdio) or the rustiron CLI on the host. RustIron is experimental pre-release software.
 metadata:
   project: https://github.com/PerkyZZ999/RustIron
-  docs: https://docs.rustiron.dev
+  docs: https://docs.rustiron.app
 ---
 
 # RustIron
@@ -35,7 +35,7 @@ Prefer the MCP tools when they are available. They are read-only. See [reference
 | Read a plan | `rustiron_plan_inspect` | `rustiron plan review-file <path>` |
 | Blast radius of a plan | `rustiron_plan_envelope` | `rustiron-plan envelope <plan.json>` |
 
-If a host tool answers `COORDINATOR_NOT_CONFIGURED`, the MCP server runs without `--socket`: only the two plan tools work. Tell the user, and point them to https://docs.rustiron.dev/ai-agents-connect/.
+If a host tool answers `COORDINATOR_NOT_CONFIGURED`, the MCP server runs without `--socket`: only the two plan tools work. Tell the user, and point them to https://docs.rustiron.app/ai-agents-connect/.
 
 ## Workflows
 
@@ -54,7 +54,7 @@ If a host tool answers `COORDINATOR_NOT_CONFIGURED`, the MCP server runs without
 ### Follow a change
 
 1. Call `rustiron_operation_status` with the operation ID the user gives.
-2. If it says `succeeded`, say so. If it is pending, failed, or needs attention, say exactly that and point to https://docs.rustiron.dev/troubleshooting-and-recovery/. Never retry a change on your own.
+2. If it says `succeeded`, say so. If it is pending, failed, or needs attention, say exactly that and point to https://docs.rustiron.app/troubleshooting-and-recovery/. Never retry a change on your own.
 3. For a backup or restore test, call `rustiron_evidence_export` and explain which recovery checks passed.
 
 ### Review a plan
@@ -68,5 +68,5 @@ If a host tool answers `COORDINATOR_NOT_CONFIGURED`, the MCP server runs without
 1. Agree with the user on the verb and its inputs. The verbs are the `rustiron plan create` subcommands in [references/cli.md](references/cli.md).
 2. Give the exact `rustiron plan create ...` command for the user to run. It prints the canonical plan; it changes nothing.
 3. Review the plan with "Review a plan".
-4. The user signs the plan and its grant offline with their operator key (https://docs.rustiron.dev/signing-and-plans/), then applies it with `rustiron plan apply-file`, or in the Console.
+4. The user signs the plan and its grant offline with their operator key (https://docs.rustiron.app/signing-and-plans/), then applies it with `rustiron plan apply-file`, or in the Console.
 5. Follow it with "Follow a change".

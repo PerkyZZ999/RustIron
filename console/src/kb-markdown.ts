@@ -1,5 +1,5 @@
 // W769: the Docs & KB articles are Markdown files in `console/kb/`, shared with
-// docs.rustiron.dev (Astro Starlight). This parser reads only the fixed subset
+// docs.rustiron.app (Astro Starlight). This parser reads only the fixed subset
 // those files use (see `console/kb/README.md`) and throws on anything else, so a
 // file the Console cannot show fails the tests and the build instead of the page.
 
